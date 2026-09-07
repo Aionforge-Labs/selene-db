@@ -1,12 +1,8 @@
 //! Exact native vector search over graph node properties.
 
-use std::cmp::Ordering;
-use std::collections::BTreeMap;
-
 use roaring::RoaringBitmap;
 use selene_core::{
-    CancellationChecker, DbString, NodeId, Value, VectorMetric, VectorMetricQuery, VectorTopK,
-    VectorValue,
+    CancellationChecker, DbString, NodeId, VectorMetric, VectorMetricQuery, VectorTopK, VectorValue,
 };
 
 use crate::error::{GraphError, GraphResult};
@@ -14,7 +10,7 @@ use crate::graph::SeleneGraph;
 use crate::parallel_scan::{should_parallelize_scan, try_reduce_chunks};
 #[cfg(test)]
 use crate::shared::SharedGraph;
-use crate::store::NodeRow;
+use crate::validated_candidates::ValidatedCandidateNode;
 use crate::vector_index::VectorIndexSearchHit;
 #[path = "vector_search/types.rs"]
 mod types;
@@ -35,7 +31,7 @@ mod shared_wrappers;
 #[path = "vector_search/turbo_quant_exact.rs"]
 mod turbo_quant_exact;
 
-const VECTOR_SEARCH_CANCEL_STRIDE: usize = 1024;
+pub(crate) const VECTOR_SEARCH_CANCEL_STRIDE: usize = 1024;
 const VECTOR_SEARCH_PARALLEL_CHUNK_ROWS: usize = 2048;
 
 #[cfg(not(test))]
@@ -109,39 +105,35 @@ impl SeleneGraph {
         } else {
             label_candidates
         };
-        let rows = candidates
-            .trusted_rows(self)
+        let validated = self
+            .validate_node_candidates(&candidates)
             .map_err(|error| GraphError::Inconsistent {
                 reason: format!("fresh vector candidates failed validation: {error}"),
-            })?
-            .collect::<Vec<_>>();
+            })?;
         let scorer = metric.bind_query(query).map_err(GraphError::from)?;
-        if should_parallelize_exact_scan(rows.len(), k) {
-            return self.exact_vector_search_parallel(label, property, scorer, k, &rows, checker);
+        if should_parallelize_exact_scan(validated.len(), k) {
+            return self.exact_vector_search_parallel(
+                property,
+                scorer,
+                k,
+                validated.as_slice(),
+                checker,
+            );
         }
 
         let mut top_k = VectorTopK::new(k);
         let mut rows_since_check = 0usize;
-        for (node_id, row) in rows {
+        for candidate in validated.as_slice() {
             rows_since_check += 1;
             if rows_since_check >= VECTOR_SEARCH_CANCEL_STRIDE {
                 checker.note_nodes_scanned(rows_since_check)?;
                 rows_since_check = 0;
             }
-            let properties = self.node_store.properties.get(row.index()).ok_or_else(|| {
-                GraphError::Inconsistent {
-                    reason: format!(
-                        "label index row {} for {} has no property row",
-                        row.get(),
-                        label.as_str()
-                    ),
-                }
-            })?;
-            let Some(Value::Vector(vector)) = properties.get(property) else {
+            let Some(vector) = candidate.vector_property(property)? else {
                 continue;
             };
             let distance = scorer.distance(vector).map_err(GraphError::from)?;
-            top_k.push_distance(node_id, distance);
+            top_k.push_distance(candidate.node_id(), distance);
         }
         if rows_since_check > 0 {
             checker.note_nodes_scanned(rows_since_check)?;
@@ -159,19 +151,18 @@ impl SeleneGraph {
 
     fn exact_vector_search_parallel(
         &self,
-        label: &DbString,
         property: &DbString,
         scorer: VectorMetricQuery<'_>,
         k: usize,
-        rows: &[(NodeId, NodeRow)],
+        candidates: &[ValidatedCandidateNode<'_>],
         checker: CancellationChecker<'_>,
     ) -> Result<Vec<VectorNodeSearchHit>, VectorSearchError> {
         let top_k = try_reduce_chunks(
-            rows,
+            candidates,
             VECTOR_SEARCH_PARALLEL_CHUNK_ROWS,
             checker,
             || VectorTopK::new(k),
-            |chunk| self.exact_vector_search_chunk(label, property, scorer, k, chunk),
+            |chunk| self.exact_vector_search_chunk(property, scorer, k, chunk),
             merge_top_k,
         )?;
 
@@ -180,28 +171,18 @@ impl SeleneGraph {
 
     fn exact_vector_search_chunk(
         &self,
-        label: &DbString,
         property: &DbString,
         scorer: VectorMetricQuery<'_>,
         k: usize,
-        rows: &[(NodeId, NodeRow)],
+        candidates: &[ValidatedCandidateNode<'_>],
     ) -> Result<VectorTopK<NodeId>, VectorSearchError> {
         let mut top_k = VectorTopK::new(k);
-        for &(node_id, row) in rows {
-            let properties = self.node_store.properties.get(row.index()).ok_or_else(|| {
-                GraphError::Inconsistent {
-                    reason: format!(
-                        "vector search row {} for {} has no property row",
-                        row.get(),
-                        label.as_str()
-                    ),
-                }
-            })?;
-            let Some(Value::Vector(vector)) = properties.get(property) else {
+        for candidate in candidates {
+            let Some(vector) = candidate.vector_property(property)? else {
                 continue;
             };
             let distance = scorer.distance(vector).map_err(GraphError::from)?;
-            top_k.push_distance(node_id, distance);
+            top_k.push_distance(candidate.node_id(), distance);
         }
         Ok(top_k)
     }
@@ -504,35 +485,17 @@ fn ann_row_hits_to_node_hits(
     row_hits: Vec<VectorIndexSearchHit>,
     checker: &CancellationChecker<'_>,
 ) -> Result<Vec<VectorNodeSearchHit>, VectorSearchError> {
-    let trusted = trusted_ann_rows(graph, &row_hits, "ANN vector index")?;
-    let mut hits = Vec::with_capacity(row_hits.len());
-    let mut needs_sort = false;
-    let mut rows_since_check = 0usize;
-    for hit in row_hits {
-        rows_since_check += 1;
-        if rows_since_check >= VECTOR_SEARCH_CANCEL_STRIDE {
-            checker.note_nodes_scanned(rows_since_check)?;
-            rows_since_check = 0;
-        }
-        let Some(&(node_id, _)) = trusted.get(&hit.row) else {
-            continue;
-        };
-        let node_hit = VectorNodeSearchHit {
-            node_id,
-            distance: hit.distance,
-        };
-        needs_sort |= hits
-            .last()
-            .is_some_and(|previous| compare_node_search_hit(previous, &node_hit).is_gt());
-        hits.push(node_hit);
-    }
-    if rows_since_check > 0 {
-        checker.note_nodes_scanned(rows_since_check)?;
-    }
-    if needs_sort {
-        hits.sort_by(compare_node_search_hit);
-    }
-    Ok(hits)
+    let rows = row_hits
+        .iter()
+        .map(|hit| hit.row)
+        .collect::<RoaringBitmap>();
+    let candidates = graph.node_candidates_from_rows(&rows, "ANN vector index")?;
+    let validated = graph
+        .validate_node_candidates(&candidates)
+        .map_err(|error| GraphError::Inconsistent {
+            reason: format!("fresh ANN candidates failed validation: {error}"),
+        })?;
+    validated.resolve_ann_row_hits(row_hits, checker)
 }
 
 fn rerank_ann_row_candidates(
@@ -544,61 +507,17 @@ fn rerank_ann_row_candidates(
     row_hits: Vec<VectorIndexSearchHit>,
     checker: &CancellationChecker<'_>,
 ) -> Result<Vec<VectorNodeSearchHit>, VectorSearchError> {
-    let trusted = trusted_ann_rows(graph, &row_hits, "ANN rerank")?;
-    let scorer = metric.bind_query(query).map_err(GraphError::from)?;
-    let mut top_k = VectorTopK::new(k);
-    let mut rows_since_check = 0usize;
-    for hit in row_hits {
-        rows_since_check += 1;
-        if rows_since_check >= VECTOR_SEARCH_CANCEL_STRIDE {
-            checker.note_nodes_scanned(rows_since_check)?;
-            rows_since_check = 0;
-        }
-        let Some(&(node_id, row)) = trusted.get(&hit.row) else {
-            continue;
-        };
-        let properties = graph
-            .node_store
-            .properties
-            .get(row.index())
-            .ok_or_else(|| GraphError::Inconsistent {
-                reason: format!("ANN vector candidate row {} has no property row", hit.row),
-            })?;
-        let Some(Value::Vector(vector)) = properties.get(property) else {
-            continue;
-        };
-        let distance = scorer.distance(vector).map_err(GraphError::from)?;
-        top_k.push_distance(node_id, distance);
-    }
-    if rows_since_check > 0 {
-        checker.note_nodes_scanned(rows_since_check)?;
-    }
-    Ok(vector_node_hits(top_k))
-}
-
-fn trusted_ann_rows(
-    graph: &SeleneGraph,
-    row_hits: &[VectorIndexSearchHit],
-    source: &str,
-) -> Result<BTreeMap<u32, (NodeId, NodeRow)>, VectorSearchError> {
     let rows = row_hits
         .iter()
         .map(|hit| hit.row)
         .collect::<RoaringBitmap>();
-    let candidates = graph.node_candidates_from_rows(&rows, source)?;
-    candidates
-        .trusted_rows(graph)
+    let candidates = graph.node_candidates_from_rows(&rows, "ANN rerank")?;
+    let validated = graph
+        .validate_node_candidates(&candidates)
         .map_err(|error| GraphError::Inconsistent {
             reason: format!("fresh ANN candidates failed validation: {error}"),
-        })
-        .map(|rows| rows.map(|(id, row)| (row.get(), (id, row))).collect())
-        .map_err(VectorSearchError::from)
-}
-
-fn compare_node_search_hit(lhs: &VectorNodeSearchHit, rhs: &VectorNodeSearchHit) -> Ordering {
-    lhs.distance
-        .total_cmp(&rhs.distance)
-        .then_with(|| lhs.node_id.cmp(&rhs.node_id))
+        })?;
+    validated.rerank_ann_row_hits(property, query, metric, k, row_hits, checker)
 }
 
 #[cfg(test)]

@@ -49,6 +49,7 @@ pub mod text_search;
 pub mod type_validator;
 mod typed_float_key;
 pub mod typed_index;
+pub(crate) mod validated_candidates;
 pub mod vector_index;
 pub mod vector_search;
 pub mod write_txn;
@@ -123,3 +124,6 @@ mod closed_graph_tests;
 
 #[cfg(test)]
 mod candidate_set_tests;
+
+#[cfg(test)]
+mod candidate_set_validation_tests;

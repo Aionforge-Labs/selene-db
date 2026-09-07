@@ -1,6 +1,6 @@
 //! Candidate-scoped exact JSON search over graph node properties.
 
-use selene_core::{CancellationChecker, DbString, JsonPathSelector, JsonValue, NodeId, Value};
+use selene_core::{CancellationChecker, DbString, JsonPathSelector, JsonValue, NodeId};
 
 use crate::error::{GraphError, GraphResult};
 use crate::graph::SeleneGraph;
@@ -9,7 +9,6 @@ use crate::json_search::{
     JsonPathValueHit, JsonSearchError,
 };
 use crate::shared::SharedGraph;
-use crate::store::NodeRow;
 
 /// Inputs for candidate-scoped JSON path-containment search.
 #[derive(Clone, Copy, Debug)]
@@ -230,29 +229,31 @@ impl SeleneGraph {
             return Ok(Vec::new());
         }
         let candidates = self.bind_node_candidates(candidates.iter().copied())?;
-        let candidates = candidates
-            .trusted_rows(self)
+        let validated = self
+            .validate_node_candidates(&candidates)
             .map_err(|error| GraphError::Inconsistent {
                 reason: format!("fresh JSON candidates failed validation: {error}"),
-            })?
-            .collect::<Vec<_>>();
+            })?;
         let mut hits = Vec::new();
-        let hit_capacity = k.min(candidates.len()).min(JSON_SEARCH_CANCEL_STRIDE);
+        let hit_capacity = k.min(validated.len()).min(JSON_SEARCH_CANCEL_STRIDE);
         let mut candidates_since_check = 0usize;
-        for (node_id, row) in candidates {
+        for &candidate in validated.as_slice() {
             candidates_since_check += 1;
             if candidates_since_check >= JSON_SEARCH_CANCEL_STRIDE {
                 checker.note_nodes_scanned(candidates_since_check)?;
                 candidates_since_check = 0;
             }
-            let Some(value) = self.json_candidate_value(label, property, row)? else {
+            if !candidate.has_label(label)? {
+                continue;
+            }
+            let Some(value) = candidate.json_property(property)? else {
                 continue;
             };
             if let Some(selected) = predicate(value) {
                 if hits.is_empty() {
                     hits.reserve(hit_capacity);
                 }
-                hits.push((node_id, selected));
+                hits.push((candidate.node_id(), selected));
                 if hits.len() == k {
                     break;
                 }
@@ -262,33 +263,6 @@ impl SeleneGraph {
             checker.note_nodes_scanned(candidates_since_check)?;
         }
         Ok(hits)
-    }
-
-    fn json_candidate_value(
-        &self,
-        label: &DbString,
-        property: &DbString,
-        row: NodeRow,
-    ) -> Result<Option<&JsonValue>, JsonSearchError> {
-        let labels =
-            self.node_store
-                .labels
-                .get(row.index())
-                .ok_or_else(|| GraphError::Inconsistent {
-                    reason: format!("JSON candidate row {} has no label row", row.get()),
-                })?;
-        if !labels.contains(label) {
-            return Ok(None);
-        }
-        let properties = self.node_store.properties.get(row.index()).ok_or_else(|| {
-            GraphError::Inconsistent {
-                reason: format!("JSON candidate row {} has no property row", row.get()),
-            }
-        })?;
-        Ok(match properties.get(property) {
-            Some(Value::Json(value)) => Some(value),
-            _ => None,
-        })
     }
 }
 

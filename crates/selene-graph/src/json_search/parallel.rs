@@ -1,11 +1,9 @@
 //! Threshold-gated Rayon helpers for global exact JSON scans.
 
-use selene_core::{CancellationChecker, DbString, JsonPathSelector, JsonValue, NodeId, Value};
+use selene_core::{CancellationChecker, DbString, JsonPathSelector, JsonValue, NodeId};
 
-use crate::error::GraphError;
-use crate::graph::SeleneGraph;
 use crate::parallel_scan::{should_parallelize_scan, try_reduce_chunks};
-use crate::store::NodeRow;
+use crate::validated_candidates::ValidatedCandidateNode;
 
 use super::{
     JSON_SEARCH_PARALLEL_CHUNK_ROWS, JSON_SEARCH_PARALLEL_MIN_ROWS, JsonContainmentHit,
@@ -16,41 +14,21 @@ use super::{
 /// Borrowed inputs shared by every global JSON scan chunk.
 #[derive(Clone, Copy)]
 pub(super) struct JsonScan<'a> {
-    graph: &'a SeleneGraph,
-    label: &'a DbString,
     property: &'a DbString,
 }
 
 impl<'a> JsonScan<'a> {
     /// Build shared scan inputs for a label/property JSON scan.
-    pub(super) fn new(graph: &'a SeleneGraph, label: &'a DbString, property: &'a DbString) -> Self {
-        Self {
-            graph,
-            label,
-            property,
-        }
+    pub(super) fn new(property: &'a DbString) -> Self {
+        Self { property }
     }
 
-    fn value_for_row(
+    fn value_for_candidate(
         self,
-        (node_id, row): (NodeId, NodeRow),
+        candidate: ValidatedCandidateNode<'a>,
     ) -> Result<Option<(NodeId, &'a JsonValue)>, JsonSearchError> {
-        let properties = self
-            .graph
-            .node_store
-            .properties
-            .get(row.index())
-            .ok_or_else(|| GraphError::Inconsistent {
-                reason: format!(
-                    "JSON search row {} for {} has no property row",
-                    row.get(),
-                    self.label.as_str()
-                ),
-            })?;
-        Ok(match properties.get(self.property) {
-            Some(Value::Json(value)) => Some((node_id, value)),
-            _ => None,
-        })
+        let value = candidate.json_property(self.property)?;
+        Ok(value.map(|val| (candidate.node_id(), val)))
     }
 }
 
@@ -64,11 +42,11 @@ pub(super) fn contains_nodes(
     scan: JsonScan<'_>,
     candidate: &JsonValue,
     k: usize,
-    rows: &[(NodeId, NodeRow)],
+    candidates: &[ValidatedCandidateNode<'_>],
     checker: CancellationChecker<'_>,
 ) -> Result<Vec<JsonContainmentHit>, JsonSearchError> {
     let top_k = try_reduce_chunks(
-        rows,
+        candidates,
         JSON_SEARCH_PARALLEL_CHUNK_ROWS,
         checker,
         || JsonContainmentTopK::new(k),
@@ -83,11 +61,11 @@ pub(super) fn path_exists_nodes(
     scan: JsonScan<'_>,
     path: &[JsonPathSelector],
     k: usize,
-    rows: &[(NodeId, NodeRow)],
+    candidates: &[ValidatedCandidateNode<'_>],
     checker: CancellationChecker<'_>,
 ) -> Result<Vec<JsonPathHit>, JsonSearchError> {
     let top_k = try_reduce_chunks(
-        rows,
+        candidates,
         JSON_SEARCH_PARALLEL_CHUNK_ROWS,
         checker,
         || JsonContainmentTopK::new(k),
@@ -103,11 +81,11 @@ pub(super) fn path_contains_nodes(
     path: &[JsonPathSelector],
     candidate: &JsonValue,
     k: usize,
-    rows: &[(NodeId, NodeRow)],
+    candidates: &[ValidatedCandidateNode<'_>],
     checker: CancellationChecker<'_>,
 ) -> Result<Vec<JsonPathContainmentHit>, JsonSearchError> {
     let top_k = try_reduce_chunks(
-        rows,
+        candidates,
         JSON_SEARCH_PARALLEL_CHUNK_ROWS,
         checker,
         || JsonContainmentTopK::new(k),
@@ -122,11 +100,11 @@ pub(super) fn path_value_nodes(
     scan: JsonScan<'_>,
     path: &[JsonPathSelector],
     k: usize,
-    rows: &[(NodeId, NodeRow)],
+    candidates: &[ValidatedCandidateNode<'_>],
     checker: CancellationChecker<'_>,
 ) -> Result<Vec<JsonPathValueHit>, JsonSearchError> {
     let top_k = try_reduce_chunks(
-        rows,
+        candidates,
         JSON_SEARCH_PARALLEL_CHUNK_ROWS,
         checker,
         || JsonPathValueTopK::new(k),
@@ -140,11 +118,11 @@ fn contains_chunk(
     scan: JsonScan<'_>,
     candidate: &JsonValue,
     k: usize,
-    rows: &[(NodeId, NodeRow)],
+    candidates: &[ValidatedCandidateNode<'_>],
 ) -> Result<JsonContainmentTopK, JsonSearchError> {
     let mut top_k = JsonContainmentTopK::new(k);
-    for &entry in rows {
-        let Some((node_id, value)) = scan.value_for_row(entry)? else {
+    for &entry in candidates {
+        let Some((node_id, value)) = scan.value_for_candidate(entry)? else {
             continue;
         };
         if value.contains(candidate) {
@@ -158,11 +136,11 @@ fn path_exists_chunk(
     scan: JsonScan<'_>,
     path: &[JsonPathSelector],
     k: usize,
-    rows: &[(NodeId, NodeRow)],
+    candidates: &[ValidatedCandidateNode<'_>],
 ) -> Result<JsonContainmentTopK, JsonSearchError> {
     let mut top_k = JsonContainmentTopK::new(k);
-    for &entry in rows {
-        let Some((node_id, value)) = scan.value_for_row(entry)? else {
+    for &entry in candidates {
+        let Some((node_id, value)) = scan.value_for_candidate(entry)? else {
             continue;
         };
         if value.path_exists(path) {
@@ -177,11 +155,11 @@ fn path_contains_chunk(
     path: &[JsonPathSelector],
     candidate: &JsonValue,
     k: usize,
-    rows: &[(NodeId, NodeRow)],
+    candidates: &[ValidatedCandidateNode<'_>],
 ) -> Result<JsonContainmentTopK, JsonSearchError> {
     let mut top_k = JsonContainmentTopK::new(k);
-    for &entry in rows {
-        let Some((node_id, value)) = scan.value_for_row(entry)? else {
+    for &entry in candidates {
+        let Some((node_id, value)) = scan.value_for_candidate(entry)? else {
             continue;
         };
         if value.path_contains(path, candidate) {
@@ -195,11 +173,11 @@ fn path_value_chunk(
     scan: JsonScan<'_>,
     path: &[JsonPathSelector],
     k: usize,
-    rows: &[(NodeId, NodeRow)],
+    candidates: &[ValidatedCandidateNode<'_>],
 ) -> Result<JsonPathValueTopK, JsonSearchError> {
     let mut top_k = JsonPathValueTopK::new(k);
-    for &entry in rows {
-        let Some((node_id, value)) = scan.value_for_row(entry)? else {
+    for &entry in candidates {
+        let Some((node_id, value)) = scan.value_for_candidate(entry)? else {
             continue;
         };
         let Some(selected) = value.path_value_ref(path) else {

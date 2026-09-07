@@ -506,7 +506,7 @@ fn same_mutator_deletion_rejects_stale_node_and_edge_entries_before_generation_b
         CandidateSetError::StaleEntry
     );
     assert!(matches!(
-        candidates.trusted_rows(mutator.read()),
+        mutator.read().validate_node_candidates(&candidates),
         Err(CandidateSetError::StaleEntry)
     ));
     assert_eq!(
@@ -517,7 +517,7 @@ fn same_mutator_deletion_rejects_stale_node_and_edge_entries_before_generation_b
         CandidateSetError::StaleEntry
     );
     assert!(matches!(
-        edge_candidates.trusted_rows(mutator.read()),
+        mutator.read().validate_edge_candidates(&edge_candidates),
         Err(CandidateSetError::StaleEntry)
     ));
 }
@@ -700,10 +700,7 @@ fn recovery_remints_independent_layout_and_rebuilds_typed_maps() {
 }
 
 #[test]
-fn typed_rows_drive_mapping_endpoint_delete_and_consistency_paths() {
-    fn node_row_only(_: NodeRow) {}
-    fn edge_row_only(_: EdgeRow) {}
-
+fn validated_candidates_drive_mapping_endpoint_delete_and_consistency_paths() {
     let shared = populated_shared(GraphId::new(56));
     let before = shared.read();
     let nodes = before.live_node_candidates().unwrap();
@@ -713,11 +710,15 @@ fn typed_rows_drive_mapping_endpoint_delete_and_consistency_paths() {
         vec![NodeId::new(1), NodeId::new(2)]
     );
     assert_eq!(edges.iter().collect::<Vec<_>>(), vec![EdgeId::new(1)]);
-    for (_, row) in nodes.trusted_rows(&before).unwrap() {
-        node_row_only(row);
+    let valid_nodes = before.validate_node_candidates(&nodes).unwrap();
+    let valid_edges = before.validate_edge_candidates(&edges).unwrap();
+    assert_eq!(valid_nodes.len(), 2);
+    assert_eq!(valid_edges.len(), 1);
+    for node in valid_nodes.as_slice() {
+        assert!(node.properties().is_ok());
     }
-    for (_, row) in edges.trusted_rows(&before).unwrap() {
-        edge_row_only(row);
+    for edge in valid_edges.as_slice() {
+        assert_eq!(edge.endpoints().unwrap(), (NodeId::new(1), NodeId::new(2)));
     }
     assert_eq!(
         before.edge_endpoints(EdgeId::new(1)),

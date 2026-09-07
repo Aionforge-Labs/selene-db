@@ -12,14 +12,14 @@ use std::collections::{BTreeSet, BinaryHeap};
 use std::time::Duration;
 
 use roaring::RoaringBitmap;
-use selene_core::{CancellationCause, CancellationChecker, DbString, NodeId, Value};
+use selene_core::{CancellationCause, CancellationChecker, DbString, NodeId};
 use smallvec::SmallVec;
 
 use crate::error::{GraphError, GraphResult};
 use crate::graph::SeleneGraph;
 use crate::parallel_scan::{should_parallelize_scan, try_reduce_chunks};
 use crate::shared::SharedGraph;
-use crate::store::NodeRow;
+use crate::validated_candidates::ValidatedCandidateNode;
 use crate::{CandidateSet, Node};
 
 pub(crate) const TEXT_SEARCH_CANCEL_STRIDE: usize = 1024;
@@ -161,7 +161,7 @@ impl SeleneGraph {
         )
     }
 
-    fn exact_text_search_nodes_filtered_checked(
+    pub(crate) fn exact_text_search_nodes_filtered_checked(
         &self,
         label: &DbString,
         property: &DbString,
@@ -178,22 +178,27 @@ impl SeleneGraph {
         if query_terms.is_empty() {
             return Ok(Vec::new());
         }
+        if let Some(allowed) = allowed {
+            self.validate_node_candidates(allowed)
+                .map_err(|error| GraphError::Inconsistent {
+                    reason: format!("allowed text-search candidates failed validation: {error}"),
+                })?;
+        }
         let candidates = self.node_candidates_with_label(label)?;
-        let label_rows = candidates
-            .trusted_rows(self)
+        let validated = self
+            .validate_node_candidates(&candidates)
             .map_err(|error| GraphError::Inconsistent {
                 reason: format!("fresh text-search candidates failed validation: {error}"),
-            })?
-            .collect::<Vec<_>>();
-        if label_rows.is_empty() {
+            })?;
+        if validated.is_empty() {
             return Ok(Vec::new());
         }
 
-        let scan = TextScan::new(self, label, property, &query_terms, allowed);
-        let chunk = if should_parallelize_text_scan(label_rows.len(), k) {
-            exact_text_scan_parallel(scan, &label_rows, checker)?
+        let scan = TextScan::new(property, &query_terms, allowed);
+        let chunk = if should_parallelize_text_scan(validated.len(), k) {
+            exact_text_scan_parallel(scan, validated.as_slice(), checker)?
         } else {
-            exact_text_scan_serial(scan, &label_rows, checker)?
+            exact_text_scan_serial(scan, validated.as_slice(), checker)?
         };
         Ok(rank_text_docs(chunk, k))
     }
@@ -228,8 +233,6 @@ impl SharedGraph {
 
 #[derive(Clone, Copy)]
 struct TextScan<'a> {
-    graph: &'a SeleneGraph,
-    label: &'a DbString,
     property: &'a DbString,
     query_terms: &'a [String],
     allowed: Option<&'a CandidateSet<Node>>,
@@ -237,45 +240,30 @@ struct TextScan<'a> {
 
 impl<'a> TextScan<'a> {
     fn new(
-        graph: &'a SeleneGraph,
-        label: &'a DbString,
         property: &'a DbString,
         query_terms: &'a [String],
         allowed: Option<&'a CandidateSet<Node>>,
     ) -> Self {
         Self {
-            graph,
-            label,
             property,
             query_terms,
             allowed,
         }
     }
 
-    fn document_for_row(
+    fn document_for_candidate(
         self,
-        (node_id, row): (NodeId, NodeRow),
+        candidate: ValidatedCandidateNode<'_>,
     ) -> Result<Option<DocumentStats>, TextSearchError> {
-        let properties = self
-            .graph
-            .node_store
-            .properties
-            .get(row.index())
-            .ok_or_else(|| GraphError::Inconsistent {
-                reason: format!(
-                    "text search row {} for {} has no property row",
-                    row.get(),
-                    self.label.as_str()
-                ),
-            })?;
-        let Some(Value::String(text)) = properties.get(self.property) else {
+        let Some(text) = candidate.string_property(self.property)? else {
             return Ok(None);
         };
         Ok(document_stats(
-            node_id,
+            candidate.node_id(),
             text.as_str(),
             self.query_terms,
-            self.allowed.is_none_or(|allowed| allowed.contains(node_id)),
+            self.allowed
+                .is_none_or(|allowed| allowed.contains(candidate.node_id())),
         ))
     }
 }
@@ -313,11 +301,11 @@ fn should_parallelize_text_scan(row_count: usize, k: usize) -> bool {
 
 fn exact_text_scan_parallel(
     scan: TextScan<'_>,
-    rows: &[(NodeId, NodeRow)],
+    candidates: &[ValidatedCandidateNode<'_>],
     checker: CancellationChecker<'_>,
 ) -> Result<TextScanChunk, TextSearchError> {
     try_reduce_chunks(
-        rows,
+        candidates,
         TEXT_SEARCH_PARALLEL_CHUNK_ROWS,
         checker,
         || TextScanChunk::empty(scan.query_terms.len()),
@@ -328,18 +316,18 @@ fn exact_text_scan_parallel(
 
 fn exact_text_scan_serial(
     scan: TextScan<'_>,
-    rows: &[(NodeId, NodeRow)],
+    candidates: &[ValidatedCandidateNode<'_>],
     checker: CancellationChecker<'_>,
 ) -> Result<TextScanChunk, TextSearchError> {
     let mut chunk = TextScanChunk::empty(scan.query_terms.len());
     let mut rows_since_check = 0usize;
-    for &entry in rows {
+    for &candidate in candidates {
         rows_since_check += 1;
         if rows_since_check >= TEXT_SEARCH_CANCEL_STRIDE {
             checker.note_nodes_scanned(rows_since_check)?;
             rows_since_check = 0;
         }
-        if let Some(doc) = scan.document_for_row(entry)? {
+        if let Some(doc) = scan.document_for_candidate(candidate)? {
             chunk.push(doc);
         }
     }
@@ -351,11 +339,11 @@ fn exact_text_scan_serial(
 
 fn exact_text_scan_chunk(
     scan: TextScan<'_>,
-    rows: &[(NodeId, NodeRow)],
+    candidates: &[ValidatedCandidateNode<'_>],
 ) -> Result<TextScanChunk, TextSearchError> {
     let mut chunk = TextScanChunk::empty(scan.query_terms.len());
-    for &entry in rows {
-        if let Some(doc) = scan.document_for_row(entry)? {
+    for &candidate in candidates {
+        if let Some(doc) = scan.document_for_candidate(candidate)? {
             chunk.push(doc);
         }
     }

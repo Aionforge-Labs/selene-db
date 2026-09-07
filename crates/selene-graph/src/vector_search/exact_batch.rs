@@ -1,6 +1,6 @@
 use selene_core::{
-    CancellationChecker, CoreError, DbString, NodeId, Value, VectorMetric, VectorMetricQuery,
-    VectorTopK, VectorValue, vector_squared_norm,
+    CancellationChecker, CoreError, DbString, NodeId, VectorMetric, VectorMetricQuery, VectorTopK,
+    VectorValue, vector_squared_norm,
 };
 
 use super::{
@@ -10,7 +10,7 @@ use super::{
 use crate::error::GraphError;
 use crate::graph::SeleneGraph;
 use crate::parallel_scan::try_reduce_chunks;
-use crate::store::NodeRow;
+use crate::validated_candidates::ValidatedCandidateNode;
 
 impl SeleneGraph {
     /// Exhaustively rank vector-valued node properties for a batch of queries.
@@ -64,42 +64,50 @@ impl SeleneGraph {
         } else {
             label_candidates
         };
-        let rows = candidates
-            .trusted_rows(self)
+        let validated = self
+            .validate_node_candidates(&candidates)
             .map_err(|error| GraphError::Inconsistent {
                 reason: format!("fresh batch-vector candidates failed validation: {error}"),
-            })?
-            .collect::<Vec<_>>();
+            })?;
         let scorers: Result<Vec<_>, GraphError> = queries
             .iter()
             .map(|query| metric.bind_query(query).map_err(GraphError::from))
             .collect();
         let scorers = scorers?;
-        if should_parallelize_exact_scan(rows.len(), k) {
-            return self
-                .exact_vector_search_batch_parallel(label, property, &scorers, k, &rows, checker);
+        if should_parallelize_exact_scan(validated.len(), k) {
+            return self.exact_vector_search_batch_parallel(
+                property,
+                &scorers,
+                k,
+                validated.as_slice(),
+                checker,
+            );
         }
 
-        let top_ks =
-            self.exact_vector_search_batch_serial(label, property, &scorers, k, &rows, checker)?;
+        let top_ks = self.exact_vector_search_batch_serial(
+            property,
+            &scorers,
+            k,
+            validated.as_slice(),
+            checker,
+        )?;
         Ok(top_ks.into_iter().map(vector_node_hits).collect())
     }
 
     fn exact_vector_search_batch_parallel(
         &self,
-        label: &DbString,
         property: &DbString,
         scorers: &[VectorMetricQuery<'_>],
         k: usize,
-        rows: &[(NodeId, NodeRow)],
+        candidates: &[ValidatedCandidateNode<'_>],
         checker: CancellationChecker<'_>,
     ) -> Result<Vec<Vec<VectorNodeSearchHit>>, VectorSearchError> {
         let top_ks = try_reduce_chunks(
-            rows,
+            candidates,
             VECTOR_SEARCH_PARALLEL_CHUNK_ROWS,
             checker,
             || new_batch_top_ks(scorers.len(), k),
-            |chunk| self.exact_vector_search_batch_chunk(label, property, scorers, k, chunk),
+            |chunk| self.exact_vector_search_batch_chunk(property, scorers, k, chunk),
             merge_batch_top_ks,
         )?;
 
@@ -108,28 +116,26 @@ impl SeleneGraph {
 
     fn exact_vector_search_batch_serial(
         &self,
-        label: &DbString,
         property: &DbString,
         scorers: &[VectorMetricQuery<'_>],
         k: usize,
-        rows: &[(NodeId, NodeRow)],
+        candidates: &[ValidatedCandidateNode<'_>],
         checker: CancellationChecker<'_>,
     ) -> Result<Vec<VectorTopK<NodeId>>, VectorSearchError> {
         let mut top_ks = new_batch_top_ks(scorers.len(), k);
         let use_candidate_norms = uses_cosine_metric(scorers);
         let mut rows_since_check = 0usize;
-        for &entry in rows {
+        for &candidate in candidates {
             rows_since_check += 1;
             if rows_since_check >= VECTOR_SEARCH_CANCEL_STRIDE {
                 checker.note_nodes_scanned(rows_since_check)?;
                 rows_since_check = 0;
             }
             self.push_batch_row(
-                label,
                 property,
                 scorers,
                 &mut top_ks,
-                entry,
+                candidate,
                 use_candidate_norms,
             )?;
         }
@@ -141,21 +147,19 @@ impl SeleneGraph {
 
     fn exact_vector_search_batch_chunk(
         &self,
-        label: &DbString,
         property: &DbString,
         scorers: &[VectorMetricQuery<'_>],
         k: usize,
-        rows: &[(NodeId, NodeRow)],
+        candidates: &[ValidatedCandidateNode<'_>],
     ) -> Result<Vec<VectorTopK<NodeId>>, VectorSearchError> {
         let mut top_ks = new_batch_top_ks(scorers.len(), k);
         let use_candidate_norms = uses_cosine_metric(scorers);
-        for &entry in rows {
+        for &candidate in candidates {
             self.push_batch_row(
-                label,
                 property,
                 scorers,
                 &mut top_ks,
-                entry,
+                candidate,
                 use_candidate_norms,
             )?;
         }
@@ -164,25 +168,16 @@ impl SeleneGraph {
 
     fn push_batch_row(
         &self,
-        label: &DbString,
         property: &DbString,
         scorers: &[VectorMetricQuery<'_>],
         top_ks: &mut [VectorTopK<NodeId>],
-        (node_id, row): (NodeId, NodeRow),
+        candidate: ValidatedCandidateNode<'_>,
         use_candidate_norms: bool,
     ) -> Result<(), VectorSearchError> {
-        let properties = self.node_store.properties.get(row.index()).ok_or_else(|| {
-            GraphError::Inconsistent {
-                reason: format!(
-                    "vector search row {} for {} has no property row",
-                    row.get(),
-                    label.as_str()
-                ),
-            }
-        })?;
-        let Some(Value::Vector(vector)) = properties.get(property) else {
+        let Some(vector) = candidate.vector_property(property)? else {
             return Ok(());
         };
+        let node_id = candidate.node_id();
         if use_candidate_norms {
             let candidate_squared_norm = vector_squared_norm(vector);
             for (scorer, top_k) in scorers.iter().zip(top_ks) {

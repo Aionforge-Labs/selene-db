@@ -7,9 +7,8 @@ use crate::error::GraphError;
 use crate::graph::SeleneGraph;
 
 use super::{
-    ApproximateVectorSearchOptions, VECTOR_SEARCH_CANCEL_STRIDE, VectorCandidateSet,
-    VectorNodeSearchHit, VectorSearchError, approx_batch, rerank_ann_row_candidates,
-    turbo_quant_exact,
+    ApproximateVectorSearchOptions, VectorCandidateSet, VectorNodeSearchHit, VectorSearchError,
+    approx_batch, rerank_ann_row_candidates, turbo_quant_exact,
 };
 
 impl SeleneGraph {
@@ -233,28 +232,11 @@ impl SeleneGraph {
         checker: &CancellationChecker<'_>,
     ) -> Result<RoaringBitmap, VectorSearchError> {
         let candidates = self.bind_vector_candidate_set(candidates)?;
-        let candidates = candidates
-            .trusted_rows(self)
+        let validated = self
+            .validate_node_candidates(&candidates)
             .map_err(|error| GraphError::Inconsistent {
                 reason: format!("bound TurboQuant candidates failed validation: {error}"),
-            })?
-            .collect::<Vec<_>>();
-        let mut rows = RoaringBitmap::new();
-        let mut candidates_since_check = 0usize;
-        for (_, row) in candidates {
-            candidates_since_check += 1;
-            if candidates_since_check >= VECTOR_SEARCH_CANCEL_STRIDE {
-                checker.note_nodes_scanned(candidates_since_check)?;
-                candidates_since_check = 0;
-            }
-            let raw_row = row.get();
-            if index_rows.contains(raw_row) {
-                rows.insert(raw_row);
-            }
-        }
-        if candidates_since_check > 0 {
-            checker.note_nodes_scanned(candidates_since_check)?;
-        }
-        Ok(rows)
+            })?;
+        validated.filter_index_rows(index_rows, checker)
     }
 }
