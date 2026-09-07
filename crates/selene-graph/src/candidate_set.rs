@@ -8,6 +8,10 @@ use selene_core::{EdgeId, GraphId, NodeId};
 use crate::error::{CandidateSetError, CandidateSetResult, GraphError, GraphResult};
 use crate::graph::SeleneGraph;
 use crate::store::{EdgeRow, NodeRow};
+use crate::validated_candidates::{
+    ValidatedCandidateEdge, ValidatedCandidateNode, ValidatedEdgeCandidates,
+    ValidatedNodeCandidates,
+};
 use crate::vector_search::VectorCandidateSet;
 
 mod sealed {
@@ -240,7 +244,7 @@ impl<K: CandidateKind> CandidateSet<K> {
         Ok(())
     }
 
-    fn validate_for(&self, graph: &SeleneGraph) -> CandidateSetResult<()> {
+    pub(crate) fn validate_for(&self, graph: &SeleneGraph) -> CandidateSetResult<()> {
         self.validate_identity_for(graph)?;
         if !self
             .entries
@@ -328,20 +332,6 @@ impl CandidateSet<Node> {
         )
     }
 
-    // M04-PR02 Part 3 deletes this minimum trusted lower-row bridge after all
-    // downstream consumers move to typed candidates or stable-ID resolvers.
-    #[allow(dead_code)]
-    pub(crate) fn trusted_rows(
-        &self,
-        graph: &SeleneGraph,
-    ) -> CandidateSetResult<impl Iterator<Item = (NodeId, NodeRow)> + '_> {
-        self.validate_for(graph)?;
-        Ok(self
-            .entries
-            .iter()
-            .map(|(id, row)| (*id, NodeRow::new(row.raw))))
-    }
-
     #[cfg(test)]
     pub(crate) fn physical_layout_weak(&self) -> std::sync::Weak<LayoutToken> {
         Arc::downgrade(&self.physical_layout)
@@ -370,19 +360,6 @@ impl CandidateSet<Edge> {
             entries,
             edge_entry_is_current,
         )
-    }
-
-    // M04-PR02 Part 3 deletion owner: see the node-side bridge above.
-    #[allow(dead_code)]
-    pub(crate) fn trusted_rows(
-        &self,
-        graph: &SeleneGraph,
-    ) -> CandidateSetResult<impl Iterator<Item = (EdgeId, EdgeRow)> + '_> {
-        self.validate_for(graph)?;
-        Ok(self
-            .entries
-            .iter()
-            .map(|(id, row)| (*id, EdgeRow::new(row.raw))))
     }
 }
 
@@ -513,6 +490,49 @@ impl SeleneGraph {
         left.validate_for(self)?;
         right.validate_for(self)?;
         Ok(left.difference(right))
+    }
+
+    /// Validate a candidate node set against this immutable graph snapshot.
+    ///
+    /// Verifies graph ID, generation, physical layout token, workspace
+    /// binding token, and current liveness pairing for all entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CandidateSetError`] if validation fails.
+    pub(crate) fn validate_node_candidates<'a>(
+        &'a self,
+        candidates: &CandidateSet<Node>,
+    ) -> CandidateSetResult<ValidatedNodeCandidates<'a>> {
+        candidates.validate_for(self)?;
+        let items: Vec<ValidatedCandidateNode<'a>> = candidates
+            .entries
+            .iter()
+            .map(|(id, row)| ValidatedCandidateNode::new(self, *id, NodeRow::new(row.raw)))
+            .collect();
+        Ok(ValidatedNodeCandidates::new(self, items.into()))
+    }
+
+    /// Validate a candidate edge set against this immutable graph snapshot.
+    ///
+    /// Verifies graph ID, generation, physical layout token, workspace
+    /// binding token, and current liveness pairing for all entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CandidateSetError`] if validation fails.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn validate_edge_candidates<'a>(
+        &'a self,
+        candidates: &CandidateSet<Edge>,
+    ) -> CandidateSetResult<ValidatedEdgeCandidates<'a>> {
+        candidates.validate_for(self)?;
+        let items: Vec<ValidatedCandidateEdge<'a>> = candidates
+            .entries
+            .iter()
+            .map(|(id, row)| ValidatedCandidateEdge::new(self, *id, EdgeRow::new(row.raw)))
+            .collect();
+        Ok(ValidatedEdgeCandidates::new(self, items.into()))
     }
 
     pub(crate) fn remint_layout(&mut self) {

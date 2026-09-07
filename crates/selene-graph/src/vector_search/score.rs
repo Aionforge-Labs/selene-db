@@ -1,12 +1,12 @@
 use selene_core::{
-    CancellationChecker, CoreError, DbString, NodeId, PropertyMap, Value, VectorMetric,
-    VectorMetricQuery, VectorTopK, VectorValue,
+    CancellationChecker, CoreError, DbString, NodeId, VectorMetric, VectorMetricQuery, VectorTopK,
+    VectorValue,
 };
 
 use crate::error::{GraphError, GraphResult};
 use crate::graph::SeleneGraph;
 use crate::parallel_scan::{should_parallelize_scan, try_reduce_chunks};
-use crate::store::NodeRow;
+use crate::validated_candidates::ValidatedCandidateNode;
 use crate::{CandidateSet, Node};
 
 use super::{
@@ -71,7 +71,7 @@ impl SeleneGraph {
         }
 
         let candidates = self.bind_node_candidates(candidates.iter().copied())?;
-        self.score_vector_candidate_set_after_initial_check(
+        self.score_vector_candidate_set_bound_checked(
             property,
             query,
             &candidates,
@@ -121,7 +121,7 @@ impl SeleneGraph {
             return Ok(Vec::new());
         }
         let candidates = self.bind_vector_candidate_set(candidates)?;
-        self.score_vector_candidate_set_after_initial_check(
+        self.score_vector_candidate_set_bound_checked(
             property,
             query,
             &candidates,
@@ -131,7 +131,7 @@ impl SeleneGraph {
         )
     }
 
-    fn score_vector_candidate_set_after_initial_check(
+    pub(crate) fn score_vector_candidate_set_bound_checked(
         &self,
         property: &DbString,
         query: &VectorValue,
@@ -143,41 +143,45 @@ impl SeleneGraph {
         checker.check()?;
 
         let scorer = metric.bind_query(query).map_err(GraphError::from)?;
-        let rows = candidates
-            .trusted_rows(self)
-            .map_err(|error| GraphError::Inconsistent {
+        let validated = self.validate_node_candidates(candidates).map_err(|error| {
+            GraphError::Inconsistent {
                 reason: format!("bound vector candidates failed validation: {error}"),
-            })?
-            .collect::<Vec<_>>();
-        if should_parallelize_candidate_scoring(rows.len(), k) {
-            return self.score_vector_candidate_set_parallel(property, scorer, &rows, k, checker);
+            }
+        })?;
+        if should_parallelize_candidate_scoring(validated.len(), k) {
+            return self.score_vector_candidate_set_parallel(
+                property,
+                scorer,
+                validated.as_slice(),
+                k,
+                checker,
+            );
         }
 
-        self.score_vector_candidate_set_serial(property, scorer, &rows, k, checker)
+        self.score_vector_candidate_set_serial(property, scorer, validated.as_slice(), k, checker)
     }
 
     pub(super) fn score_vector_candidate_set_serial(
         &self,
         property: &DbString,
         scorer: VectorMetricQuery<'_>,
-        candidates: &[(NodeId, NodeRow)],
+        candidates: &[ValidatedCandidateNode<'_>],
         k: usize,
         checker: CancellationChecker<'_>,
     ) -> Result<Vec<VectorNodeSearchHit>, VectorSearchError> {
         let mut top_k = VectorTopK::new(k);
         let mut candidates_since_check = 0usize;
-        for &(node_id, row) in candidates {
+        for &candidate in candidates {
             candidates_since_check += 1;
             if candidates_since_check >= VECTOR_SEARCH_CANCEL_STRIDE {
                 checker.note_nodes_scanned(candidates_since_check)?;
                 candidates_since_check = 0;
             }
-            let properties = self.vector_candidate_properties(row)?;
-            let Some(Value::Vector(vector)) = properties.get(property) else {
+            let Some(vector) = candidate.vector_property(property)? else {
                 continue;
             };
             let distance = scorer.distance(vector).map_err(GraphError::from)?;
-            top_k.push_distance(node_id, distance);
+            top_k.push_distance(candidate.node_id(), distance);
         }
         if candidates_since_check > 0 {
             checker.note_nodes_scanned(candidates_since_check)?;
@@ -190,7 +194,7 @@ impl SeleneGraph {
         &self,
         property: &DbString,
         scorer: VectorMetricQuery<'_>,
-        candidates: &[(NodeId, NodeRow)],
+        candidates: &[ValidatedCandidateNode<'_>],
         k: usize,
         checker: CancellationChecker<'_>,
     ) -> Result<Vec<VectorNodeSearchHit>, VectorSearchError> {
@@ -210,34 +214,18 @@ impl SeleneGraph {
         &self,
         property: &DbString,
         scorer: VectorMetricQuery<'_>,
-        candidates: &[(NodeId, NodeRow)],
+        candidates: &[ValidatedCandidateNode<'_>],
         k: usize,
     ) -> Result<VectorTopK<NodeId>, VectorSearchError> {
         let mut top_k = VectorTopK::new(k);
-        for &(node_id, row) in candidates {
-            let properties = self.vector_candidate_properties(row)?;
-            let Some(Value::Vector(vector)) = properties.get(property) else {
+        for &candidate in candidates {
+            let Some(vector) = candidate.vector_property(property)? else {
                 continue;
             };
             let distance = scorer.distance(vector).map_err(GraphError::from)?;
-            top_k.push_distance(node_id, distance);
+            top_k.push_distance(candidate.node_id(), distance);
         }
         Ok(top_k)
-    }
-
-    pub(super) fn vector_candidate_properties(
-        &self,
-        row: NodeRow,
-    ) -> Result<&PropertyMap, VectorSearchError> {
-        self.node_store.properties.get(row.index()).ok_or_else(|| {
-            GraphError::Inconsistent {
-                reason: format!(
-                    "trusted vector candidate row {} has no property row",
-                    row.get()
-                ),
-            }
-            .into()
-        })
     }
 
     /// Score one explicit candidate set for each query vector.

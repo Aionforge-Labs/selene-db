@@ -14,7 +14,7 @@ use roaring::RoaringBitmap;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
-use selene_core::{CancellationChecker, DbString, NodeId, Value};
+use selene_core::{CancellationChecker, DbString, NodeId};
 
 use crate::error::{GraphError, GraphResult};
 use crate::graph::SeleneGraph;
@@ -32,7 +32,7 @@ mod candidate;
 mod maintenance;
 #[path = "text_index/postings.rs"]
 mod postings;
-use builder::TextIndexBuilder;
+pub(crate) use builder::TextIndexBuilder;
 use postings::{remove_posting, upsert_posting};
 
 type QueryDocumentFrequencies = SmallVec<[u32; 4]>;
@@ -72,37 +72,25 @@ impl TextIndex {
     /// without a resolvable node id or property row.
     pub fn build(graph: &SeleneGraph, label: DbString, property: DbString) -> GraphResult<Self> {
         let candidates = graph.node_candidates_with_label(&label)?;
-        let candidates = candidates
-            .trusted_rows(graph)
+        let validated = graph
+            .validate_node_candidates(&candidates)
             .map_err(|error| GraphError::Inconsistent {
                 reason: format!("fresh text-index candidates failed validation: {error}"),
-            })?
-            .collect::<Vec<_>>();
-        if candidates.is_empty() {
+            })?;
+        if validated.is_empty() {
             return Ok(TextIndexBuilder::empty(label, property).finish());
         }
         let mut index = TextIndexBuilder::with_document_capacity(
             label.clone(),
             property.clone(),
-            candidates.len(),
+            validated.len(),
         );
 
-        for (node_id, row) in candidates {
-            let properties = graph
-                .node_store
-                .properties
-                .get(row.index())
-                .ok_or_else(|| GraphError::Inconsistent {
-                    reason: format!(
-                        "text index row {} for {} has no property row",
-                        row.get(),
-                        label.as_str()
-                    ),
-                })?;
-            let Some(Value::String(text)) = properties.get(&property) else {
+        for candidate in validated.as_slice() {
+            let Some(text) = candidate.string_property(&property)? else {
                 continue;
             };
-            index.insert_document(row.get(), node_id, text.as_str());
+            candidate.insert_into_text_index(&mut index, text.as_str());
         }
         Ok(index.finish())
     }
