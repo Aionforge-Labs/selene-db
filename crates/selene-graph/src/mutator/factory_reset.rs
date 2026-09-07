@@ -20,8 +20,7 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
     /// one bound graph. Behaviour and invariants:
     ///
     /// * **Wipes ALL rows, including untyped ones.** Live rows are enumerated
-    ///   from the two alive [`roaring::RoaringBitmap`]s
-    ///   ([`crate::SeleneGraph::live_nodes`] / [`crate::SeleneGraph::live_edges`]),
+    ///   from the two alive [`roaring::RoaringBitmap`]s in the node and edge stores,
     ///   **never** per label — so nodes/edges whose labels are not declared
     ///   types (legal in an open GG01 graph) are removed too. A per-type
     ///   truncate would silently miss them.

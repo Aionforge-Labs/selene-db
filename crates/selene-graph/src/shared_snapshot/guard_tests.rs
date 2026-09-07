@@ -374,17 +374,20 @@ fn write_snapshot_rejects_a_compaction_published_mid_encode() {
     *injector.graph.lock().unwrap() = Some(Arc::downgrade(&shared));
 
     // Compaction only republishes when there is a dead row to reclaim.
-    commit_node(&shared, "wsnap.compact");
-    let victim = shared.read().live_nodes().iter().next().unwrap();
-    let mut txn = shared.begin_write();
-    {
-        let mut mutator = txn.mutator();
-        let id = shared
-            .read()
-            .node_id_for_row(crate::RowIndex::new(victim))
+    let victim = {
+        let mut txn = shared.begin_write();
+        let id = txn
+            .mutator()
+            .create_node(
+                LabelSet::single(db_string("wsnap.compact").unwrap()),
+                PropertyMap::new(),
+            )
             .unwrap();
-        mutator.delete_node(id).unwrap();
-    }
+        txn.commit().unwrap();
+        id
+    };
+    let mut txn = shared.begin_write();
+    txn.mutator().delete_node(victim).unwrap();
     txn.commit().unwrap();
 
     let generation_before = shared.read().meta.generation;

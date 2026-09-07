@@ -131,7 +131,7 @@ pub(super) fn inputs() -> Vec<CorpusInput> {
                     None,
                 ),
                 (
-                    "node_id_for_row converts storage row indexes back to stable NodeId values.",
+                    "CandidateSet yields stable NodeId values directly without storage row mapping.",
                     Some("code-rowid-map"),
                 ),
                 (
@@ -199,7 +199,7 @@ pub(super) fn inputs() -> Vec<CorpusInput> {
         ),
         query(
             Topic::Code,
-            "Which helper turns internal storage slots into external node ids?",
+            "Which abstraction yields stable NodeId values without storage row mapping?",
             "code-rowid-map",
         ),
         query(

@@ -124,12 +124,14 @@ pub(super) fn bench_ann_property_filter(c: &mut Criterion) {
     for scale in vector_scan_scales() {
         let fixture = AnnPropertyFilterFixture::build(scale, ANN_PROPERTY_FILTER_DIMENSION);
         let memory_suffix = fixture.memory_id_suffix();
-        group.throughput(Throughput::Elements(fixture.allowed_rows().len()));
+        group.throughput(Throughput::Elements(
+            fixture.allowed_candidates().len() as u64
+        ));
         group.bench_with_input(
             BenchmarkId::new(
                 format!(
                     "hnsw_cosine_namespace_sparse_d128_k{ANN_PROPERTY_FILTER_K}_ef{ANN_PROPERTY_FILTER_EF_SEARCH}_rows{}_{}",
-                    compact_count(fixture.allowed_rows().len()),
+                    compact_count(fixture.allowed_candidates().len() as u64),
                     memory_suffix
                 ),
                 fixture.scale(),
@@ -140,11 +142,11 @@ pub(super) fn bench_ann_property_filter(c: &mut Criterion) {
                 b.iter(|| {
                     let hits = fixture
                         .graph()
-                        .approximate_vector_search_nodes_in_rows_checked(
+                        .approximate_vector_search_nodes_in_candidates_checked(
                             fixture.label(),
                             fixture.embedding_key(),
                             fixture.query(),
-                            fixture.allowed_rows(),
+                            fixture.allowed_candidates(),
                             ApproximateVectorSearchOptions::new(
                                 VectorMetric::Cosine,
                                 ANN_PROPERTY_FILTER_K,
@@ -264,7 +266,7 @@ struct AnnPropertyFilterFixture {
     label: DbString,
     embedding_key: DbString,
     query: VectorValue,
-    allowed_rows: roaring::RoaringBitmap,
+    allowed_candidates: selene_graph::CandidateSet<selene_graph::Node>,
 }
 
 impl AnnPropertyFilterFixture {
@@ -307,12 +309,13 @@ impl AnnPropertyFilterFixture {
         }
         let graph = shared.read().as_ref().clone();
         let filter_value = Value::String(namespace_value(filter_bucket));
-        let allowed_rows = graph
-            .nodes_with_property_any(&label, &namespace_key, &[filter_value])
-            .expect("bench namespace index is available");
+        let allowed_candidates = graph
+            .node_candidates_with_property_any(&label, &namespace_key, &[filter_value])
+            .expect("bench namespace index is available")
+            .expect("bench namespace index admits filter");
         assert!(
-            !allowed_rows.is_empty(),
-            "bench namespace filter should admit at least one row"
+            !allowed_candidates.is_empty(),
+            "bench namespace filter should admit at least one candidate"
         );
         Self {
             scale,
@@ -320,7 +323,7 @@ impl AnnPropertyFilterFixture {
             label,
             embedding_key,
             query: vector_value(0, dimension),
-            allowed_rows,
+            allowed_candidates,
         }
     }
 
@@ -344,8 +347,8 @@ impl AnnPropertyFilterFixture {
         &self.query
     }
 
-    const fn allowed_rows(&self) -> &roaring::RoaringBitmap {
-        &self.allowed_rows
+    fn allowed_candidates(&self) -> &selene_graph::CandidateSet<selene_graph::Node> {
+        &self.allowed_candidates
     }
 
     fn memory_id_suffix(&self) -> String {

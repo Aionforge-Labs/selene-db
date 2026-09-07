@@ -338,7 +338,7 @@ fn agent_memory_inputs() -> Vec<CorpusInput> {
             &[
                 "The benchmark runner serializes Criterion invocations by bench name.",
                 "VectorCandidateSet intersection uses sorted NodeId arrays.",
-                "RowIndex values must be mapped back through node_id_for_row.",
+                "Candidate sets yield stable node ids without row index mapping.",
                 "The local oMLX HTTP client posts JSON without adding async dependencies.",
                 "Criterion benchmark IDs include quality suffixes for comparison.",
                 "Graph fixtures build HNSW indexes before committing the write transaction.",
@@ -391,7 +391,7 @@ fn agent_memory_inputs() -> Vec<CorpusInput> {
         ),
         CorpusInput::query(
             Topic::Code,
-            "Which code path converts row indexes back to stable node ids?",
+            "Which code path yields stable node ids from candidate sets?",
             None,
         ),
     ]);

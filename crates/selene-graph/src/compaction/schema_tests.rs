@@ -14,7 +14,7 @@ use selene_core::{
 use smallvec::{SmallVec, smallvec};
 
 use super::compact_core;
-use crate::store::RowIndex;
+use crate::store::NodeRow;
 use crate::{
     EdgeEndpointDef, EdgeTypeDef, GraphTypeDef, NodeTypeDef, PropertyTypeDef, SeleneGraph,
     SharedGraph, TypedIndexKind, ValidationMode,
@@ -71,12 +71,9 @@ fn compaction_rebuilds_property_index_dropping_reclaimed_rows() {
 
     let resolve = |graph: &SeleneGraph, v: i64| -> Vec<NodeId> {
         graph
-            .nodes_with_property_eq(&la, &name, &Value::Int(v))
-            .map(|rows| {
-                rows.iter()
-                    .map(|r| graph.node_id_for_row(RowIndex::new(r)).unwrap())
-                    .collect()
-            })
+            .node_candidates_with_property_eq(&la, &name, &Value::Int(v))
+            .unwrap()
+            .map(|candidates| candidates.iter().collect())
             .unwrap_or_default()
     };
 
@@ -164,7 +161,7 @@ fn compaction_rebuilds_composite_property_index() {
             .map(|bitmap| {
                 bitmap
                     .iter()
-                    .map(|row| graph.node_id_for_row(RowIndex::new(row)).unwrap())
+                    .map(|row| graph.node_id_for_node_row(NodeRow::new(row)).unwrap())
                     .collect()
             })
             .unwrap_or_default()
@@ -296,5 +293,5 @@ fn compaction_preserves_closed_graph_binding_and_revalidates() {
     let g = republished.read();
     assert!(g.is_node_alive(NodeId::new(1)));
     assert!(g.is_node_alive(NodeId::new(3)));
-    assert!(g.row_for_node_id(NodeId::new(2)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(2)).is_none());
 }

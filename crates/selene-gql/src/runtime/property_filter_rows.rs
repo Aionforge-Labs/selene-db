@@ -18,79 +18,80 @@
 //! And the scan walks the label's own row bitmap rather than every live row, so
 //! its cost tracks the label rather than the graph.
 
-use roaring::RoaringBitmap;
 use selene_core::{DbString, Value};
-use selene_graph::{PropertyIndexEntry, SeleneGraph};
+use selene_graph::{CandidateSet, Edge, Node, PropertyIndexEntry, SeleneGraph};
 
 use super::value_compare;
 
-/// Node rows of `label` whose `property` equals any of `values`.
+/// Node candidates of `label` whose `property` equals any of `values`.
 ///
 /// `None` means no index is registered for `(label, property)`, or a supplied
 /// value is of a kind that index could never key — the two argument errors the
 /// procedures report. It never means "the index is incomplete"; that case
 /// scans.
-pub(crate) fn node_rows_with_property_any(
+pub(crate) fn node_candidates_with_property_any(
     snapshot: &SeleneGraph,
     label: &DbString,
     property: &DbString,
     values: &[Value],
-) -> Option<RoaringBitmap> {
+) -> Result<Option<CandidateSet<Node>>, selene_graph::GraphError> {
     let entry = usable_entry(
         snapshot
             .property_index
             .get(&(label.clone(), property.clone())),
         values,
-    )?;
-    if entry.is_complete() {
-        return snapshot.nodes_with_property_any(label, property, values);
-    }
-    let mut rows = RoaringBitmap::new();
-    let Some(labelled) = snapshot.nodes_with_label(label) else {
-        return Some(rows);
+    );
+    let Some(entry) = entry else {
+        return Ok(None);
     };
-    for row in labelled {
-        let Some(properties) = snapshot.node_store.properties.get(row as usize) else {
+    if entry.is_complete() {
+        return snapshot.node_candidates_with_property_any(label, property, values);
+    }
+    let labelled = snapshot.node_candidates_with_label(label)?;
+    let mut matching = Vec::new();
+    for id in labelled.iter() {
+        let Some(properties) = snapshot.node_properties(id) else {
             continue;
         };
         if matches_any(properties.get(property), values) {
-            rows.insert(row);
+            matching.push(id);
         }
     }
-    Some(rows)
+    snapshot.bind_node_candidates(matching).map(Some)
 }
 
-/// Edge rows of `label` whose `property` equals any of `values`.
+/// Edge candidates of `label` whose `property` equals any of `values`.
 ///
-/// Mirrors [`node_rows_with_property_any`] over the edge store.
-pub(crate) fn edge_rows_with_property_any(
+/// Mirrors [`node_candidates_with_property_any`] over the edge store.
+pub(crate) fn edge_candidates_with_property_any(
     snapshot: &SeleneGraph,
     label: &DbString,
     property: &DbString,
     values: &[Value],
-) -> Option<RoaringBitmap> {
+) -> Result<Option<CandidateSet<Edge>>, selene_graph::GraphError> {
     let entry = usable_entry(
         snapshot
             .edge_property_index
             .get(&(label.clone(), property.clone())),
         values,
-    )?;
-    if entry.is_complete() {
-        return snapshot.edges_with_property_any(label, property, values);
-    }
-    let mut rows = RoaringBitmap::new();
-    let Some(labelled) = snapshot.edges_with_label(label) else {
-        return Some(rows);
+    );
+    let Some(entry) = entry else {
+        return Ok(None);
     };
-    for row in labelled {
-        let Some(properties) = snapshot.edge_store.properties.get(row as usize) else {
+    if entry.is_complete() {
+        return snapshot.edge_candidates_with_property_any(label, property, values);
+    }
+    let labelled = snapshot.edge_candidates_with_label(label)?;
+    let mut matching = Vec::new();
+    for id in labelled.iter() {
+        let Some(properties) = snapshot.edge_properties(id) else {
             continue;
         };
         if matches_any(properties.get(property), values) {
-            rows.insert(row);
+            matching.push(id);
         }
     }
-    Some(rows)
+    snapshot.bind_edge_candidates(matching).map(Some)
 }
 
 /// The registered entry, if one exists and can key every supplied value.

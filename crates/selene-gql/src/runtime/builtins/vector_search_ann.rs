@@ -10,7 +10,7 @@ use selene_graph::ApproximateVectorSearchOptions;
 
 use super::meta::{StaticOutputColumn, StaticParameter};
 use super::retrieval_filter::{
-    append_edge_filter_parameters, append_node_filter_parameters, optional_filter_rows,
+    append_edge_filter_parameters, append_node_filter_parameters, optional_filter_candidates,
 };
 use super::vector_common::{
     BatchMismatch, approximate_vector_search_error, cardinality_arg, invalid_arg, query_arg,
@@ -96,13 +96,13 @@ pub(super) fn execute(
         .unwrap_or_else(|| {
             default_search_width(ctx.snapshot(), &label, &property, query.dimension(), metric)
         });
-    let filter_rows = if args.len() >= 8 {
+    let filter_candidates = if args.len() >= 8 {
         let edge_filter = if args.len() == 12 {
             Some((&args[8], &args[9], &args[10], &args[11]))
         } else {
             None
         };
-        optional_filter_rows(
+        optional_filter_candidates(
             PROC_NAME,
             ctx.snapshot(),
             &label,
@@ -115,13 +115,13 @@ pub(super) fn execute(
     };
 
     let options = ApproximateVectorSearchOptions::new(metric, k, ef_search);
-    let hits = if let Some(rows) = &filter_rows {
+    let hits = if let Some(candidates) = &filter_candidates {
         ctx.snapshot()
-            .approximate_vector_search_nodes_in_rows_checked(
+            .approximate_vector_search_nodes_in_candidates_checked(
                 &label,
                 &property,
                 &query,
-                rows,
+                candidates,
                 options,
                 ctx.cancellation_checker(),
             )

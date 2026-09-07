@@ -10,7 +10,6 @@ use selene_core::{Change, EdgeId, GraphId, NodeId, PropertyMap, Value, db_string
 
 use super::*;
 use crate::SharedGraph;
-use crate::store::RowIndex;
 
 fn prop(key: &str, value: Value) -> PropertyMap {
     PropertyMap::from_pairs([(db_string(key).unwrap(), value)]).unwrap()
@@ -130,7 +129,7 @@ fn compacted_fixture_with_non_identity_ids() -> (
     {
         let g = shared.read();
         let row = g
-            .row_for_node_id(target_a)
+            .node_row_for_id(target_a)
             .expect("target_a survives compaction");
         assert_ne!(
             u64::from(row.get()) + 1,
@@ -152,17 +151,8 @@ fn compacted_fixture_with_non_identity_ids() -> (
 
 fn live_node_ids_with_label(graph: &crate::SeleneGraph, label: &DbString) -> Vec<NodeId> {
     graph
-        .nodes_with_label(label)
-        .map(|bitmap| {
-            bitmap
-                .iter()
-                .map(|row| {
-                    graph
-                        .node_id_for_row(RowIndex::new(row))
-                        .expect("live label-index row has external id")
-                })
-                .collect()
-        })
+        .node_candidates_with_label(label)
+        .map(|candidates| candidates.iter().collect())
         .unwrap_or_default()
 }
 
@@ -265,7 +255,7 @@ fn truncate_node_type_after_compaction_uses_external_id_maps() {
     assert!(!g.is_node_alive(target_a));
     assert!(!g.is_node_alive(target_b));
     assert!(
-        g.row_for_node_id(target_a).is_some(),
+        g.node_row_for_id(target_a).is_some(),
         "truncate leaves the deleted id mapped to its dead row until compaction"
     );
     assert!(

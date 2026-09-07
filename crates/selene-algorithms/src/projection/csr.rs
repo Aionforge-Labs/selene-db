@@ -17,7 +17,6 @@
 //! graphs approaching this bound are out of scope for the current in-memory
 //! algorithm surface — distributed algorithms handle them.
 
-use roaring::RoaringBitmap;
 use selene_core::{DbString, EdgeId, NodeId, Value};
 use selene_graph::SeleneGraph;
 
@@ -86,21 +85,10 @@ impl ProjCsr {
 /// Build the outgoing-direction CSR for a projection.
 pub(crate) fn build_csr_out(
     snapshot: &SeleneGraph,
-    nodes: &RoaringBitmap,
     row_index: &RowIndex,
     edge_labels: &[DbString],
     weight_property: Option<&DbString>,
 ) -> ProjCsr {
-    // Invariant: `row_index` is built from exactly this `nodes` bitmap (see
-    // `GraphProjection::build`), so every row enumerated below has a dense
-    // index. Size offsets to dense (live-node) count + 1 so
-    // offsets[dense]..offsets[dense+1] is always a valid range; the +1 slot
-    // holds the running total after the prefix sum (sentinel).
-    debug_assert_eq!(
-        nodes.len() as usize,
-        row_index.len(),
-        "CSR row_index must be built from the same nodes bitmap"
-    );
     let dense_n = row_index.len();
     let mut offsets = vec![0u32; dense_n + 1];
 
@@ -111,11 +99,7 @@ pub(crate) fn build_csr_out(
     // by `weight_property.is_some()`.
 
     // Pass 1: count qualifying neighbors per dense index.
-    for row_u32 in nodes {
-        let dense = row_index
-            .dense_of(row_u32)
-            .expect("projection row has a dense index") as usize;
-        let nid = row_index.node_id_of(dense as u32);
+    for (dense, nid) in row_index.iter_node_ids().enumerate() {
         let Some(entry) = snapshot.outgoing_edges(nid) else {
             continue;
         };
@@ -157,11 +141,7 @@ pub(crate) fn build_csr_out(
     // build-time-only allocation, trivial next to the `neighbors` Vec.
     let mut cursor = offsets.clone();
 
-    for row_u32 in nodes {
-        let dense = row_index
-            .dense_of(row_u32)
-            .expect("projection row has a dense index") as usize;
-        let nid = row_index.node_id_of(dense as u32);
+    for (dense, nid) in row_index.iter_node_ids().enumerate() {
         let Some(entry) = snapshot.outgoing_edges(nid) else {
             continue;
         };

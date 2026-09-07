@@ -133,6 +133,28 @@ impl SeleneGraph {
             .transpose()
     }
 
+    /// Build typed node candidates matching a composite property index probe.
+    pub fn node_candidates_with_composite_key(
+        &self,
+        label: &DbString,
+        properties: &[DbString],
+        values: &[Value],
+    ) -> GraphResult<Option<CandidateSet<Node>>> {
+        let Some(index) = self.composite_property_index_for(label, properties) else {
+            return Ok(None);
+        };
+        let refs: Vec<&Value> = values.iter().collect();
+        let Ok(key) = index.key_from_values(&refs) else {
+            return Ok(None);
+        };
+        match index.lookup_key(&key) {
+            Some(rows) => Ok(Some(
+                self.node_candidates_from_rows(rows, "composite property index")?,
+            )),
+            None => Ok(Some(CandidateSet::from_node_rows(self, []))),
+        }
+    }
+
     pub(crate) fn node_candidates_from_rows(
         &self,
         rows: &RoaringBitmap,

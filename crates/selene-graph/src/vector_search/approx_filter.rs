@@ -14,8 +14,42 @@ use super::{
 
 impl SeleneGraph {
     /// Approximately rank vector-valued node properties while admitting only
+    /// candidates in `candidates`.
+    pub fn approximate_vector_search_nodes_in_candidates_checked(
+        &self,
+        label: &DbString,
+        property: &DbString,
+        query: &VectorValue,
+        candidates: &crate::CandidateSet<crate::Node>,
+        options: ApproximateVectorSearchOptions,
+        checker: CancellationChecker<'_>,
+    ) -> Result<Vec<VectorNodeSearchHit>, VectorSearchError> {
+        checker.check()?;
+        if options.k == 0 || candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let validated = self.validate_node_candidates(candidates).map_err(|error| {
+            VectorSearchError::Graph(GraphError::Inconsistent {
+                reason: format!("allowed candidate set failed validation: {error}"),
+            })
+        })?;
+        let mut allowed_rows = RoaringBitmap::new();
+        for node in validated.as_slice() {
+            allowed_rows.insert(node.row().get());
+        }
+        self.approximate_vector_search_nodes_in_rows_checked(
+            label,
+            property,
+            query,
+            &allowed_rows,
+            options,
+            checker,
+        )
+    }
+
+    /// Approximately rank vector-valued node properties while admitting only
     /// rows in `allowed_rows`.
-    pub fn approximate_vector_search_nodes_in_rows_checked(
+    pub(crate) fn approximate_vector_search_nodes_in_rows_checked(
         &self,
         label: &DbString,
         property: &DbString,

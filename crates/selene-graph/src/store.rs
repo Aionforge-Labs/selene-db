@@ -9,6 +9,22 @@
 //!     let _: NodeRow = edge;
 //! }
 //! ```
+//!
+//! Physical row indices are not repository-public APIs:
+//!
+//! ```compile_fail
+//! use selene_graph::RowIndex;
+//! ```
+//!
+//! Candidates of different kinds cannot be mixed:
+//!
+//! ```compile_fail
+//! use selene_graph::{CandidateSet, Edge, Node};
+//!
+//! fn cannot_mix(nodes: CandidateSet<Node>) {
+//!     let _: CandidateSet<Edge> = nodes;
+//! }
+//! ```
 
 use std::sync::Arc;
 
@@ -18,46 +34,15 @@ use selene_core::{DbString, EdgeId, LabelSet, NodeId, PropertyMap};
 
 use crate::chunked_vec::ChunkedVec;
 
-/// Temporary Part 3 lower-row bridge — the position of a node or edge in its
-/// store's structure-of-arrays columns.
-///
-/// Distinct from the external [`NodeId`]/[`EdgeId`]: a `RowIndex` is dense,
-/// remappable by compaction (D22 / BRIEF-Item-4b/4c), and **never persisted** —
-/// only external ids reach the WAL, snapshot, or `Change` stream. There is **no**
-/// fixed arithmetic relationship between a row and its id: post-4c new rows are
-/// appended at the dense end (the current row count) while the monotonic id
-/// counter advances independently, and a compaction pass renumbers rows under
-/// stable ids. The mapping is resolved *only* through the
-/// [`SeleneGraph`](crate::SeleneGraph) `node_id_to_row`/`edge_id_to_row` maps and
-/// the per-store `row_to_id` reverse columns — never by index arithmetic.
-/// New graph internals use distinct private node/edge row types instead. This
-/// repository-public raw type remains only for deferred downstream consumers;
-/// M04-PR02 Part 3 owns its deletion and it is not a compatibility promise.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct RowIndex(u32);
-
-impl RowIndex {
-    /// Sentinel for "no row" (`u32::MAX`, never a valid dense row position).
-    pub const TOMBSTONE: RowIndex = RowIndex(u32::MAX);
-
-    /// Construct a `RowIndex` from a raw `u32` row position.
-    #[must_use]
-    pub const fn new(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    /// Return the raw `u32` row position.
-    #[must_use]
-    pub const fn get(self) -> u32 {
-        self.0
-    }
-}
-
 /// Physical node-store position. Deliberately private to the graph crate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) struct NodeRow(u32);
 
 impl NodeRow {
+    /// Sentinel for "no row" (`u32::MAX`, never a valid dense row position).
+    #[allow(dead_code)]
+    pub(crate) const TOMBSTONE: NodeRow = NodeRow(u32::MAX);
+
     pub(crate) const fn new(raw: u32) -> Self {
         Self(raw)
     }
@@ -68,10 +53,6 @@ impl NodeRow {
 
     pub(crate) const fn index(self) -> usize {
         self.0 as usize
-    }
-
-    pub(crate) const fn lower_row_bridge(self) -> RowIndex {
-        RowIndex::new(self.0)
     }
 }
 
@@ -80,6 +61,10 @@ impl NodeRow {
 pub(crate) struct EdgeRow(u32);
 
 impl EdgeRow {
+    /// Sentinel for "no row" (`u32::MAX`, never a valid dense row position).
+    #[allow(dead_code)]
+    pub(crate) const TOMBSTONE: EdgeRow = EdgeRow(u32::MAX);
+
     pub(crate) const fn new(raw: u32) -> Self {
         Self(raw)
     }
@@ -90,10 +75,6 @@ impl EdgeRow {
 
     pub(crate) const fn index(self) -> usize {
         self.0 as usize
-    }
-
-    pub(crate) const fn lower_row_bridge(self) -> RowIndex {
-        RowIndex::new(self.0)
     }
 }
 

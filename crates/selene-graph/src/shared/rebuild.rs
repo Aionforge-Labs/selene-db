@@ -85,8 +85,6 @@ pub(crate) fn rebuild_derived_state(graph: &mut SeleneGraph) -> GraphResult<()> 
 /// STEP-8 grep-gate; BRIEF-Item-4b drops it once every construction path
 /// persists ids.
 fn rebuild_id_maps(graph: &mut SeleneGraph) -> GraphResult<()> {
-    graph.node_id_to_row = engine_id_map();
-    graph.edge_id_to_row = engine_id_map();
     graph.node_rows = engine_id_map();
     graph.edge_rows = engine_id_map();
     // Externally-built graphs may not have populated row_to_id; pad it to the
@@ -124,7 +122,6 @@ fn rebuild_id_maps(graph: &mut SeleneGraph) -> GraphResult<()> {
         }
         let row = NodeRow::new(raw);
         graph.node_rows.insert_cow(id, row);
-        graph.node_id_to_row.insert_cow(id, row.lower_row_bridge());
     }
     for row in 0..edge_len {
         let raw = row as u32;
@@ -143,7 +140,6 @@ fn rebuild_id_maps(graph: &mut SeleneGraph) -> GraphResult<()> {
         }
         let row = EdgeRow::new(raw);
         graph.edge_rows.insert_cow(id, row);
-        graph.edge_id_to_row.insert_cow(id, row.lower_row_bridge());
     }
     Ok(())
 }

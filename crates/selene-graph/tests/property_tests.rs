@@ -174,15 +174,17 @@ fn flipping_a_label_moves_index_buckets() {
         let snapshot = shared.read();
         assert_eq!(
             snapshot
-                .nodes_with_property_eq(&alpha, &age, &Value::Int(7))
+                .node_candidates_with_property_eq(&alpha, &age, &Value::Int(7))
+                .unwrap()
                 .unwrap()
                 .iter()
                 .collect::<Vec<_>>(),
-            vec![0]
+            vec![node]
         );
         assert!(
             snapshot
-                .nodes_with_property_eq(&beta, &age, &Value::Int(7))
+                .node_candidates_with_property_eq(&beta, &age, &Value::Int(7))
+                .unwrap()
                 .unwrap()
                 .is_empty()
         );
@@ -203,17 +205,19 @@ fn flipping_a_label_moves_index_buckets() {
     snapshot.assert_indexes_consistent().unwrap();
     assert!(
         snapshot
-            .nodes_with_property_eq(&alpha, &age, &Value::Int(7))
+            .node_candidates_with_property_eq(&alpha, &age, &Value::Int(7))
+            .unwrap()
             .unwrap()
             .is_empty()
     );
     assert_eq!(
         snapshot
-            .nodes_with_property_eq(&beta, &age, &Value::Int(7))
+            .node_candidates_with_property_eq(&beta, &age, &Value::Int(7))
+            .unwrap()
             .unwrap()
             .iter()
             .collect::<Vec<_>>(),
-        vec![0]
+        vec![node]
     );
 }
 
@@ -242,11 +246,11 @@ fn string_value_admits_into_string_index() {
     snapshot.assert_indexes_consistent().unwrap();
     assert_eq!(
         snapshot
-            .nodes_with_property_eq(&alpha, &name, &Value::String(text_value))
+            .node_candidates_with_property_eq(&alpha, &name, &Value::String(text_value))
             .unwrap()
-            .iter()
-            .collect::<Vec<_>>(),
-        vec![0]
+            .unwrap()
+            .len(),
+        1
     );
 }
 
@@ -297,7 +301,8 @@ fn null_property_is_never_indexed() {
     snapshot.assert_indexes_consistent().unwrap();
     assert!(
         snapshot
-            .nodes_with_property_eq(&age, &age, &Value::Int(0))
+            .node_candidates_with_property_eq(&age, &age, &Value::Int(0))
+            .unwrap()
             .is_none()
             || snapshot.node_count() == 1
     );

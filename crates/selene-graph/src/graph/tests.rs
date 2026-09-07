@@ -48,9 +48,6 @@ fn node_labels_returns_some_for_alive_node() {
     // create_node / rebuild_id_maps do — reads now resolve through the map.
     graph.node_store.row_to_id.push(NodeId::new(1));
     graph
-        .node_id_to_row
-        .insert_cow(NodeId::new(1), RowIndex::new(0));
-    graph
         .node_rows
         .insert_cow(NodeId::new(1), crate::store::NodeRow::new(0));
     graph.node_store.alive_mut().insert(0);
@@ -86,23 +83,23 @@ fn persistent_maps_share_on_clone_and_diverge_on_mutation() {
     bitmap.insert(0);
     original.idx_label.insert_cow(label.clone(), bitmap);
     original
-        .node_id_to_row
-        .insert_cow(NodeId::new(1), RowIndex::new(0));
+        .node_rows
+        .insert_cow(NodeId::new(1), crate::store::NodeRow::new(0));
 
     let label_refs = original.idx_label.strong_count();
-    let id_refs = original.node_id_to_row.strong_count();
+    let id_refs = original.node_rows.strong_count();
     let mut fork = original.clone();
     assert_eq!(original.idx_label.strong_count(), label_refs + 1);
-    assert_eq!(original.node_id_to_row.strong_count(), id_refs + 1);
+    assert_eq!(original.node_rows.strong_count(), id_refs + 1);
 
     fork.idx_label.get_mut_cow(&label).unwrap().insert(1);
-    fork.node_id_to_row
-        .insert_cow(NodeId::new(2), RowIndex::new(1));
+    fork.node_rows
+        .insert_cow(NodeId::new(2), crate::store::NodeRow::new(1));
 
     assert_eq!(original.idx_label.strong_count(), label_refs);
     assert_eq!(fork.idx_label.strong_count(), 1);
-    assert_eq!(original.node_id_to_row.strong_count(), id_refs);
-    assert_eq!(fork.node_id_to_row.strong_count(), 1);
+    assert_eq!(original.node_rows.strong_count(), id_refs);
+    assert_eq!(fork.node_rows.strong_count(), 1);
     assert!(!original.idx_label.get(&label).unwrap().contains(1));
-    assert_eq!(original.node_id_to_row.get(&NodeId::new(2)), None);
+    assert_eq!(original.node_rows.get(&NodeId::new(2)), None);
 }

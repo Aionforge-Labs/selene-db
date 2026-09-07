@@ -6,7 +6,7 @@
 
 use selene_core::{EdgeId, GraphId, LabelSet, NodeId, PropertyMap, db_string};
 
-use crate::store::RowIndex;
+use crate::store::{EdgeRow, NodeRow};
 use crate::{SeleneGraph, SharedGraph};
 
 #[test]
@@ -59,8 +59,8 @@ fn id_row_maps_round_trip_for_all_alive() {
             "alive node row {row} has tombstone id"
         );
         assert_eq!(
-            g.node_id_to_row.get(&id).copied(),
-            Some(RowIndex::new(row)),
+            g.node_rows.get(&id).copied(),
+            Some(NodeRow::new(row)),
             "id->row map disagrees with row_to_id for alive {id}"
         );
     }
@@ -70,8 +70,8 @@ fn id_row_maps_round_trip_for_all_alive() {
     // NotFound) for it.
     assert!(!g.node_store.alive.contains(1));
     assert_eq!(
-        g.node_id_to_row.get(&NodeId::new(2)).copied(),
-        Some(RowIndex::new(1)),
+        g.node_rows.get(&NodeId::new(2)).copied(),
+        Some(NodeRow::new(1)),
         "deleted node id must stay mapped (NotAlive, not NotFound)"
     );
     assert_eq!(
@@ -93,8 +93,8 @@ fn id_row_maps_round_trip_for_all_alive() {
             "alive edge row {row} has tombstone id"
         );
         assert_eq!(
-            g.edge_id_to_row.get(&id).copied(),
-            Some(RowIndex::new(row)),
+            g.edge_rows.get(&id).copied(),
+            Some(EdgeRow::new(row)),
             "id->row map disagrees with row_to_id for alive {id}"
         );
     }
@@ -102,12 +102,12 @@ fn id_row_maps_round_trip_for_all_alive() {
     // Cascade-deleted edge ids stay mapped to their dead rows, and their
     // row_to_id slots keep the real id (Option B), same as deleted nodes.
     assert_eq!(
-        g.edge_id_to_row.get(&selene_core::EdgeId::new(1)).copied(),
-        Some(RowIndex::new(0))
+        g.edge_rows.get(&selene_core::EdgeId::new(1)).copied(),
+        Some(EdgeRow::new(0))
     );
     assert_eq!(
-        g.edge_id_to_row.get(&selene_core::EdgeId::new(2)).copied(),
-        Some(RowIndex::new(1))
+        g.edge_rows.get(&selene_core::EdgeId::new(2)).copied(),
+        Some(EdgeRow::new(1))
     );
     assert_eq!(
         *g.edge_store.row_to_id.get(0).unwrap(),
@@ -166,12 +166,18 @@ fn non_identity_map_read_paths_resolve_by_map() {
     let g = shared.read();
 
     // Accessors round-trip the NON-identity mapping (seeded from row_to_id).
-    assert_eq!(g.row_for_node_id(NodeId::new(5)), Some(RowIndex::new(0)));
-    assert_eq!(g.row_for_node_id(NodeId::new(8)), Some(RowIndex::new(1)));
-    assert_eq!(g.node_id_for_row(RowIndex::new(0)), Some(NodeId::new(5)));
-    assert_eq!(g.node_id_for_row(RowIndex::new(1)), Some(NodeId::new(8)));
+    assert_eq!(g.node_row_for_id(NodeId::new(5)), Some(NodeRow::new(0)));
+    assert_eq!(g.node_row_for_id(NodeId::new(8)), Some(NodeRow::new(1)));
+    assert_eq!(
+        g.node_id_for_node_row(NodeRow::new(0)),
+        Some(NodeId::new(5))
+    );
+    assert_eq!(
+        g.node_id_for_node_row(NodeRow::new(1)),
+        Some(NodeId::new(8))
+    );
     // The arithmetic answer (NodeId 5 -> row 4) is WRONG; the map says row 0.
-    assert_ne!(g.row_for_node_id(NodeId::new(5)), Some(RowIndex::new(4)));
+    assert_ne!(g.node_row_for_id(NodeId::new(5)), Some(NodeRow::new(4)));
 
     // Liveness + labels resolve by the map. NodeId(1) was never committed: under
     // the old `id - 1` arithmetic it would map to row 0 and return row 0's label;
@@ -193,8 +199,11 @@ fn non_identity_map_read_paths_resolve_by_map() {
     assert!(labelled.contains(0) && labelled.contains(1));
 
     // Edge read paths + adjacency (rebuilt reading edge_id from row_to_id).
-    assert_eq!(g.row_for_edge_id(EdgeId::new(3)), Some(RowIndex::new(0)));
-    assert_eq!(g.edge_id_for_row(RowIndex::new(0)), Some(EdgeId::new(3)));
+    assert_eq!(g.edge_row_for_id(EdgeId::new(3)), Some(EdgeRow::new(0)));
+    assert_eq!(
+        g.edge_id_for_edge_row(EdgeRow::new(0)),
+        Some(EdgeId::new(3))
+    );
     assert!(g.is_edge_alive(EdgeId::new(3)));
     assert!(!g.is_edge_alive(EdgeId::new(1)));
     assert_eq!(
@@ -239,7 +248,7 @@ fn create_node_past_u32_id_space_succeeds_with_append_rows() {
     assert_eq!(id.get(), u32::MAX as u64 + 2);
     let g = shared.read();
     // Row appended at the dense end (0), NOT the huge arith row.
-    assert_eq!(g.row_for_node_id(id).map(|r| r.get()), Some(0));
+    assert_eq!(g.node_row_for_id(id).map(|r| r.get()), Some(0));
     assert!(g.is_node_alive(id));
 }
 
@@ -273,6 +282,6 @@ fn create_edge_past_u32_id_space_succeeds_with_append_rows() {
     };
     assert_eq!(edge_id.get(), u32::MAX as u64 + 2);
     let g = shared.read();
-    assert_eq!(g.row_for_edge_id(edge_id).map(|r| r.get()), Some(0));
+    assert_eq!(g.edge_row_for_id(edge_id).map(|r| r.get()), Some(0));
     assert!(g.is_edge_alive(edge_id));
 }

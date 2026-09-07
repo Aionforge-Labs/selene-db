@@ -57,6 +57,11 @@ impl<'a> ValidatedCandidateNode<'a> {
         self.node_id
     }
 
+    /// Return the internal physical node row.
+    pub(crate) const fn row(&self) -> NodeRow {
+        self.row
+    }
+
     /// Return node properties for this validated node.
     pub(crate) fn properties(&self) -> Result<&'a PropertyMap, GraphError> {
         self.graph

@@ -89,8 +89,8 @@ fn pre_commit_snapshot_is_isolated_from_tail_and_alive_cow_mutations() {
     assert_eq!(snapshot.edge_count(), 1);
     assert!(snapshot.is_node_alive(keep));
     assert!(snapshot.is_node_alive(doomed));
-    assert!(snapshot.live_nodes().contains(1));
-    assert!(snapshot.live_edges().contains(0));
+    assert!(snapshot.node_store.alive.contains(1));
+    assert!(snapshot.edge_store.alive.contains(0));
     assert!(snapshot.node_properties(doomed).is_some());
 
     // ...while a fresh read sees the post-commit state.

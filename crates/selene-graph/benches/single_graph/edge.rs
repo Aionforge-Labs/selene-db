@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, Throughput};
 use selene_core::{DbString, GraphId, LabelSet, NodeId, PropertyMap, Value, db_string};
-use selene_graph::{RowIndex, SeleneGraph, SharedGraph, TypedIndexKind};
+use selene_graph::{SeleneGraph, SharedGraph, TypedIndexKind};
 use selene_testing::BenchProfile;
 
 const POINTS_PER_BLOCK: usize = 4;
@@ -172,26 +172,23 @@ impl EdgeControlFixture {
     }
 
     fn point_count(&self) -> usize {
-        self.graph
-            .nodes_with_label(&self.point_label)
-            .map_or(0, |rows| rows.len() as usize)
+        self.graph.node_label_cardinality(&self.point_label) as usize
     }
 
     fn connected_edge_count(&self) -> usize {
-        self.graph
-            .edges_with_label(&self.connected_to_label)
-            .map_or(0, |rows| rows.len() as usize)
+        self.graph.edge_label_cardinality(&self.connected_to_label) as usize
     }
 
     fn edge_property_scan_count(&self) -> usize {
-        let Some(rows) = self.graph.edges_with_label(&self.connected_to_label) else {
+        let Ok(candidates) = self
+            .graph
+            .edge_candidates_with_label(&self.connected_to_label)
+        else {
             return 0;
         };
-        rows.iter()
-            .filter(|row| {
-                let Some(edge_id) = self.graph.edge_id_for_row(RowIndex::new(*row)) else {
-                    return false;
-                };
+        candidates
+            .iter()
+            .filter(|&edge_id| {
                 self.graph.edge_properties(edge_id).is_some_and(|props| {
                     matches!(
                         props.get(&self.from_port_key),
@@ -204,20 +201,20 @@ impl EdgeControlFixture {
 
     fn edge_property_index_lookup_count(&self) -> u64 {
         self.graph
-            .edges_with_property_eq(
+            .edge_property_eq_cardinality(
                 &self.connected_to_label,
                 &self.from_port_key,
                 &self.from_port_probe,
             )
-            .map_or(0, |rows| rows.len())
+            .unwrap_or(0)
     }
 
     fn point_connected_traversal_count(&self) -> usize {
-        let Some(rows) = self.graph.nodes_with_label(&self.point_label) else {
+        let Ok(candidates) = self.graph.node_candidates_with_label(&self.point_label) else {
             return 0;
         };
-        rows.iter()
-            .filter_map(|row| self.graph.node_id_for_row(RowIndex::new(row)))
+        candidates
+            .iter()
             .map(|node| self.output_connected_inputs(node))
             .sum()
     }

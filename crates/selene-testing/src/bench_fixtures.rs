@@ -298,20 +298,16 @@ mod tests {
             b.graph().property_index_count()
         );
         assert_eq!(
-            a.graph()
-                .nodes_with_property_eq(
-                    &a.person_label(),
-                    &a.age_key(),
-                    &Value::Int(a.sample_age_value())
-                )
-                .map(|rows| rows.len()),
-            b.graph()
-                .nodes_with_property_eq(
-                    &b.person_label(),
-                    &b.age_key(),
-                    &Value::Int(b.sample_age_value())
-                )
-                .map(|rows| rows.len())
+            a.graph().node_property_eq_cardinality(
+                &a.person_label(),
+                &a.age_key(),
+                &Value::Int(a.sample_age_value())
+            ),
+            b.graph().node_property_eq_cardinality(
+                &b.person_label(),
+                &b.age_key(),
+                &Value::Int(b.sample_age_value())
+            )
         );
     }
 

@@ -21,7 +21,7 @@ use std::{num::NonZeroUsize, sync::Arc};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use selene_core::{DbString, JsonValue, LabelDiff, PropertyDiff, Value, db_string};
 use selene_gql::{EmptyProcedureRegistry, Session, SharedPlanCache, StatementOutput};
-use selene_graph::{RowIndex, SharedGraph, TypedIndexKind};
+use selene_graph::{SharedGraph, TypedIndexKind};
 use selene_persist::SyncPolicy;
 use selene_testing::{BenchProfile, WriteCorpus};
 
@@ -358,11 +358,9 @@ fn seed_json_payloads(graph: &SharedGraph) {
     let node_ids = {
         let snapshot = graph.read();
         snapshot
-            .nodes_with_label(&person_label)
-            .into_iter()
-            .flatten()
-            .filter_map(|row| snapshot.node_id_for_row(RowIndex::new(row)))
-            .collect::<Vec<_>>()
+            .node_candidates_with_label(&person_label)
+            .map(|candidates| candidates.iter().collect::<Vec<_>>())
+            .unwrap_or_default()
     };
     let payload = json_payload_value();
     let mut txn = graph.begin_write();

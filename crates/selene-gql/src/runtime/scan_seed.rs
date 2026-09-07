@@ -8,7 +8,8 @@ use crate::{
 };
 
 use super::{
-    scan, scan_bind,
+    scan::{self, ScanEntityId},
+    scan_bind,
     scan_resolve::{range_satisfiable_runtime, resolve_bitmap_union_key_values, resolve_bounds},
 };
 
@@ -26,55 +27,43 @@ pub(super) fn try_seeded_scan(
     let Some(seed_value) = seed.get(index) else {
         return Ok(None);
     };
-    let Some((entity, row)) = seeded_entity_row(scan.kind, seed_value, ctx) else {
+    let Some(entity) = seeded_entity(scan.kind, seed_value, ctx) else {
         return Ok(None);
     };
-    let Some(row) = row else {
-        return Ok(Some(Vec::new()));
-    };
-    if !scan::label_matches_scan(scan, row, ctx) || !value_constraint_passes(scan, row, ctx)? {
+    if !scan::label_matches_scan(scan, entity, ctx) || !value_constraint_passes(scan, entity, ctx)?
+    {
         return Ok(Some(Vec::new()));
     }
-    let Some(binding) = scan_bind::binding_for_scan(schema, Some(seed), entity.clone(), slots)
-    else {
+    let val = entity.into_value();
+    let Some(binding) = scan_bind::binding_for_scan(schema, Some(seed), val.clone(), slots) else {
         return Ok(Some(Vec::new()));
     };
-    if !scan::predicates_pass(scan, pattern, &binding, schema, &entity, ctx)? {
+    if !scan::predicates_pass(scan, pattern, &binding, schema, &val, ctx)? {
         return Ok(Some(Vec::new()));
     }
     Ok(Some(vec![binding]))
 }
 
-fn seeded_entity_row(
+fn seeded_entity(
     kind: ScanKind,
     seed_value: &Value,
     ctx: &EvalCtx<'_, '_, '_, '_>,
-) -> Option<(Value, Option<u32>)> {
+) -> Option<ScanEntityId> {
     let snapshot = ctx.tx.snapshot();
     match (kind, seed_value) {
-        (ScanKind::Node, Value::NodeRef(id)) => {
-            let row = snapshot
-                .is_node_alive(*id)
-                .then(|| snapshot.row_for_node_id(*id))
-                .flatten()
-                .map(|row| row.get());
-            Some((Value::NodeRef(*id), row))
-        }
-        (ScanKind::Edge, Value::EdgeRef(id)) => {
-            let row = snapshot
-                .is_edge_alive(*id)
-                .then(|| snapshot.row_for_edge_id(*id))
-                .flatten()
-                .map(|row| row.get());
-            Some((Value::EdgeRef(*id), row))
-        }
+        (ScanKind::Node, Value::NodeRef(id)) => snapshot
+            .is_node_alive(*id)
+            .then_some(ScanEntityId::Node(*id)),
+        (ScanKind::Edge, Value::EdgeRef(id)) => snapshot
+            .is_edge_alive(*id)
+            .then_some(ScanEntityId::Edge(*id)),
         _ => None,
     }
 }
 
 fn value_constraint_passes(
     scan: &NodeOrEdgeScan,
-    row: u32,
+    entity: ScanEntityId,
     ctx: &EvalCtx<'_, '_, '_, '_>,
 ) -> Result<bool, ExecutorError> {
     match &scan.access {
@@ -89,7 +78,7 @@ fn value_constraint_passes(
                 return Ok(false);
             };
             Ok(range_satisfiable_runtime(&resolved)
-                && scan::row_matches_resolved_bounds(scan.kind, row, property, &resolved, ctx))
+                && scan::entity_matches_resolved_bounds(entity, property, &resolved, ctx))
         }
         ScanAccess::BitmapUnion {
             property,
@@ -102,7 +91,7 @@ fn value_constraint_passes(
                 resolved.extend(resolve_bitmap_union_key_values(key, *kind, ctx)?);
             }
             Ok((!resolved.is_empty() || keys.is_empty())
-                && scan::property_matches_any_resolved(scan.kind, row, property, &resolved, ctx))
+                && scan::entity_matches_any_resolved(entity, property, &resolved, ctx))
         }
         ScanAccess::CompositeLookup {
             properties, keys, ..
@@ -110,8 +99,8 @@ fn value_constraint_passes(
             let Some(values) = scan::resolve_composite_values(properties, keys, ctx)? else {
                 return Ok(false);
             };
-            Ok(scan::row_matches_resolved_composite(
-                scan.kind, row, properties, &values, ctx,
+            Ok(scan::entity_matches_resolved_composite(
+                entity, properties, &values, ctx,
             ))
         }
     }
