@@ -1,9 +1,4 @@
 //! Immutable graph snapshot and read accessors.
-//!
-//! Existing repository-public row maps, bitmap accessors, and raw row
-//! resolvers are the temporary M04-PR02 Part 3 lower-row bridge for deferred
-//! downstream migration. New graph internals use private typed rows; Part 3
-//! owns deletion of the bridge, which is not a compatibility promise.
 
 use std::borrow::Cow;
 use std::ops::RangeBounds;
@@ -22,11 +17,12 @@ use crate::candidate_set::SnapshotLayout;
 use crate::composite_typed_index::CompositeTypedIndex;
 use crate::graph_types::GraphTypeDef;
 use crate::id_map::{EngineIdMap, engine_id_map};
-use crate::store::{EdgeRow, EdgeStore, NodeRow, NodeStore, RowIndex};
+use crate::store::{EdgeRow, EdgeStore, NodeRow, NodeStore};
 use crate::text_index::TextIndex;
 use crate::typed_index::{TypedIndex, TypedIndexKind};
 use crate::vector_index::VectorIndex;
 
+mod cardinality;
 mod index_entries;
 mod index_stats;
 
@@ -88,17 +84,9 @@ pub struct SeleneGraph {
     pub vector_index: FxHashMap<(DbString, DbString), VectorIndexEntry>,
     /// Per-`(label, property)` node BM25 text indexes.
     pub text_index: FxHashMap<(DbString, DbString), TextIndexEntry>,
-    /// External `NodeId -> RowIndex` lookup (the inverse of
-    /// [`NodeStore::row_to_id`]). Replaces the `id.get() - 1` arithmetic so the
-    /// external id can stay stable while the row is remapped by compaction
-    /// (D22 / BRIEF-Item-4a). The persistent chunked tree keeps snapshot clones
-    /// cheap.
-    pub node_id_to_row: EngineIdMap<NodeId, RowIndex>,
-    /// External `EdgeId -> RowIndex` lookup (inverse of [`EdgeStore::row_to_id`]).
-    pub edge_id_to_row: EngineIdMap<EdgeId, RowIndex>,
-    /// Typed node inverse map used by new graph internals.
+    /// Typed node inverse map used by graph internals.
     pub(crate) node_rows: EngineIdMap<NodeId, NodeRow>,
-    /// Typed edge inverse map used by new graph internals.
+    /// Typed edge inverse map used by graph internals.
     pub(crate) edge_rows: EngineIdMap<EdgeId, EdgeRow>,
     /// Private, non-serialized identity for this physical snapshot layout.
     pub(crate) layout: SnapshotLayout,
@@ -127,8 +115,6 @@ impl SeleneGraph {
             composite_property_index: FxHashMap::default(),
             vector_index: FxHashMap::default(),
             text_index: FxHashMap::default(),
-            node_id_to_row: engine_id_map(),
-            edge_id_to_row: engine_id_map(),
             node_rows: engine_id_map(),
             edge_rows: engine_id_map(),
             layout: SnapshotLayout::new(),
@@ -147,20 +133,6 @@ impl SeleneGraph {
         self.node_store.alive.len() as usize
     }
 
-    /// Bitmap of alive node *row indices*.
-    ///
-    /// Returned bitmap is row-indexed (matching `nodes_with_label`), not
-    /// `NodeId`-indexed; consumers convert a row to its external `NodeId` via
-    /// [`Self::node_id_for_row`] (never by `row + 1` arithmetic — the external id
-    /// is stable while compaction renumbers the row). Used by `selene-algorithms`
-    /// to seed the "all alive nodes" baseline of a `GraphProjection`.
-    #[must_use]
-    pub fn live_nodes(&self) -> &RoaringBitmap {
-        // B1: alive is Arc-shared COW state; expose the bitmap, not the Arc,
-        // so the crate boundary (selene-algorithms) is unchanged.
-        &self.node_store.alive
-    }
-
     /// Number of alive edges.
     #[must_use]
     pub fn edge_count(&self) -> usize {
@@ -174,65 +146,6 @@ impl SeleneGraph {
     #[must_use]
     pub fn compaction_stats(&self) -> crate::compaction::CompactionStats {
         crate::compaction::CompactionStats::from_graph(self)
-    }
-
-    /// Bitmap of alive edge *row indices*.
-    ///
-    /// The edge-side sibling of [`Self::live_nodes`]. The returned bitmap is
-    /// row-indexed (matching `edges_with_label`), not `EdgeId`-indexed; consumers
-    /// convert a row to its external `EdgeId` via [`Self::edge_id_for_row`] (never
-    /// by `row + 1` arithmetic). Covers every alive edge regardless of label —
-    /// used by the `DROP GRAPH` factory-reset (BRIEF-152) to enumerate every live
-    /// edge, including untyped/arbitrary-label ones that a per-type truncate would
-    /// miss.
-    #[must_use]
-    pub fn live_edges(&self) -> &RoaringBitmap {
-        // B1: see `live_nodes` — deref the COW Arc at the boundary.
-        &self.edge_store.alive
-    }
-
-    /// Map an external [`NodeId`] through the temporary Part 3 lower-row bridge.
-    ///
-    /// Returns `None` for a never-committed (aborted-tx hole) id. A deleted id
-    /// still resolves — to its now-dead row — so liveness, not existence,
-    /// distinguishes it (the row's `alive` bit is clear). This is the map-backed
-    /// replacement for the old `id - 1` arithmetic; the external id stays stable
-    /// while BRIEF-Item-4b compaction renumbers the row.
-    #[must_use]
-    pub fn row_for_node_id(&self, id: NodeId) -> Option<RowIndex> {
-        self.node_row_for_id(id).map(NodeRow::lower_row_bridge)
-    }
-
-    /// Map an external [`EdgeId`] to its internal [`RowIndex`]; see
-    /// [`Self::row_for_node_id`].
-    #[must_use]
-    pub fn row_for_edge_id(&self, id: EdgeId) -> Option<RowIndex> {
-        self.edge_row_for_id(id).map(EdgeRow::lower_row_bridge)
-    }
-
-    /// Recover the external [`NodeId`] bound to a materialized [`RowIndex`].
-    ///
-    /// Reads the `row_to_id` column (the persistence-stable per-row id), never
-    /// synthesizing `row + 1`. Returns `None` past the column end or for a
-    /// never-committed hole row (which holds [`NodeId::TOMBSTONE`]).
-    #[must_use]
-    pub fn node_id_for_row(&self, row: RowIndex) -> Option<NodeId> {
-        self.node_store
-            .row_to_id
-            .get(row.get() as usize)
-            .copied()
-            .filter(|id| *id != NodeId::TOMBSTONE)
-    }
-
-    /// Recover the external [`EdgeId`] bound to a materialized [`RowIndex`]; see
-    /// [`Self::node_id_for_row`].
-    #[must_use]
-    pub fn edge_id_for_row(&self, row: RowIndex) -> Option<EdgeId> {
-        self.edge_store
-            .row_to_id
-            .get(row.get() as usize)
-            .copied()
-            .filter(|id| *id != EdgeId::TOMBSTONE)
     }
 
     pub(crate) fn node_row_for_id(&self, id: NodeId) -> Option<NodeRow> {
@@ -334,13 +247,13 @@ impl SeleneGraph {
 
     /// Return the bitmap of node rows carrying `label`.
     #[must_use]
-    pub fn nodes_with_label(&self, label: &DbString) -> Option<&RoaringBitmap> {
+    pub(crate) fn nodes_with_label(&self, label: &DbString) -> Option<&RoaringBitmap> {
         self.idx_label.get(label)
     }
 
     /// Return the bitmap of edge rows carrying `label`.
     #[must_use]
-    pub fn edges_with_label(&self, label: &DbString) -> Option<&RoaringBitmap> {
+    pub(crate) fn edges_with_label(&self, label: &DbString) -> Option<&RoaringBitmap> {
         self.idx_edge_label.get(label)
     }
 
@@ -546,7 +459,7 @@ impl SeleneGraph {
     ///
     /// `Some(empty)` means the index answered and no row matches.
     #[must_use]
-    pub fn nodes_with_property_eq(
+    pub(crate) fn nodes_with_property_eq(
         &self,
         label: &DbString,
         property: &DbString,
@@ -563,7 +476,7 @@ impl SeleneGraph {
     /// [`SeleneGraph::nodes_with_property_eq`]: `None` also covers an index that
     /// omits live rows it cannot key, so the caller must scan.
     #[must_use]
-    pub fn nodes_with_property_any(
+    pub(crate) fn nodes_with_property_any(
         &self,
         label: &DbString,
         property: &DbString,
@@ -585,7 +498,7 @@ impl SeleneGraph {
     /// [`SeleneGraph::nodes_with_property_eq`]: `None` also covers an index that
     /// omits live rows it cannot key, so the caller must scan.
     #[must_use]
-    pub fn edges_with_property_eq(
+    pub(crate) fn edges_with_property_eq(
         &self,
         label: &DbString,
         property: &DbString,
@@ -602,7 +515,7 @@ impl SeleneGraph {
     /// [`SeleneGraph::nodes_with_property_eq`]: `None` also covers an index that
     /// omits live rows it cannot key, so the caller must scan.
     #[must_use]
-    pub fn edges_with_property_any(
+    pub(crate) fn edges_with_property_any(
         &self,
         label: &DbString,
         property: &DbString,
@@ -624,7 +537,7 @@ impl SeleneGraph {
     /// [`SeleneGraph::nodes_with_property_eq`]: `None` also covers an index that
     /// omits live rows it cannot key, so the caller must scan.
     #[must_use]
-    pub fn nodes_with_property_range<R>(
+    pub(crate) fn nodes_with_property_range<R>(
         &self,
         label: &DbString,
         property: &DbString,
@@ -644,7 +557,7 @@ impl SeleneGraph {
     /// [`SeleneGraph::nodes_with_property_eq`]: `None` also covers an index that
     /// omits live rows it cannot key, so the caller must scan.
     #[must_use]
-    pub fn edges_with_property_range<R>(
+    pub(crate) fn edges_with_property_range<R>(
         &self,
         label: &DbString,
         property: &DbString,
@@ -664,7 +577,7 @@ impl SeleneGraph {
     /// [`SeleneGraph::nodes_with_property_eq`]: `None` also covers an index that
     /// omits live rows it cannot key, so the caller must scan.
     #[must_use]
-    pub fn nodes_with_property_prefix(
+    pub(crate) fn nodes_with_property_prefix(
         &self,
         label: &DbString,
         property: &DbString,

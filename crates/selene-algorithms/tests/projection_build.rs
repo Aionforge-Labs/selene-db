@@ -1,7 +1,6 @@
 //! Integration tests for `GraphProjection::build` covering the §H test bar.
 
 use proptest::prelude::*;
-use roaring::RoaringBitmap;
 use selene_algorithms::{GraphProjection, ProjectionConfig};
 use selene_core::{DbString, GraphId, LabelSet, NodeId, PropertyMap, Value};
 use selene_graph::SharedGraph;
@@ -401,10 +400,7 @@ fn projection_weight_null_or_non_numeric_defaults_to_one() {
 fn projection_scope_intersect() {
     let (shared, nodes, _) = fixture_small();
     let snapshot = shared.read();
-    // Scope bitmap restricts to rows 0 and 1 only (NodeId 1 and 2).
-    let mut scope = RoaringBitmap::new();
-    scope.insert(0);
-    scope.insert(1);
+    let scope = snapshot.bind_node_candidates([nodes[0], nodes[1]]).unwrap();
 
     let proj = GraphProjection::build(
         &snapshot,
@@ -539,4 +535,80 @@ proptest! {
         }
 
     }
+}
+
+#[test]
+fn algorithm_results_on_sparse_deleted_ids_match_before_and_after_compaction() {
+    let shared = SharedGraph::new(GraphId::new(42_001));
+    let label = db_string("Node");
+    let rel = db_string("CONNECTS");
+
+    let nodes = {
+        let mut txn = shared.begin_write();
+        let mut created = Vec::new();
+        for _ in 0..5 {
+            let id = txn
+                .mutator()
+                .create_node(LabelSet::single(label.clone()), PropertyMap::new())
+                .unwrap();
+            created.push(id);
+        }
+        // Ring between nodes[0], nodes[2], nodes[4]: 1 -> 3 -> 5 -> 1
+        txn.mutator()
+            .create_edge(rel.clone(), created[0], created[2], PropertyMap::new())
+            .unwrap();
+        txn.mutator()
+            .create_edge(rel.clone(), created[2], created[4], PropertyMap::new())
+            .unwrap();
+        txn.mutator()
+            .create_edge(rel.clone(), created[4], created[0], PropertyMap::new())
+            .unwrap();
+        // Delete nodes[1] and nodes[3]
+        txn.mutator().delete_node(created[1]).unwrap();
+        txn.mutator().delete_node(created[3]).unwrap();
+        txn.commit().unwrap();
+        created
+    };
+
+    let config = ProjectionConfig {
+        name: "test_compaction_equiv".to_string(),
+        node_labels: vec![],
+        edge_labels: vec![],
+        weight_property: None,
+    };
+
+    let pre_snap = shared.read();
+    let pre_proj = GraphProjection::build(&pre_snap, &config, None).unwrap();
+    assert_eq!(pre_proj.node_count(), 3);
+    let pre_nodes: Vec<NodeId> = pre_proj.iter_nodes().collect();
+    assert_eq!(pre_nodes, vec![nodes[0], nodes[2], nodes[4]]);
+
+    let pr_config = selene_algorithms::PageRankConfig {
+        damping: 0.85,
+        max_iter: 100,
+        tolerance: 1e-6,
+        parallelism: selene_algorithms::Parallelism::Sequential,
+        orientation: selene_algorithms::PageRankOrientation::Natural,
+        personalization: None,
+    };
+
+    // Run algorithms before compaction
+    let pre_wcc = selene_algorithms::wcc(&pre_proj);
+    let pre_pr = selene_algorithms::pagerank(&pre_proj, pr_config.clone());
+
+    // Compact the graph
+    shared.compact().unwrap();
+
+    let post_snap = shared.read();
+    let post_proj = GraphProjection::build(&post_snap, &config, None).unwrap();
+    assert_eq!(post_proj.node_count(), 3);
+    let post_nodes: Vec<NodeId> = post_proj.iter_nodes().collect();
+    assert_eq!(post_nodes, vec![nodes[0], nodes[2], nodes[4]]);
+
+    // Run algorithms after compaction
+    let post_wcc = selene_algorithms::wcc(&post_proj);
+    let post_pr = selene_algorithms::pagerank(&post_proj, pr_config);
+
+    assert_eq!(pre_wcc, post_wcc);
+    assert_eq!(pre_pr, post_pr);
 }

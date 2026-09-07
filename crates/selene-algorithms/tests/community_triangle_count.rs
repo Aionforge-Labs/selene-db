@@ -2,7 +2,6 @@
 
 use std::num::NonZeroUsize;
 
-use roaring::RoaringBitmap;
 use selene_algorithms::{
     GraphProjection, Parallelism, ProjectionConfig, TriangleCountConfig, triangle_count,
 };
@@ -218,10 +217,9 @@ fn triangle_count_handles_sparse_row_projection() {
     txn.commit().unwrap();
 
     let snapshot = shared.read();
-    let mut scope = RoaringBitmap::new();
-    scope.insert(10);
-    scope.insert(50);
-    scope.insert(90);
+    let scope = snapshot
+        .bind_node_candidates([nodes[10], nodes[50], nodes[90]])
+        .unwrap();
     let proj = GraphProjection::build(
         &snapshot,
         &ProjectionConfig {

@@ -57,9 +57,9 @@ fn delete_node_clears_dead_row_payload_but_keeps_id_mapping() {
     txn.commit().expect("commit ok");
     let graph = shared.read();
     let row = graph
-        .row_for_node_id(id)
+        .node_row_for_id(id)
         .expect("dead id remains mapped")
-        .get() as usize;
+        .index();
     assert!(!graph.node_store.is_alive(row as u32));
     assert_eq!(graph.node_store.row_to_id.get(row).copied(), Some(id));
     assert!(
@@ -96,9 +96,9 @@ fn delete_edge_clears_dead_row_payload_but_keeps_id_mapping() {
     txn.commit().expect("commit ok");
     let graph = shared.read();
     let row = graph
-        .row_for_edge_id(edge)
+        .edge_row_for_id(edge)
         .expect("dead id remains mapped")
-        .get() as usize;
+        .index();
     assert!(graph.is_node_alive(source));
     assert!(graph.is_node_alive(target));
     assert!(!graph.edge_store.is_alive(row as u32));

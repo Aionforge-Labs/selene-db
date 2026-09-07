@@ -50,9 +50,6 @@ pub(super) fn insert_node_row(
     // rebuild_id_maps re-seeds it). Holes carry the tombstone and never reach
     // this real-row branch.
     graph.node_rows.insert_cow(id, row_index);
-    graph
-        .node_id_to_row
-        .insert_cow(id, row_index.lower_row_bridge());
     Ok(())
 }
 
@@ -89,9 +86,6 @@ pub(super) fn insert_edge_row(
     // BRIEF-Item-4a: bind id -> row in the map for every materialized row (see
     // insert_node_row).
     graph.edge_rows.insert_cow(id, row_index);
-    graph
-        .edge_id_to_row
-        .insert_cow(id, row_index.lower_row_bridge());
     Ok(())
 }
 

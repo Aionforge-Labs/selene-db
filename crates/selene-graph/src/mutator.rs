@@ -115,7 +115,6 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
             // `id -> row` map must be populated here. The row is remappable once
             // 4b compaction renumbers rows under stable ids.
             graph.node_rows.insert_cow(id, row);
-            graph.node_id_to_row.insert_cow(id, row.lower_row_bridge());
             insert_node_labels(&mut graph.idx_label, row, &labels);
         }
         self.txn.changes.push(Change::NodeCreated {
@@ -171,7 +170,6 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
             graph.edge_store.mark_alive(row);
             // BRIEF-Item-4a: bind the external edge id to its row (live path).
             graph.edge_rows.insert_cow(id, row);
-            graph.edge_id_to_row.insert_cow(id, row.lower_row_bridge());
             insert_index_row(&mut graph.idx_edge_label, label.clone(), row.get());
 
             get_or_insert_default(&mut graph.adjacency_out, source).add(AdjacencyEdge {

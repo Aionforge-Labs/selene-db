@@ -22,7 +22,6 @@ fn identity_graph(width: u32) -> SeleneGraph {
         graph.node_store.row_to_id.push(id);
         graph.node_store.mark_alive(row);
         graph.node_rows.insert_cow(id, row);
-        graph.node_id_to_row.insert_cow(id, row.lower_row_bridge());
     }
     for raw in 0..width {
         let id = EdgeId::new(u64::from(raw) + 201);
@@ -40,7 +39,6 @@ fn identity_graph(width: u32) -> SeleneGraph {
         graph.edge_store.row_to_id.push(id);
         graph.edge_store.mark_alive(row);
         graph.edge_rows.insert_cow(id, row);
-        graph.edge_id_to_row.insert_cow(id, row.lower_row_bridge());
     }
     graph
 }

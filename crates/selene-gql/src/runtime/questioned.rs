@@ -2,8 +2,8 @@
 
 use std::collections::BTreeSet;
 
-use roaring::RoaringBitmap;
 use selene_core::{EdgeId, NodeId, Value};
+use selene_graph::{CandidateSet, Edge};
 
 use crate::{
     EdgeDirection, EdgeMatch, JoinTree, PatternPlan,
@@ -27,7 +27,7 @@ pub(crate) fn execute(
     )?;
     let child_rows = pattern::walk_join_tree(child, env)?;
     let mut rows = Vec::new();
-    let edge_row_filter = edge_access::candidate_row_filter(edge, env.ctx)?;
+    let edge_candidate_filter = edge_access::candidate_edge_filter(edge, env.ctx)?;
     let mut state = QuestionedState {
         edge,
         pattern_plan: env.pattern,
@@ -55,7 +55,7 @@ pub(crate) fn execute(
             edge.right_hidden_binding,
             "questioned right hidden binding column missing",
         )?,
-        edge_row_filter,
+        edge_candidate_filter,
         ctx: env.ctx,
         output: &mut rows,
     };
@@ -83,7 +83,7 @@ struct QuestionedState<'a, 'eval, 'ctx, 'g, 'plan, 'out> {
     edge_hidden_slot: pattern::ColumnSlot,
     right_slot: pattern::ColumnSlot,
     right_hidden_slot: pattern::ColumnSlot,
-    edge_row_filter: Option<RoaringBitmap>,
+    edge_candidate_filter: Option<CandidateSet<Edge>>,
     ctx: &'a EvalCtx<'eval, 'ctx, 'g, 'plan>,
     output: &'out mut Vec<Binding>,
 }
@@ -176,7 +176,7 @@ fn maybe_emit_taken(
     row: &Binding,
     state: &mut QuestionedState<'_, '_, '_, '_, '_, '_>,
 ) -> Result<(), ExecutorError> {
-    if !edge_access::row_filter_matches(state.edge_row_filter.as_ref(), edge_id, state.ctx) {
+    if !edge_access::edge_filter_matches(state.edge_candidate_filter.as_ref(), edge_id) {
         return Ok(());
     }
     if !edge_label_matches(state.edge, edge_id, state.ctx)

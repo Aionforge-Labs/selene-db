@@ -397,9 +397,9 @@ fn wal_replay_delete_clears_dead_node_payload() {
 
     let recovered = provider.finish_recovery(GraphId::new(1), None).unwrap();
     let row = recovered
-        .row_for_node_id(id)
+        .node_row_for_id(id)
         .expect("deleted id stays mapped")
-        .get() as usize;
+        .index();
     assert!(!recovered.is_node_alive(id));
     assert_eq!(recovered.node_store.row_to_id.get(row).copied(), Some(id));
     assert!(recovered.node_store.labels.get(row).unwrap().is_empty());
@@ -438,9 +438,9 @@ fn wal_replay_delete_clears_dead_edge_payload() {
 
     let recovered = provider.finish_recovery(GraphId::new(1), None).unwrap();
     let row = recovered
-        .row_for_edge_id(edge)
+        .edge_row_for_id(edge)
         .expect("deleted id stays mapped")
-        .get() as usize;
+        .index();
     assert!(recovered.is_node_alive(source));
     assert!(recovered.is_node_alive(target));
     assert!(!recovered.is_edge_alive(edge));

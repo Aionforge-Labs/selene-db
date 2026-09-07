@@ -1,6 +1,5 @@
 //! Integration tests for `sssp` per spec 16 §E17.
 
-use roaring::RoaringBitmap;
 use selene_algorithms::{GraphProjection, PathfindingError, ProjectionConfig, sssp};
 use selene_core::{DbString, GraphId, LabelSet, NodeId, PropertyMap, Value};
 use selene_graph::SharedGraph;
@@ -180,10 +179,9 @@ fn sssp_handles_sparse_row_projection() {
     txn.commit().unwrap();
 
     let snapshot = shared.read();
-    let mut scope = RoaringBitmap::new();
-    scope.insert(0);
-    scope.insert(50);
-    scope.insert(99);
+    let scope = snapshot
+        .bind_node_candidates([nodes[0], nodes[50], nodes[99]])
+        .unwrap();
     let proj = GraphProjection::build(
         &snapshot,
         &ProjectionConfig {

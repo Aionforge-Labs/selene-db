@@ -9,9 +9,8 @@ use selene_core::{
 };
 use selene_graph::{
     ApproximateVectorSearchOptions, CandidateStateSpec, IndexProvider,
-    MaintainedCandidateStateProvider, RowIndex, SeleneGraph, SharedGraph, TextIndex,
-    VectorCandidateSet, VectorIndexConfig, VectorIndexKind, VectorNeighborDirection,
-    VectorNeighborSearchOptions,
+    MaintainedCandidateStateProvider, SeleneGraph, SharedGraph, TextIndex, VectorCandidateSet,
+    VectorIndexConfig, VectorIndexKind, VectorNeighborDirection, VectorNeighborSearchOptions,
 };
 
 use self::build_support::{
@@ -611,13 +610,10 @@ impl OmlxVectorFixture {
 
     fn topic_candidate_set(&self, topic: Topic) -> VectorCandidateSet {
         let topic_label = topic_label(topic);
-        let Some(rows) = self.graph.nodes_with_label(&topic_label) else {
+        let Ok(candidates) = self.graph.node_candidates_with_label(&topic_label) else {
             return VectorCandidateSet::default();
         };
-        VectorCandidateSet::from_nodes(
-            rows.iter()
-                .filter_map(|row| self.graph.node_id_for_row(RowIndex::new(row))),
-        )
+        VectorCandidateSet::from_nodes(candidates.iter())
     }
 
     fn topic_neighbor_set(&self, query: &QueryVector) -> VectorCandidateSet {

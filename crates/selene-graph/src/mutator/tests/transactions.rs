@@ -22,7 +22,7 @@ fn read_within_tx_sees_label_index_updates() {
         .expect("create_node ok");
     let row = mutator
         .read()
-        .row_for_node_id(id)
+        .node_row_for_id(id)
         .expect("created node is mapped")
         .get();
     assert!(

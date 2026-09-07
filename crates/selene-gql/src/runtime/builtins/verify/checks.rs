@@ -8,7 +8,7 @@
 use selene_core::{DbString, DurationOrderKey, EdgeId, NodeId, Value, duration_order_key};
 use selene_graph::{
     AdjacencyEntry, CompositeKey, CompositeKeyComponent, CompositeTypedIndex, NotNanF32, NotNanF64,
-    RowIndex, SeleneGraph, TypedIndex,
+    SeleneGraph, TypedIndex,
 };
 
 use super::CheckResult;
@@ -35,7 +35,7 @@ pub(super) fn check_label_index_cardinality(snapshot: &SeleneGraph) -> CheckResu
         }
     }
 
-    for row in snapshot.live_nodes() {
+    for row in snapshot.node_store.alive.iter() {
         let Some(labels) = snapshot.node_store.labels.get(row as usize) else {
             issues += 1;
             continue;
@@ -43,7 +43,8 @@ pub(super) fn check_label_index_cardinality(snapshot: &SeleneGraph) -> CheckResu
         for label in labels.iter() {
             expected_rows += 1;
             if !snapshot
-                .nodes_with_label(label)
+                .idx_label
+                .get(label)
                 .is_some_and(|bitmap| bitmap.contains(row))
             {
                 issues += 1;
@@ -69,7 +70,7 @@ pub(super) fn check_property_index_coverage(snapshot: &SeleneGraph) -> CheckResu
 
     for ((label, property), entry) in &snapshot.property_index {
         indexed_rows += entry.index.cardinality();
-        for row in snapshot.live_nodes() {
+        for row in snapshot.node_store.alive.iter() {
             let Some(labels) = snapshot.node_store.labels.get(row as usize) else {
                 issues += 1;
                 continue;
@@ -101,7 +102,7 @@ pub(super) fn check_property_index_coverage(snapshot: &SeleneGraph) -> CheckResu
     }
     for ((label, _), entry) in &snapshot.composite_property_index {
         indexed_rows += entry.index.cardinality();
-        for row in snapshot.live_nodes() {
+        for row in snapshot.node_store.alive.iter() {
             let Some(labels) = snapshot.node_store.labels.get(row as usize) else {
                 issues += 1;
                 continue;
@@ -233,27 +234,27 @@ pub(super) fn check_adjacency_symmetry(snapshot: &SeleneGraph) -> CheckResult {
         }
     }
 
-    for row in snapshot.edge_store.alive.iter() {
-        live_edges += 1;
-        let Some(edge_id) = snapshot.edge_id_for_row(RowIndex::new(row)) else {
-            issues += 1;
-            continue;
-        };
-        let Some((source, target, label)) = expected_edge(snapshot, edge_id) else {
-            issues += 1;
-            continue;
-        };
-        if !adjacency_entry_contains(
-            snapshot.outgoing_edges(source),
-            target,
-            edge_id,
-            label.clone(),
-        ) {
-            issues += 1;
+    if let Ok(live_edge_candidates) = snapshot.live_edge_candidates() {
+        for edge_id in live_edge_candidates.iter() {
+            live_edges += 1;
+            let Some((source, target, label)) = expected_edge(snapshot, edge_id) else {
+                issues += 1;
+                continue;
+            };
+            if !adjacency_entry_contains(
+                snapshot.outgoing_edges(source),
+                target,
+                edge_id,
+                label.clone(),
+            ) {
+                issues += 1;
+            }
+            if !adjacency_entry_contains(snapshot.incoming_edges(target), source, edge_id, label) {
+                issues += 1;
+            }
         }
-        if !adjacency_entry_contains(snapshot.incoming_edges(target), source, edge_id, label) {
-            issues += 1;
-        }
+    } else {
+        issues += 1;
     }
 
     if outgoing_edges != live_edges {
@@ -293,19 +294,19 @@ pub(super) fn check_edge_endpoint_liveness(snapshot: &SeleneGraph) -> CheckResul
     let mut issues = 0_usize;
     let mut checked = 0_usize;
 
-    for row in snapshot.edge_store.alive.iter() {
-        checked += 1;
-        let Some(edge_id) = snapshot.edge_id_for_row(RowIndex::new(row)) else {
-            issues += 1;
-            continue;
-        };
-        match snapshot.edge_endpoints(edge_id) {
-            Some((source, target))
-                if snapshot.is_node_alive(source) && snapshot.is_node_alive(target) => {}
-            _ => {
-                issues += 1;
+    if let Ok(live_edge_candidates) = snapshot.live_edge_candidates() {
+        for edge_id in live_edge_candidates.iter() {
+            checked += 1;
+            match snapshot.edge_endpoints(edge_id) {
+                Some((source, target))
+                    if snapshot.is_node_alive(source) && snapshot.is_node_alive(target) => {}
+                _ => {
+                    issues += 1;
+                }
             }
         }
+    } else {
+        issues += 1;
     }
 
     CheckResult::new(

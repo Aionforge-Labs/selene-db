@@ -16,9 +16,8 @@
 mod csr;
 mod row_index;
 
-use roaring::RoaringBitmap;
 use selene_core::{DbString, NodeId};
-use selene_graph::SeleneGraph;
+use selene_graph::{CandidateSet, Node, SeleneGraph};
 
 pub use csr::ProjNeighbor;
 use csr::{ProjCsr, build_csr_out, transpose_csr_in};
@@ -61,12 +60,12 @@ pub struct ProjectionConfig {
 #[derive(Debug)]
 pub struct GraphProjection {
     name: String,
-    /// Row-indexed bitmap of nodes included in this projection (post label
+    /// Typed candidate node set included in this projection (post label
     /// filter, post scope intersection).
-    nodes: RoaringBitmap,
+    nodes: CandidateSet<Node>,
     edge_labels: Vec<DbString>,
     weight_property: Option<DbString>,
-    /// Cached dense `sparse_row ↔ dense_index` remap over the frozen `nodes`
+    /// Cached dense `dense_index ↔ external NodeId` remap over the frozen `nodes`
     /// set. Built once at construction and shared by reference with every
     /// algorithm via [`GraphProjection::row_index`].
     row_index: RowIndex,
@@ -86,42 +85,38 @@ impl GraphProjection {
     pub fn build(
         snapshot: &SeleneGraph,
         config: &ProjectionConfig,
-        scope: Option<&RoaringBitmap>,
+        scope: Option<&CandidateSet<Node>>,
     ) -> Result<Self, AlgorithmsError> {
-        // Step 1: compute the row-indexed node bitmap.
         let mut nodes = if config.node_labels.is_empty() {
-            snapshot.live_nodes().clone()
+            snapshot.live_node_candidates()?
         } else {
-            let mut bm = RoaringBitmap::new();
+            let mut set: Option<CandidateSet<Node>> = None;
             for label in &config.node_labels {
-                if let Some(label_bm) = snapshot.nodes_with_label(label) {
-                    bm |= label_bm;
-                }
+                let labeled = snapshot.node_candidates_with_label(label)?;
+                set = match set {
+                    Some(existing) => Some(snapshot.union_candidates(&existing, &labeled)?),
+                    None => Some(labeled),
+                };
             }
-            // Restrict to alive rows in case any label bitmap retains a stale
-            // entry (defensive — the mutation funnel keeps these in sync).
-            bm &= snapshot.live_nodes();
-            bm
+            let unioned = set.unwrap_or_else(|| snapshot.bind_node_candidates([]).unwrap());
+            let live = snapshot.live_node_candidates()?;
+            snapshot.intersect_candidates(&unioned, &live)?
         };
-        if let Some(scope_bm) = scope {
-            nodes &= scope_bm;
+        if let Some(scope_set) = scope {
+            nodes = snapshot.intersect_candidates(&nodes, scope_set)?;
         }
 
-        // Step 1.5: build the dense remap once over the finalized node set. The
-        // CSR builder consumes it so offsets are sized by live-node count.
-        let row_index = RowIndex::from_bitmap(&nodes, snapshot);
+        let row_index = RowIndex::from_candidates(&nodes);
 
-        // Step 2: build CSR adjacency for each direction.
         let out_csr = build_csr_out(
             snapshot,
-            &nodes,
             &row_index,
             &config.edge_labels,
             config.weight_property.as_ref(),
         );
         let in_csr = transpose_csr_in(&out_csr, &row_index);
         #[cfg(debug_assertions)]
-        assert_csr_transpose(&nodes, &row_index, &out_csr, &in_csr);
+        assert_csr_transpose(&row_index, &out_csr, &in_csr);
 
         Ok(Self {
             name: config.name.clone(),
@@ -170,7 +165,7 @@ impl GraphProjection {
     /// Number of nodes in the projection.
     #[must_use]
     pub fn node_count(&self) -> usize {
-        self.nodes.len() as usize
+        self.nodes.len()
     }
 
     /// Number of **outgoing** edges in this projection.
@@ -271,29 +266,18 @@ impl GraphProjection {
 }
 
 #[cfg(debug_assertions)]
-fn assert_csr_transpose(
-    nodes: &RoaringBitmap,
-    row_index: &RowIndex,
-    out_csr: &ProjCsr,
-    in_csr: &ProjCsr,
-) {
+fn assert_csr_transpose(row_index: &RowIndex, out_csr: &ProjCsr, in_csr: &ProjCsr) {
     let mut out_edges = Vec::with_capacity(out_csr.total_neighbors());
-    for row in nodes.iter() {
-        let dense = row_index
-            .dense_of(row)
-            .expect("projection row has a dense index");
-        let source = row_index.node_id_of(dense);
+    for (dense, source) in row_index.iter_node_ids().enumerate() {
+        let dense = dense as u32;
         for neighbor in out_csr.neighbors_of_dense(dense) {
             out_edges.push((neighbor.edge_id, source, neighbor.node_id));
         }
     }
 
     let mut in_edges = Vec::with_capacity(in_csr.total_neighbors());
-    for row in nodes.iter() {
-        let dense = row_index
-            .dense_of(row)
-            .expect("projection row has a dense index");
-        let target = row_index.node_id_of(dense);
+    for (dense, target) in row_index.iter_node_ids().enumerate() {
+        let dense = dense as u32;
         for neighbor in in_csr.neighbors_of_dense(dense) {
             in_edges.push((neighbor.edge_id, neighbor.node_id, target));
         }
@@ -405,17 +389,10 @@ mod tests {
                 .dense_of_node(nid)
                 .expect("survivor has a dense index");
             assert_eq!(cached.node_id_of(dense), nid);
-            // The row read from the graph maps to the same dense index — no
-            // row+1 assumption baked into the oracle.
-            let row = snapshot
-                .row_for_node_id(nid)
-                .expect("survivor is mapped")
-                .get();
-            assert_eq!(cached.dense_of(row), Some(dense));
         }
 
-        // Row 0 (the deleted node 1) is outside the projection.
-        assert_eq!(cached.dense_of(0), None);
+        // Deleted node 1 is outside the projection.
+        assert_eq!(cached.dense_of_node(NodeId::new(1)), None);
     }
 
     /// OPT-9: CSR offsets are sized by live-node count, NOT node_store.len().
@@ -601,18 +578,18 @@ mod tests {
     /// Scope intersection still produces a dense map keyed by survivors.
     #[test]
     fn scoped_projection_dense_map() {
-        let (shared, _survivors) = sparse_ring(1000, &[10, 500, 999]);
+        let (shared, survivors) = sparse_ring(1000, &[10, 500, 999]);
         let snapshot = shared.read();
-        // Scope to rows {10, 999} only (drop 500).
-        let mut scope = RoaringBitmap::new();
-        scope.insert(10);
-        scope.insert(999);
+        // Scope to survivors {0, 2} only (drop 500).
+        let scope = snapshot
+            .bind_node_candidates([survivors[0], survivors[2]])
+            .unwrap();
         let proj = GraphProjection::build(&snapshot, &config(), Some(&scope)).unwrap();
         assert_eq!(proj.node_count(), 2);
         assert_eq!(proj.out_csr_offsets_len(), 3);
         assert_eq!(proj.row_index().len(), 2);
-        // The dropped node (row 500 → NodeId 501) is not in the projection.
-        assert_eq!(proj.row_index().dense_of(500), None);
+        // The dropped node is not in the projection.
+        assert_eq!(proj.row_index().dense_of_node(survivors[1]), None);
     }
 
     /// BRIEF-Item-4a Increment 6 — non-identity proof for the algorithms layer.

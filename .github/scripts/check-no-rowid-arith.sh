@@ -5,9 +5,8 @@
 # from an external id (`id - 1`) via arithmetic in production read paths. The
 # external NodeId/EdgeId is stable and never-reused; the internal RowIndex is
 # remappable by compaction (BRIEF-Item-4b), so `id == row + 1` no longer holds.
-# Read paths MUST convert through SeleneGraph's map-backed accessors:
-#   row_for_node_id / row_for_edge_id   (external id -> RowIndex)
-#   node_id_for_row / edge_id_for_row   (RowIndex -> external id)
+# Read paths MUST resolve through SeleneGraph's candidate producers or stable
+# ID accessors (node_candidates_*, is_node_alive, node_labels, etc.).
 # The binding-authority helper `node_row_index_arith` / `edge_row_index_arith`
 # (create_* and the recovery WAL-replay fallback in into_graph) is the only
 # sanctioned id->row arithmetic. The snapshot encoder no longer synthesizes ids
@@ -48,9 +47,8 @@ if [ -n "$matches" ]; then
   echo "$matches"
   echo
   echo "FORBIDDEN id<->row arithmetic in a production read path (BRIEF-Item-4a / D22)."
-  echo "Convert through SeleneGraph's map-backed accessors (row_for_node_id /"
-  echo "node_id_for_row / row_for_edge_id / edge_id_for_row), or — for a genuine"
-  echo "binding-authority/encode site — annotate the line // rowid-arith-ok: <reason>."
+  echo "Resolve through SeleneGraph's candidate producers and stable ID accessors,"
+  echo "or — for a genuine binding-authority/encode site — annotate the line // rowid-arith-ok: <reason>."
   exit 1
 fi
 echo "OK: no unguarded id<->row arithmetic in production read paths."

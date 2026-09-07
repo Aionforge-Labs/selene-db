@@ -99,7 +99,7 @@ proptest! {
             for (id, node_labels) in &alive {
                 // BRIEF-Item-4c: rows are append-assigned, so resolve each id's row
                 // through the authoritative map rather than `id - 1` arithmetic.
-                let row = mutator.read().row_for_node_id(*id).unwrap().get();
+                let row = mutator.read().node_row_for_id(*id).unwrap().get();
                 for label in node_labels {
                     expected.entry(label.clone()).or_default().insert(row);
                 }

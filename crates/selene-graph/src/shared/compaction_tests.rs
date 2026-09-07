@@ -11,7 +11,7 @@ use selene_core::{
     EdgeId, GraphId, LabelSet, NodeId, PropertyMap, PropertyValueType, Value, db_string,
 };
 
-use crate::store::RowIndex;
+use crate::store::NodeRow;
 use crate::{GraphTypeDef, NodeTypeDef, PropertyTypeDef, ValidationMode};
 
 fn prop(key: &str, value: Value) -> PropertyMap {
@@ -58,12 +58,12 @@ fn compact_densifies_live_graph_and_reclaims_dead_rows() {
     assert_eq!(g.node_store.len(), 3, "store densified in place");
     assert_eq!(g.node_count(), 3);
     // Survivors renumber dense in ascending old-row order: 1@0, 3@1, 5@2.
-    assert_eq!(g.row_for_node_id(NodeId::new(1)), Some(RowIndex::new(0)));
-    assert_eq!(g.row_for_node_id(NodeId::new(3)), Some(RowIndex::new(1)));
-    assert_eq!(g.row_for_node_id(NodeId::new(5)), Some(RowIndex::new(2)));
+    assert_eq!(g.node_row_for_id(NodeId::new(1)), Some(NodeRow::new(0)));
+    assert_eq!(g.node_row_for_id(NodeId::new(3)), Some(NodeRow::new(1)));
+    assert_eq!(g.node_row_for_id(NodeId::new(5)), Some(NodeRow::new(2)));
     // Reclaimed ids resolve NotFound; the high-water is preserved (no reuse).
-    assert!(g.row_for_node_id(NodeId::new(2)).is_none());
-    assert!(g.row_for_node_id(NodeId::new(4)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(2)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(4)).is_none());
     assert_eq!(g.meta.next_node_id, 6);
 }
 
@@ -137,13 +137,13 @@ fn create_after_compact_appends_without_rebloat() {
     let g = shared.read();
     assert_eq!(new_id, NodeId::new(6), "preserved high-water, no reuse");
     assert_eq!(
-        g.row_for_node_id(new_id),
-        Some(RowIndex::new(3)),
+        g.node_row_for_id(new_id),
+        Some(NodeRow::new(3)),
         "appended at the dense end, not the high-water arith row"
     );
     assert_eq!(g.node_store.len(), 4, "dense, no re-bloat");
     assert!(g.is_node_alive(NodeId::new(1)) && g.is_node_alive(NodeId::new(6)));
-    assert!(g.row_for_node_id(NodeId::new(2)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(2)).is_none());
 }
 
 #[test]
@@ -166,8 +166,8 @@ fn compact_on_a_dense_graph_is_a_noop() {
     assert_eq!(report.reclaimed_edges, 0);
     let g = shared.read();
     assert_eq!(g.node_store.len(), 2);
-    assert_eq!(g.row_for_node_id(NodeId::new(1)), Some(RowIndex::new(0)));
-    assert_eq!(g.row_for_node_id(NodeId::new(2)), Some(RowIndex::new(1)));
+    assert_eq!(g.node_row_for_id(NodeId::new(1)), Some(NodeRow::new(0)));
+    assert_eq!(g.node_row_for_id(NodeId::new(2)), Some(NodeRow::new(1)));
 }
 
 #[test]
@@ -220,7 +220,7 @@ fn compact_preserves_edges_and_adjacency() {
     assert_eq!(g.edge_endpoints(EdgeId::new(2)), Some((n3, n4)));
     assert_eq!(g.edge_endpoints(EdgeId::new(3)), Some((n1, n4)));
     assert!(
-        g.row_for_edge_id(EdgeId::new(1)).is_none(),
+        g.edge_row_for_id(EdgeId::new(1)).is_none(),
         "the cascade-deleted edge was reclaimed"
     );
     // Adjacency rebuilt across the renumber.
@@ -302,7 +302,7 @@ fn compact_preserves_closed_graph_binding_on_the_live_path() {
         let g = shared.read();
         assert!(g.meta.bound_type.is_some(), "GG02 binding survived densify");
         assert!(g.is_node_alive(NodeId::new(1)));
-        assert!(g.row_for_node_id(NodeId::new(2)).is_none(), "bob reclaimed");
+        assert!(g.node_row_for_id(NodeId::new(2)).is_none(), "bob reclaimed");
     }
     // A conforming insert commits; a non-conforming one is still rejected.
     {

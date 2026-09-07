@@ -102,7 +102,7 @@ pub use selene_persist::{
     WalTailReason, WalTailRepair,
 };
 pub use shared::{SharedGraph, SharedGraphBuilder};
-pub use store::{EdgeStore, NodeStore, RowIndex};
+pub use store::{EdgeStore, NodeStore};
 pub use text_index::{TextIndex, TextIndexMemoryUsage, TextIndexStats};
 pub use text_search::{TextSearchError, TextSearchHit};
 pub use type_validator::{EntityId, TypeViolation, validate_change, validate_entity_state};

@@ -11,7 +11,6 @@ use std::cmp::Ordering;
 use std::collections::{BTreeSet, BinaryHeap};
 use std::time::Duration;
 
-use roaring::RoaringBitmap;
 use selene_core::{CancellationCause, CancellationChecker, DbString, NodeId};
 use smallvec::SmallVec;
 
@@ -133,30 +132,22 @@ impl SeleneGraph {
         self.exact_text_search_nodes_filtered_checked(label, property, query, k, None, checker)
     }
 
-    /// Exhaustively rank text documents while admitting only `allowed_rows`.
-    ///
-    /// BM25 corpus statistics are still computed over every string document for
-    /// `(label, property)`, so scores and ordering match an unfiltered search
-    /// whose full ranking is filtered by this row set before `k` truncation.
-    pub fn exact_text_search_nodes_in_rows_checked(
+    /// Exhaustively rank text documents while admitting only `candidates`.
+    pub fn exact_text_search_nodes_in_candidates_checked(
         &self,
         label: &DbString,
         property: &DbString,
         query: &str,
         k: usize,
-        allowed_rows: &RoaringBitmap,
+        candidates: &CandidateSet<Node>,
         checker: CancellationChecker<'_>,
     ) -> Result<Vec<TextSearchHit>, TextSearchError> {
-        if allowed_rows.is_empty() {
-            return Ok(Vec::new());
-        }
-        let allowed = self.node_candidates_from_rows(allowed_rows, "text-search row filter")?;
         self.exact_text_search_nodes_filtered_checked(
             label,
             property,
             query,
             k,
-            Some(&allowed),
+            Some(candidates),
             checker,
         )
     }

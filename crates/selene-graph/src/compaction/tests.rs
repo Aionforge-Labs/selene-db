@@ -16,7 +16,7 @@ use super::{
     COMPACTION_RECOMMENDATION_MIN_RECLAIMABLE_ROWS, CompactionStats, compact_core,
 };
 use crate::error::GraphError;
-use crate::store::RowIndex;
+use crate::store::{EdgeRow, NodeRow};
 use crate::{AdjacencyEntry, CompactionReport, SeleneGraph, SharedGraph};
 
 fn prop(key: &str, value: Value) -> PropertyMap {
@@ -97,7 +97,7 @@ fn compaction_drops_dead_rows_and_renumbers_dense() {
     assert_eq!(g.node_count(), live_nodes);
     for row in 0..g.node_store.len() as u32 {
         let id = g
-            .node_id_for_row(RowIndex::new(row))
+            .node_id_for_node_row(NodeRow::new(row))
             .expect("every dense row has a live external id");
         assert!(g.is_node_alive(id), "dense row {row} ({id}) must be alive");
     }
@@ -112,20 +112,20 @@ fn compaction_drops_dead_rows_and_renumbers_dense() {
 
     // Survivors renumber dense in ascending old-row order: 1@old0->new0,
     // 3@old2->new1, 4@old3->new2 (old row 1, node 2, is gone).
-    assert_eq!(g.row_for_node_id(NodeId::new(1)), Some(RowIndex::new(0)));
-    assert_eq!(g.row_for_node_id(NodeId::new(3)), Some(RowIndex::new(1)));
-    assert_eq!(g.row_for_node_id(NodeId::new(4)), Some(RowIndex::new(2)));
+    assert_eq!(g.node_row_for_id(NodeId::new(1)), Some(NodeRow::new(0)));
+    assert_eq!(g.node_row_for_id(NodeId::new(3)), Some(NodeRow::new(1)));
+    assert_eq!(g.node_row_for_id(NodeId::new(4)), Some(NodeRow::new(2)));
 
     // The reclaimed deleted id flips NotAlive -> NotFound (the deliberate
     // compaction semantic): pre-compaction it stayed mapped to its dead row;
     // post-compaction the row is gone and the id resolves to nothing.
     assert!(!before.is_node_alive(NodeId::new(2)));
     assert!(
-        before.row_for_node_id(NodeId::new(2)).is_some(),
+        before.node_row_for_id(NodeId::new(2)).is_some(),
         "pre-compaction: deleted id still mapped (NotAlive, Option B)"
     );
     assert!(
-        g.row_for_node_id(NodeId::new(2)).is_none(),
+        g.node_row_for_id(NodeId::new(2)).is_none(),
         "post-compaction: deleted id reclaimed (NotFound)"
     );
     assert!(!g.is_node_alive(NodeId::new(2)));
@@ -178,14 +178,10 @@ fn compaction_preserves_observable_reads() {
     let la = db_string("cmp.a").unwrap();
     let external_with_label = |graph: &SeleneGraph| -> HashSet<NodeId> {
         graph
-            .nodes_with_label(&la)
-            .map(|bitmap| {
-                bitmap
-                    .iter()
-                    .map(|row| graph.node_id_for_row(RowIndex::new(row)).unwrap())
-                    .collect()
-            })
-            .unwrap_or_default()
+            .node_candidates_with_label(&la)
+            .unwrap()
+            .iter()
+            .collect()
     };
     assert_eq!(external_with_label(g), external_with_label(&before));
     assert_eq!(
@@ -207,7 +203,7 @@ fn compacted_graph_republishes_cleanly() {
     assert_eq!(g.node_count(), 3);
     assert_eq!(g.edge_count(), 2);
     assert!(g.is_node_alive(NodeId::new(1)));
-    assert!(g.row_for_node_id(NodeId::new(2)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(2)).is_none());
     assert_eq!(
         g.edge_endpoints(EdgeId::new(1)),
         Some((NodeId::new(1), NodeId::new(3)))
@@ -244,13 +240,13 @@ fn compacting_a_dense_graph_is_idempotent() {
     // happened not to move.
     for id in [NodeId::new(1), NodeId::new(2)] {
         assert_eq!(
-            g.row_for_node_id(id),
-            before.row_for_node_id(id),
+            g.node_row_for_id(id),
+            before.node_row_for_id(id),
             "dense graph: {id} must keep its row"
         );
     }
-    assert_eq!(g.row_for_node_id(NodeId::new(1)), Some(RowIndex::new(0)));
-    assert_eq!(g.row_for_node_id(NodeId::new(2)), Some(RowIndex::new(1)));
+    assert_eq!(g.node_row_for_id(NodeId::new(1)), Some(NodeRow::new(0)));
+    assert_eq!(g.node_row_for_id(NodeId::new(2)), Some(NodeRow::new(1)));
     assert_eq!(g.meta.next_node_id, before.meta.next_node_id);
 }
 
@@ -354,8 +350,8 @@ fn compaction_of_an_all_deleted_graph_reclaims_everything() {
     assert_eq!(g.node_count(), 0);
     assert_eq!(compacted.report.reclaimed_nodes, rows_before);
     assert!(compacted.report.reclaimed_edges >= 1);
-    assert!(g.row_for_node_id(NodeId::new(1)).is_none());
-    assert!(g.row_for_node_id(NodeId::new(2)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(1)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(2)).is_none());
     // No id reuse: the deleted ids stay burned.
     assert_eq!(g.meta.next_node_id, next_node_before);
     assert_eq!(g.meta.next_edge_id, next_edge_before);
@@ -414,16 +410,16 @@ fn aborted_tx_leaves_no_hole_so_store_stays_dense() {
         "append leaves NO interior hole row for the burned id"
     );
     assert_eq!(
-        before.row_for_node_id(NodeId::new(1)),
-        Some(RowIndex::new(0))
+        before.node_row_for_id(NodeId::new(1)),
+        Some(NodeRow::new(0))
     );
     assert_eq!(
-        before.row_for_node_id(NodeId::new(3)),
-        Some(RowIndex::new(1)),
+        before.node_row_for_id(NodeId::new(3)),
+        Some(NodeRow::new(1)),
         "id 3 appended at the dense end, not arith row 2"
     );
     assert!(
-        before.row_for_node_id(NodeId::new(2)).is_none(),
+        before.node_row_for_id(NodeId::new(2)).is_none(),
         "aborted id was never committed -> NotFound"
     );
     let next_node_before = before.meta.next_node_id;
@@ -435,9 +431,9 @@ fn aborted_tx_leaves_no_hole_so_store_stays_dense() {
     assert_eq!(g.node_store.len(), 2);
     assert_eq!(g.node_count(), 2);
     assert_eq!(compacted.report.reclaimed_nodes, 0, "nothing to reclaim");
-    assert_eq!(g.row_for_node_id(NodeId::new(1)), Some(RowIndex::new(0)));
-    assert_eq!(g.row_for_node_id(NodeId::new(3)), Some(RowIndex::new(1)));
-    assert!(g.row_for_node_id(NodeId::new(2)).is_none());
+    assert_eq!(g.node_row_for_id(NodeId::new(1)), Some(NodeRow::new(0)));
+    assert_eq!(g.node_row_for_id(NodeId::new(3)), Some(NodeRow::new(1)));
+    assert!(g.node_row_for_id(NodeId::new(2)).is_none());
     assert_eq!(
         g.meta.next_node_id, next_node_before,
         "burned id 2 must never be reissued"
@@ -481,14 +477,14 @@ fn republished_compacted_graph_allocates_without_reuse() {
     assert!(g.is_node_alive(new_id));
     // Dense append: the new node took the next dense row (3), NOT its high-water
     // arith row (4) — so the republished compacted store did not re-bloat.
-    assert_eq!(g.row_for_node_id(new_id), Some(RowIndex::new(3)));
+    assert_eq!(g.node_row_for_id(new_id), Some(NodeRow::new(3)));
     assert_eq!(g.node_store.len(), 4, "store stays dense, no hole re-bloat");
     // Survivors untouched by the new allocation.
     assert!(g.is_node_alive(NodeId::new(1)));
     assert!(g.is_node_alive(NodeId::new(3)));
     assert!(g.is_node_alive(NodeId::new(4)));
     // The reclaimed deleted id is not resurrected by the new create.
-    assert!(g.row_for_node_id(NodeId::new(2)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(2)).is_none());
 }
 
 // ───────────────────────── GRAPH-37: fail-loud guards ─────────────────────────
@@ -513,9 +509,7 @@ fn graph_with_one_live_node() -> SeleneGraph {
     graph.node_store.properties.push(PropertyMap::new());
     graph.node_store.row_to_id.push(NodeId::new(1));
     graph.node_store.alive_mut().insert(0);
-    graph
-        .node_id_to_row
-        .insert_cow(NodeId::new(1), RowIndex::new(0));
+    graph.node_rows.insert_cow(NodeId::new(1), NodeRow::new(0));
     graph
 }
 
@@ -549,9 +543,7 @@ fn compaction_rejects_edge_with_dead_endpoint() {
     graph.edge_store.properties.push(PropertyMap::new());
     graph.edge_store.row_to_id.push(EdgeId::new(1));
     graph.edge_store.alive_mut().insert(0);
-    graph
-        .edge_id_to_row
-        .insert_cow(EdgeId::new(1), RowIndex::new(0));
+    graph.edge_rows.insert_cow(EdgeId::new(1), EdgeRow::new(0));
 
     let GraphError::Inconsistent { reason } = expect_compact_inconsistent(&graph) else {
         unreachable!("helper returns only Inconsistent");

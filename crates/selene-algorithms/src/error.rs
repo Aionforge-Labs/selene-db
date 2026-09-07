@@ -90,4 +90,12 @@ pub enum AlgorithmsError {
         /// The unrecognized projection name.
         name: String,
     },
+
+    /// Underlying graph error.
+    #[error("graph error: {0}")]
+    Graph(#[from] selene_graph::GraphError),
+
+    /// Candidate set validation error.
+    #[error("candidate set error: {0}")]
+    CandidateSet(#[from] selene_graph::CandidateSetError),
 }

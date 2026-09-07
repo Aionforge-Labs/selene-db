@@ -153,16 +153,8 @@ impl IndexCatalog for LiveIndexCatalog {
             // Absent bitmap = zero rows carry the label; report 0 (an exact,
             // maximally-selective count) rather than None so the cost gate can
             // still prefer the index.
-            IndexTarget::Node => Some(
-                self.snapshot
-                    .nodes_with_label(&label)
-                    .map_or(0, |bm| bm.len()),
-            ),
-            IndexTarget::Edge => Some(
-                self.snapshot
-                    .edges_with_label(&label)
-                    .map_or(0, |bm| bm.len()),
-            ),
+            IndexTarget::Node => Some(self.snapshot.node_label_cardinality(&label)),
+            IndexTarget::Edge => Some(self.snapshot.edge_label_cardinality(&label)),
         }
     }
 
@@ -176,12 +168,10 @@ impl IndexCatalog for LiveIndexCatalog {
         match target {
             IndexTarget::Node => self
                 .snapshot
-                .nodes_with_property_eq(&label, &property, value)
-                .map(|cow| cow.len()),
+                .node_property_eq_cardinality(&label, &property, value),
             IndexTarget::Edge => self
                 .snapshot
-                .edges_with_property_eq(&label, &property, value)
-                .map(|cow| cow.len()),
+                .edge_property_eq_cardinality(&label, &property, value),
         }
     }
 
@@ -195,12 +185,10 @@ impl IndexCatalog for LiveIndexCatalog {
         match target {
             IndexTarget::Node => self
                 .snapshot
-                .nodes_with_property_range(&label, &property, range)
-                .map(|bm| bm.len()),
+                .node_property_range_cardinality(&label, &property, range),
             IndexTarget::Edge => self
                 .snapshot
-                .edges_with_property_range(&label, &property, range)
-                .map(|bm| bm.len()),
+                .edge_property_range_cardinality(&label, &property, range),
         }
     }
 

@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use selene_core::{DbString, NodeId, Value};
-use selene_graph::{RowIndex, SeleneGraph};
+use selene_graph::SeleneGraph;
 
 use crate::procedure_registry::ProcedureError;
 use crate::runtime::native_algorithms::error::invalid_argument;
@@ -56,32 +56,26 @@ pub(super) fn resolve_edge_result_nodes(
     snapshot: &SeleneGraph,
     filter: &PageRankEdgeFilter,
 ) -> Result<BTreeSet<NodeId>, ProcedureError> {
-    let edge_rows = crate::runtime::property_filter_rows::edge_rows_with_property_any(
+    let edge_candidates = crate::runtime::property_filter_rows::edge_candidates_with_property_any(
         snapshot,
         &filter.label,
         &filter.property,
         &filter.values,
     )
+    .map_err(|err| invalid_argument(format!("{PAGERANK_PROC}: {err}")))?
     .ok_or_else(|| {
         invalid_argument(format!(
             "{PAGERANK_PROC} edge_filter_property must name an indexed scalar edge property and edge_filter_values must match that index kind"
         ))
     })?;
     let mut nodes = BTreeSet::new();
-    for raw_edge_row in edge_rows.iter() {
-        let edge_id = snapshot
-            .edge_id_for_row(RowIndex::new(raw_edge_row))
-            .ok_or_else(|| ProcedureError::Internal {
-                detail: format!(
-                    "{PAGERANK_PROC} indexed edge filter row {raw_edge_row} has no edge id"
-                ),
-            })?;
+    for edge_id in edge_candidates.iter() {
         let (source, target) =
             snapshot
                 .edge_endpoints(edge_id)
                 .ok_or_else(|| ProcedureError::Internal {
                     detail: format!(
-                        "{PAGERANK_PROC} indexed edge filter row {raw_edge_row} has no endpoints"
+                        "{PAGERANK_PROC} indexed edge filter edge {edge_id} has no endpoints"
                     ),
                 })?;
         match filter.endpoint {

@@ -146,7 +146,7 @@ pub trait IndexCatalog: Send + Sync {
 pub(crate) type ValueRange = (std::ops::Bound<Value>, std::ops::Bound<Value>);
 
 /// Assert at compile time that the range tuple satisfies `RangeBounds<Value>`
-/// (the shape `SeleneGraph::nodes_with_property_range` consumes).
+/// (the shape `SeleneGraph::node_property_range_cardinality` consumes).
 const _: fn() = || {
     fn _assert<R: RangeBounds<Value>>() {}
     _assert::<ValueRange>();

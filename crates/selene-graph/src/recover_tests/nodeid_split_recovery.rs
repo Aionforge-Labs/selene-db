@@ -15,7 +15,7 @@
 //! Coverage matrix (one graph):
 //! - non-identity alive rows (NodeId 5@row0, 8@row1, 20@row4) place positionally;
 //! - a committed-then-deleted row (NodeId 15@row3, Option B keeps its id) recovers
-//!   mapped-but-dead -> `is_node_alive == false` yet `row_for_node_id` resolves;
+//!   mapped-but-dead -> `is_node_alive == false` yet `node_row_for_id` resolves;
 //! - an aborted-tx hole row (TOMBSTONE@row2) is preserved positionally but stays
 //!   OUT of the id->row map -> its would-be arithmetic id resolves to `None`
 //!   (NotFound), the live-vs-recovered consistency STEP 9 fixes;
@@ -25,7 +25,7 @@
 use selene_core::{Change, EdgeId, GraphId, LabelSet, NodeId, PropertyMap, db_string};
 
 use super::{append_wal, node_created, sample_shared_graph, temp_dir, write_snapshot};
-use crate::store::RowIndex;
+use crate::store::{EdgeRow, NodeRow};
 use crate::{SeleneGraph, SharedGraph};
 
 /// Hand-build a graph whose external ids are not `row + 1`, with an interior
@@ -106,16 +106,22 @@ fn non_identity_snapshot_round_trips_positionally() {
     let g = recovered.read();
 
     // --- Nodes: rows placed by stored position, NOT by `id - 1` arithmetic. ---
-    assert_eq!(g.row_for_node_id(NodeId::new(5)), Some(RowIndex::new(0)));
-    assert_eq!(g.row_for_node_id(NodeId::new(8)), Some(RowIndex::new(1)));
-    assert_eq!(g.row_for_node_id(NodeId::new(15)), Some(RowIndex::new(3)));
-    assert_eq!(g.row_for_node_id(NodeId::new(20)), Some(RowIndex::new(4)));
+    assert_eq!(g.node_row_for_id(NodeId::new(5)), Some(NodeRow::new(0)));
+    assert_eq!(g.node_row_for_id(NodeId::new(8)), Some(NodeRow::new(1)));
+    assert_eq!(g.node_row_for_id(NodeId::new(15)), Some(NodeRow::new(3)));
+    assert_eq!(g.node_row_for_id(NodeId::new(20)), Some(NodeRow::new(4)));
     // The arithmetic answer (id 20 -> row 19) is WRONG; positional says row 4.
-    assert_ne!(g.row_for_node_id(NodeId::new(20)), Some(RowIndex::new(19)));
-    assert_eq!(g.node_id_for_row(RowIndex::new(0)), Some(NodeId::new(5)));
-    assert_eq!(g.node_id_for_row(RowIndex::new(4)), Some(NodeId::new(20)));
+    assert_ne!(g.node_row_for_id(NodeId::new(20)), Some(NodeRow::new(19)));
+    assert_eq!(
+        g.node_id_for_node_row(NodeRow::new(0)),
+        Some(NodeId::new(5))
+    );
+    assert_eq!(
+        g.node_id_for_node_row(NodeRow::new(4)),
+        Some(NodeId::new(20))
+    );
     // Interior hole row is preserved positionally but carries no external id.
-    assert_eq!(g.node_id_for_row(RowIndex::new(2)), None);
+    assert_eq!(g.node_id_for_node_row(NodeRow::new(2)), None);
     assert_eq!(g.node_store.len(), 5, "the interior hole row is preserved");
 
     // --- Liveness: deleted (mapped, dead) vs aborted hole (unmapped). ---
@@ -124,11 +130,11 @@ fn non_identity_snapshot_round_trips_positionally() {
     assert!(g.is_node_alive(NodeId::new(20)));
     // Deleted node 15 stays mapped to its dead row -> NotAlive, not NotFound.
     assert!(!g.is_node_alive(NodeId::new(15)));
-    assert_eq!(g.row_for_node_id(NodeId::new(15)), Some(RowIndex::new(3)));
+    assert_eq!(g.node_row_for_id(NodeId::new(15)), Some(NodeRow::new(3)));
     // Aborted-tx hole: under the OLD format the row-2 hole encoded `NodeId(3)`
     // (row+1) and recovery bound it -> NotAlive. STEP 9 encodes TOMBSTONE and
     // skips it, so `NodeId(3)` resolves NotFound, matching the live path.
-    assert_eq!(g.row_for_node_id(NodeId::new(3)), None);
+    assert_eq!(g.node_row_for_id(NodeId::new(3)), None);
     assert!(!g.is_node_alive(NodeId::new(3)));
     assert_eq!(g.node_count(), 3, "only the three alive nodes are counted");
 
@@ -147,10 +153,10 @@ fn non_identity_snapshot_round_trips_positionally() {
     assert_eq!(g.meta.next_edge_id, 8);
 
     // --- Edges: positional placement + adjacency rebuilt from external ids. ---
-    assert_eq!(g.row_for_edge_id(EdgeId::new(3)), Some(RowIndex::new(0)));
-    assert_eq!(g.row_for_edge_id(EdgeId::new(7)), Some(RowIndex::new(2)));
-    assert_ne!(g.row_for_edge_id(EdgeId::new(7)), Some(RowIndex::new(6)));
-    assert_eq!(g.edge_id_for_row(RowIndex::new(1)), None); // hole
+    assert_eq!(g.edge_row_for_id(EdgeId::new(3)), Some(EdgeRow::new(0)));
+    assert_eq!(g.edge_row_for_id(EdgeId::new(7)), Some(EdgeRow::new(2)));
+    assert_ne!(g.edge_row_for_id(EdgeId::new(7)), Some(EdgeRow::new(6)));
+    assert_eq!(g.edge_id_for_edge_row(EdgeRow::new(1)), None); // hole
     assert_eq!(g.edge_store.len(), 3, "the interior edge hole is preserved");
     assert!(g.is_edge_alive(EdgeId::new(3)));
     assert!(g.is_edge_alive(EdgeId::new(7)));
@@ -205,12 +211,21 @@ fn out_of_order_positional_snapshot_round_trips() {
 
     // into_graph visits ids ascending (3, 7, 10). id 3@pos1 and 7@pos2 push, then
     // 10@pos0 takes the `set` branch and overwrites the row-0 tombstone pad.
-    assert_eq!(g.row_for_node_id(NodeId::new(10)), Some(RowIndex::new(0)));
-    assert_eq!(g.row_for_node_id(NodeId::new(3)), Some(RowIndex::new(1)));
-    assert_eq!(g.row_for_node_id(NodeId::new(7)), Some(RowIndex::new(2)));
-    assert_eq!(g.node_id_for_row(RowIndex::new(0)), Some(NodeId::new(10)));
-    assert_eq!(g.node_id_for_row(RowIndex::new(1)), Some(NodeId::new(3)));
-    assert_eq!(g.node_id_for_row(RowIndex::new(2)), Some(NodeId::new(7)));
+    assert_eq!(g.node_row_for_id(NodeId::new(10)), Some(NodeRow::new(0)));
+    assert_eq!(g.node_row_for_id(NodeId::new(3)), Some(NodeRow::new(1)));
+    assert_eq!(g.node_row_for_id(NodeId::new(7)), Some(NodeRow::new(2)));
+    assert_eq!(
+        g.node_id_for_node_row(NodeRow::new(0)),
+        Some(NodeId::new(10))
+    );
+    assert_eq!(
+        g.node_id_for_node_row(NodeRow::new(1)),
+        Some(NodeId::new(3))
+    );
+    assert_eq!(
+        g.node_id_for_node_row(NodeRow::new(2)),
+        Some(NodeId::new(7))
+    );
     // The row-0 pad must NOT leave a stale tombstone or dead row behind.
     assert!(g.is_node_alive(NodeId::new(10)));
     assert!(g.is_node_alive(NodeId::new(3)));
@@ -250,12 +265,12 @@ fn recovered_store_continues_id_allocation_without_clobber() {
     assert!(g.is_node_alive(NodeId::new(21)));
     // The recovered rows are untouched: alive ids still resolve, the deleted id
     // stays mapped-but-dead, the aborted id stays NotFound.
-    assert_eq!(g.row_for_node_id(NodeId::new(5)), Some(RowIndex::new(0)));
-    assert_eq!(g.row_for_node_id(NodeId::new(20)), Some(RowIndex::new(4)));
+    assert_eq!(g.node_row_for_id(NodeId::new(5)), Some(NodeRow::new(0)));
+    assert_eq!(g.node_row_for_id(NodeId::new(20)), Some(NodeRow::new(4)));
     assert!(g.is_node_alive(NodeId::new(5)));
     assert!(!g.is_node_alive(NodeId::new(15)));
-    assert!(g.row_for_node_id(NodeId::new(15)).is_some());
-    assert!(g.row_for_node_id(NodeId::new(3)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(15)).is_some());
+    assert!(g.node_row_for_id(NodeId::new(3)).is_none());
 }
 
 // --- BRIEF-Item-4c: compacted-snapshot recovery + post-compaction WAL append ---
@@ -310,9 +325,9 @@ fn compacted_snapshot_recovers_dense() {
     assert!(g.is_node_alive(NodeId::new(1)));
     assert!(g.is_node_alive(NodeId::new(4)));
     // Reclaimed ids are gone from the compacted snapshot -> NotFound.
-    assert!(g.row_for_node_id(NodeId::new(2)).is_none());
-    assert!(g.row_for_node_id(NodeId::new(3)).is_none());
-    assert!(g.row_for_node_id(NodeId::new(5)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(2)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(3)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(5)).is_none());
     // The monotonic high-water survives recovery so no id is ever reissued.
     assert_eq!(g.meta.next_node_id, 6);
     let _ = std::fs::remove_dir_all(dir);
@@ -339,9 +354,9 @@ fn post_compaction_wal_create_recovers_dense_without_rebloat() {
         "the WAL-created node recovered"
     );
     // Pre-compaction deletes rode below the snapshot WAL floor -> never replayed.
-    assert!(g.row_for_node_id(NodeId::new(2)).is_none());
-    assert!(g.row_for_node_id(NodeId::new(3)).is_none());
-    assert!(g.row_for_node_id(NodeId::new(5)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(2)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(3)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(5)).is_none());
     // No re-bloat: exactly 3 rows (2 dense survivors + 1 appended WAL node), and
     // the WAL node landed at the dense end — not arith row 5.
     assert_eq!(
@@ -349,7 +364,7 @@ fn post_compaction_wal_create_recovers_dense_without_rebloat() {
         3,
         "no hole re-bloat from the WAL-created id"
     );
-    assert_eq!(g.row_for_node_id(NodeId::new(6)), Some(RowIndex::new(2)));
+    assert_eq!(g.node_row_for_id(NodeId::new(6)), Some(NodeRow::new(2)));
     // Allocation continues above the recovered high-water (id 6 + 1).
     assert_eq!(g.meta.next_node_id, 7);
     let _ = std::fs::remove_dir_all(dir);
@@ -383,7 +398,7 @@ fn post_compaction_wal_edge_create_recovers_dense_without_rebloat() {
         1,
         "no edge re-bloat: the WAL edge appended at the dense end"
     );
-    assert_eq!(g.row_for_edge_id(EdgeId::new(2)), Some(RowIndex::new(0)));
+    assert_eq!(g.edge_row_for_id(EdgeId::new(2)), Some(EdgeRow::new(0)));
     assert_eq!(
         g.edge_endpoints(EdgeId::new(2)),
         Some((NodeId::new(1), NodeId::new(4)))
@@ -424,7 +439,7 @@ fn post_compaction_wal_delete_of_survivor_replays_against_compacted_snapshot() {
         "the other survivor is untouched"
     );
     // The reclaimed pre-compaction ids stay NotFound throughout.
-    assert!(g.row_for_node_id(NodeId::new(2)).is_none());
-    assert!(g.row_for_node_id(NodeId::new(5)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(2)).is_none());
+    assert!(g.node_row_for_id(NodeId::new(5)).is_none());
     let _ = std::fs::remove_dir_all(dir);
 }

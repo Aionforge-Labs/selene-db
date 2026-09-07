@@ -144,7 +144,8 @@ fn a_clean_index_still_answers_and_stays_exact() {
     let level = db_string("level");
     assert!(
         snapshot
-            .nodes_with_property_eq(&reading, &level, &Value::Int(3))
+            .node_candidates_with_property_eq(&reading, &level, &Value::Int(3))
+            .unwrap()
             .is_some(),
         "an index covering every row must keep answering probes"
     );
@@ -165,7 +166,8 @@ fn repairing_the_drifted_row_re_enables_the_index() {
     assert!(
         graph
             .read()
-            .nodes_with_property_eq(&reading, &level, &Value::Int(3))
+            .node_candidates_with_property_eq(&reading, &level, &Value::Int(3))
+            .unwrap()
             .is_none(),
         "while a row is unkeyable the index declines so callers scan"
     );
@@ -184,7 +186,8 @@ fn repairing_the_drifted_row_re_enables_the_index() {
     assert!(
         graph
             .read()
-            .nodes_with_property_eq(&reading, &level, &Value::Int(7))
+            .node_candidates_with_property_eq(&reading, &level, &Value::Int(7))
+            .unwrap()
             .is_some(),
         "once every unkeyable row is gone the index answers again"
     );
@@ -404,7 +407,8 @@ fn updating_between_signed_zeros_leaves_the_index_answering() {
     assert!(
         graph
             .read()
-            .nodes_with_property_eq(&reading, &level, &Value::Float(0.0))
+            .node_candidates_with_property_eq(&reading, &level, &Value::Float(0.0))
+            .unwrap()
             .is_some(),
         "an update that only flips the sign of zero must not demote the index"
     );

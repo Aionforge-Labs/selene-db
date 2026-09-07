@@ -1,6 +1,5 @@
 //! Integration tests for `pagerank` per spec 16 §E19–§E23.
 
-use roaring::RoaringBitmap;
 use selene_algorithms::{
     GraphProjection, PageRankConfig, PageRankOrientation, Parallelism, ProjectionConfig, pagerank,
 };
@@ -282,10 +281,9 @@ fn pagerank_handles_sparse_row_projection() {
     txn.commit().unwrap();
 
     let snapshot = shared.read();
-    let mut scope = RoaringBitmap::new();
-    scope.insert(0);
-    scope.insert(50);
-    scope.insert(99);
+    let scope = snapshot
+        .bind_node_candidates([nodes[0], nodes[50], nodes[99]])
+        .unwrap();
     let proj = GraphProjection::build(
         &snapshot,
         &ProjectionConfig {

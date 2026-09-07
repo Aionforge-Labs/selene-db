@@ -1,6 +1,5 @@
 //! Integration tests for `betweenness` per spec 16 §E19–§E24.
 
-use roaring::RoaringBitmap;
 use selene_algorithms::{
     BetweennessConfig, GraphProjection, Parallelism, ProjectionConfig,
     betweenness as run_betweenness,
@@ -258,10 +257,9 @@ fn betweenness_handles_sparse_row_projection() {
     txn.commit().unwrap();
 
     let snapshot = shared.read();
-    let mut scope = RoaringBitmap::new();
-    scope.insert(0);
-    scope.insert(50);
-    scope.insert(99);
+    let scope = snapshot
+        .bind_node_candidates([nodes[0], nodes[50], nodes[99]])
+        .unwrap();
     let proj = GraphProjection::build(
         &snapshot,
         &ProjectionConfig {

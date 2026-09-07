@@ -19,7 +19,6 @@
 
 use std::collections::BTreeSet;
 
-use roaring::RoaringBitmap;
 use selene_algorithms::{
     AlgoResult, AlgoSnapshotInput, ApspConfig, BetweennessConfig, GraphProjection, GraphSummary,
     PageRankConfig, PageRankOrientation, Parallelism, ProjectionConfig, TriangleCountConfig,
@@ -271,10 +270,6 @@ fn build_graph_and_projection(graph: AlgoCorpusGraph) -> (GraphProjection, Strin
                 edges.push((b, c));
                 edges.push((c, a));
             }
-            let mut scope = RoaringBitmap::new();
-            for &row in in_scope {
-                scope.insert(row);
-            }
             (
                 total_nodes,
                 edges,
@@ -283,7 +278,7 @@ fn build_graph_and_projection(graph: AlgoCorpusGraph) -> (GraphProjection, Strin
                     total_nodes,
                     in_scope.len()
                 ),
-                Some(scope),
+                Some(in_scope),
             )
         }
         _ => {
@@ -305,6 +300,10 @@ fn build_graph_and_projection(graph: AlgoCorpusGraph) -> (GraphProjection, Strin
     }
     txn.commit().unwrap();
     let snapshot = shared.read();
+    let scope_candidates = scope_opt.map(|in_scope| {
+        let in_scope_ids = in_scope.iter().map(|&row| nodes[row as usize]);
+        snapshot.bind_node_candidates(in_scope_ids).unwrap()
+    });
     let proj = GraphProjection::build(
         &snapshot,
         &ProjectionConfig {
@@ -313,7 +312,7 @@ fn build_graph_and_projection(graph: AlgoCorpusGraph) -> (GraphProjection, Strin
             edge_labels: vec![],
             weight_property: None,
         },
-        scope_opt.as_ref(),
+        scope_candidates.as_ref(),
     )
     .unwrap();
     (proj, fixture_label)

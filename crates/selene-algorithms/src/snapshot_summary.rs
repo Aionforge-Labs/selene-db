@@ -8,10 +8,9 @@
 //!
 //! Snapshot-determinism (§E31): `NodeId` rendered as `n<label>` using
 //! `NodeId.get() - 1` as a stable graph-less display label (NOT the production
-//! id↔row mapping, which lives in `node_id_to_row` per BRIEF-Item-4a — the
-//! renderer holds no graph; corpus fixtures are append-only so the label is
-//! unambiguous; see `render_node`); `f64` scores rendered as `{:.6}`; result
-//! vectors NOT re-sorted at render time
+//! storage mapping — the renderer holds no graph; corpus fixtures are
+//! append-only so the label is unambiguous; see `render_node`); `f64` scores
+//! rendered as `{:.6}`; result vectors NOT re-sorted at render time
 //! (preserves §E12/§E17/§E21/§E27 algorithm-emitted order); empty results
 //! rendered as the literal token `RESULT EMPTY`.
 
@@ -224,11 +223,10 @@ fn render_result(result: &AlgoResult<'_>, out: &mut Vec<String>) {
 
 /// Render a `NodeId` as `n<label>` per §E31, using `NodeId.get() - 1` as the
 /// display label. This is a **graph-less display convention for the harness**,
-/// not a correctness path: the production id↔row mapping now lives in the
-/// `node_id_to_row` map (BRIEF-Item-4a), but the renderer only has a `NodeId`,
+/// not a correctness path: the renderer only has a `NodeId`,
 /// and the corpus fixtures are append-only (never deleted/compacted) so the
 /// `id - 1` label is stable and unambiguous for golden output. It is deliberately
-/// NOT routed through `SeleneGraph::node_id_for_row` (the renderer holds no
+/// NOT routed through graph id resolution (the renderer holds no
 /// graph); a future compacted corpus would render by id rather than synthesized
 /// row.
 ///

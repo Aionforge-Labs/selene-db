@@ -2,7 +2,6 @@
 //! directed views respectively (spec 16 §E09–§E12; BRIEF-52).
 
 use proptest::prelude::*;
-use roaring::RoaringBitmap;
 use selene_algorithms::{GraphProjection, ProjectionConfig, scc, scc_count, wcc, wcc_count};
 use selene_core::{DbString, GraphId, LabelSet, NodeId, PropertyMap};
 use selene_graph::SharedGraph;
@@ -239,10 +238,9 @@ fn wcc_handles_sparse_row_projection() {
     // fail the test but would be observable under heap profiling).
     let (shared, nodes) = build_graph(100, &[]);
     let snapshot = shared.read();
-    let mut scope = RoaringBitmap::new();
-    scope.insert(0);
-    scope.insert(50);
-    scope.insert(99);
+    let scope = snapshot
+        .bind_node_candidates([nodes[0], nodes[50], nodes[99]])
+        .unwrap();
     let proj = GraphProjection::build(
         &snapshot,
         &ProjectionConfig {
@@ -276,10 +274,9 @@ fn scc_handles_sparse_row_projection() {
     // (rows 50/51) in scope along with row 99 (isolated).
     let (shared, nodes) = build_graph(100, &[(50, 51), (51, 50)]);
     let snapshot = shared.read();
-    let mut scope = RoaringBitmap::new();
-    scope.insert(50);
-    scope.insert(51);
-    scope.insert(99);
+    let scope = snapshot
+        .bind_node_candidates([nodes[50], nodes[51], nodes[99]])
+        .unwrap();
     let proj = GraphProjection::build(
         &snapshot,
         &ProjectionConfig {

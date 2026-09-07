@@ -14,8 +14,7 @@ use selene_graph::{GraphError, TextSearchError};
 
 use super::meta::{StaticOutputColumn, StaticParameter};
 use super::retrieval_filter::{
-    append_edge_filter_parameters, append_node_filter_parameters, node_ids_for_rows,
-    optional_filter_rows,
+    append_edge_filter_parameters, append_node_filter_parameters, optional_filter_candidates,
 };
 use super::vector_candidate_state_common::{
     CandidateStateOperation, candidate_state_error, operation_arg,
@@ -206,20 +205,20 @@ pub(super) fn execute(
     let k = cardinality_arg(PROC_NAME, &args[3], "k")?;
 
     let snapshot = ctx.snapshot();
-    let filter_rows = if args.len() >= 6 {
+    let filter_candidates = if args.len() >= 6 {
         let edge_filter = if args.len() == 10 {
             Some((&args[6], &args[7], &args[8], &args[9]))
         } else {
             None
         };
-        optional_filter_rows(PROC_NAME, snapshot, &label, &args[4], &args[5], edge_filter)?
+        optional_filter_candidates(PROC_NAME, snapshot, &label, &args[4], &args[5], edge_filter)?
     } else {
         None
     };
     let hits = match snapshot.text_index_for(&label, &property) {
         Some(index) => {
-            if let Some(rows) = &filter_rows {
-                let nodes = node_ids_for_rows(PROC_NAME, snapshot, rows)?;
+            if let Some(candidates) = &filter_candidates {
+                let nodes: Vec<_> = candidates.iter().collect();
                 index
                     .search_candidates_checked(query, &nodes, k, ctx.cancellation_checker())
                     .map_err(text_search_error)?
@@ -230,14 +229,14 @@ pub(super) fn execute(
             }
         }
         None => {
-            if let Some(rows) = &filter_rows {
+            if let Some(candidates) = &filter_candidates {
                 snapshot
-                    .exact_text_search_nodes_in_rows_checked(
+                    .exact_text_search_nodes_in_candidates_checked(
                         &label,
                         &property,
                         query,
                         k,
-                        rows,
+                        candidates,
                         ctx.cancellation_checker(),
                     )
                     .map_err(text_search_error)?

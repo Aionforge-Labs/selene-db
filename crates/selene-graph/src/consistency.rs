@@ -132,16 +132,8 @@ impl SeleneGraph {
     }
 
     fn check_typed_id_maps(&self) -> Result<(), String> {
-        if self.node_rows.len() != self.node_id_to_row.len() {
-            return Err("typed node inverse map disagrees with the Part 3 lower-row bridge".into());
-        }
-        if self.edge_rows.len() != self.edge_id_to_row.len() {
-            return Err("typed edge inverse map disagrees with the Part 3 lower-row bridge".into());
-        }
         for (id, row) in &self.node_rows {
-            if row.index() >= self.node_store.len()
-                || self.node_id_for_node_row(*row) != Some(*id)
-                || self.node_id_to_row.get(id).copied() != Some(row.lower_row_bridge())
+            if row.index() >= self.node_store.len() || self.node_id_for_node_row(*row) != Some(*id)
             {
                 return Err(format!(
                     "typed node inverse map has invalid binding {id} -> {}",
@@ -150,9 +142,7 @@ impl SeleneGraph {
             }
         }
         for (id, row) in &self.edge_rows {
-            if row.index() >= self.edge_store.len()
-                || self.edge_id_for_edge_row(*row) != Some(*id)
-                || self.edge_id_to_row.get(id).copied() != Some(row.lower_row_bridge())
+            if row.index() >= self.edge_store.len() || self.edge_id_for_edge_row(*row) != Some(*id)
             {
                 return Err(format!(
                     "typed edge inverse map has invalid binding {id} -> {}",

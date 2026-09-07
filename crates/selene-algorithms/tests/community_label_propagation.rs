@@ -1,6 +1,5 @@
 //! Integration tests for `label_propagation` per spec 16 §E25–§E30.
 
-use roaring::RoaringBitmap;
 use selene_algorithms::{GraphProjection, ProjectionConfig, label_propagation};
 use selene_core::{DbString, GraphId, LabelSet, NodeId, PropertyMap};
 use selene_graph::SharedGraph;
@@ -237,9 +236,9 @@ fn label_propagation_handles_sparse_row_projection() {
     txn.commit().unwrap();
 
     let snapshot = shared.read();
-    let mut scope = RoaringBitmap::new();
-    scope.insert(10);
-    scope.insert(90);
+    let scope = snapshot
+        .bind_node_candidates([nodes[10], nodes[90]])
+        .unwrap();
     let proj = GraphProjection::build(
         &snapshot,
         &ProjectionConfig {

@@ -305,7 +305,7 @@ fn text_index_replacement_updates_shared_terms_in_place() {
 
     let snapshot = graph.read();
     let row = snapshot
-        .row_for_node_id(target)
+        .node_row_for_id(target)
         .expect("target row remains live")
         .get();
     let mut index = snapshot.build_text_index(&doc, &body).unwrap();

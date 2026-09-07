@@ -1,16 +1,16 @@
 //! Edge-index candidate helpers shared by expand executors.
 
-use roaring::RoaringBitmap;
 use selene_core::EdgeId;
+use selene_graph::{CandidateSet, Edge};
 
 use crate::{EdgeMatch, NodeOrEdgeScan, ScanAccess, ScanKind};
 
 use super::{EvalCtx, ExecutorError, scan};
 
-pub(super) fn candidate_row_filter(
+pub(super) fn candidate_edge_filter(
     edge: &EdgeMatch,
     ctx: &EvalCtx<'_, '_, '_, '_>,
-) -> Result<Option<RoaringBitmap>, ExecutorError> {
+) -> Result<Option<CandidateSet<Edge>>, ExecutorError> {
     match &edge.access {
         ScanAccess::Linear | ScanAccess::LabelIndex { .. } => Ok(None),
         ScanAccess::TypedIndexRange { .. }
@@ -25,23 +25,14 @@ pub(super) fn candidate_row_filter(
                 access: edge.access.clone(),
                 span: edge.span,
             };
-            Ok(Some(
-                scan::candidate_rows(&scan, ctx)?.into_iter().collect(),
-            ))
+            Ok(Some(scan::candidate_edge_set(&scan, ctx)?))
         }
     }
 }
 
-pub(super) fn row_filter_matches(
-    filter: Option<&RoaringBitmap>,
-    edge_id: EdgeId,
-    ctx: &EvalCtx<'_, '_, '_, '_>,
-) -> bool {
-    let Some(rows) = filter else {
+pub(super) fn edge_filter_matches(filter: Option<&CandidateSet<Edge>>, edge_id: EdgeId) -> bool {
+    let Some(candidates) = filter else {
         return true;
     };
-    ctx.tx
-        .snapshot()
-        .row_for_edge_id(edge_id)
-        .is_some_and(|row| rows.contains(row.get()))
+    candidates.contains(edge_id)
 }
