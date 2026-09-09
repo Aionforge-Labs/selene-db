@@ -41,7 +41,9 @@ pub const SNAPSHOT_VERSION_MAJOR: u16 = 1;
 /// section can persist both node-property and edge-property index
 /// registrations. The exact-match gate rejects pre-edge-index schema rows
 /// rather than decoding them against the wrong archived key shape.
-pub const SNAPSHOT_VERSION_MINOR: u16 = 5;
+/// F01-PR03 adds intrinsic directionality to edge reconstruction inputs.
+/// This guards the current archive shape, not the future F02 byte format.
+pub const SNAPSHOT_VERSION_MINOR: u16 = 6;
 /// Fixed snapshot file-header length.
 pub const SNAPSHOT_FILE_HEADER_LEN: usize = 32;
 /// Whole-body compression flag, reserved in v1.0.
@@ -238,7 +240,7 @@ mod tests {
             Err(PersistError::UnsupportedVersion {
                 artifact: PersistArtifact::Snapshot,
                 major: 2,
-                minor: 5
+                minor: 6
             })
         ));
     }

@@ -30,6 +30,7 @@ fn node_updated_with_label_diff_and_property_diff() {
 #[test]
 fn edge_lifecycle_create_update_delete() {
     let create = Change::EdgeCreated {
+        directionality: crate::EdgeDirectionality::Directed,
         id: EdgeId::new(1),
         label: dbs("change.edge"),
         source: NodeId::new(1),

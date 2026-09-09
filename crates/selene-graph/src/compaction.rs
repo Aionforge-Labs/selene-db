@@ -272,6 +272,14 @@ pub fn compact_core(graph: &SeleneGraph) -> GraphResult<CompactedCore> {
                 .ok_or_else(|| column_missing("label"))?,
         );
         edges.source.push(source);
+        edges.directionality.push(
+            graph
+                .edge_store
+                .directionality
+                .get(r)
+                .copied()
+                .ok_or_else(|| column_missing("directionality"))?,
+        );
         edges.target.push(target);
         edges.properties.push(
             graph

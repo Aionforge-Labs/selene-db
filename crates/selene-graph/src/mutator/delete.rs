@@ -54,6 +54,9 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
         if let Some(incoming) = graph.adjacency_in.get(&id) {
             incident.extend(incoming.iter().map(|edge| edge.edge_id));
         }
+        if let Some(undirected) = graph.undirected_edges(id) {
+            incident.extend(undirected.iter().map(|edge| edge.edge_id));
+        }
         if incident.len() > 1 {
             incident.sort_unstable();
             incident.dedup();
@@ -108,6 +111,7 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
             // incident edge) into one sorted batch update.
             graph.adjacency_out.remove_cow(&id);
             graph.adjacency_in.remove_cow(&id);
+            graph.adjacency_undirected.remove_cow(&id);
         }
         Ok(incident)
     }
@@ -299,6 +303,10 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
         if remove_adjacency {
             remove_edge_from_adjacency(&mut graph.adjacency_out, source, id);
             remove_edge_from_adjacency(&mut graph.adjacency_in, target, id);
+            remove_edge_from_adjacency(&mut graph.adjacency_undirected, source, id);
+            if source != target {
+                remove_edge_from_adjacency(&mut graph.adjacency_undirected, target, id);
+            }
         }
         graph.edge_store.label.set(row.index(), db_string("")?);
         graph.edge_store.source.set(row.index(), NodeId::TOMBSTONE);
@@ -316,6 +324,7 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
     fn remove_edges_from_adjacency(&mut self, edge_ids: &[EdgeId]) -> GraphResult<()> {
         let mut outgoing = BTreeMap::<NodeId, Vec<EdgeId>>::new();
         let mut incoming = BTreeMap::<NodeId, Vec<EdgeId>>::new();
+        let mut undirected = BTreeMap::<NodeId, Vec<EdgeId>>::new();
         for &edge_id in edge_ids {
             let row = self.require_live_edge(edge_id)?;
             let graph = self.txn.read();
@@ -329,13 +338,23 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
                 .target
                 .get(row.index())
                 .ok_or(GraphError::EdgeNotFound { id: edge_id })?;
-            outgoing.entry(source).or_default().push(edge_id);
-            incoming.entry(target).or_default().push(edge_id);
+            if graph.edge_directionality(edge_id)
+                == Some(selene_core::EdgeDirectionality::Undirected)
+            {
+                undirected.entry(source).or_default().push(edge_id);
+                if source != target {
+                    undirected.entry(target).or_default().push(edge_id);
+                }
+            } else {
+                outgoing.entry(source).or_default().push(edge_id);
+                incoming.entry(target).or_default().push(edge_id);
+            }
         }
 
         let graph = self.txn.guard_mut();
         remove_edges_from_adjacency_map(&mut graph.adjacency_out, outgoing);
         remove_edges_from_adjacency_map(&mut graph.adjacency_in, incoming);
+        remove_edges_from_adjacency_map(&mut graph.adjacency_undirected, undirected);
         Ok(())
     }
 }

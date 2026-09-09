@@ -422,11 +422,14 @@ impl<'g> WriteTxn<'g> {
         let next_edge_id = self.allocator.peek_next_edge();
         {
             let graph = self.guard_mut();
-            graph.meta.generation = graph
-                .meta
-                .generation
-                .checked_add(1)
-                .expect("graph generation exhausted");
+            graph.meta.generation =
+                graph
+                    .meta
+                    .generation
+                    .checked_add(1)
+                    .ok_or(GraphError::CounterExhausted {
+                        kind: "graph generation",
+                    })?;
             graph.meta.next_node_id = next_node_id;
             graph.meta.next_edge_id = next_edge_id;
         }

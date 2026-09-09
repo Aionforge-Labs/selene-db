@@ -41,7 +41,9 @@ pub const WAL_VERSION_MAJOR: u16 = 3;
 /// it records *why* each break was unavoidable — a positional postcard decode
 /// cannot tolerate a mid-struct field addition — not because any of those
 /// formats is still readable. None is.
-pub const WAL_VERSION_MINOR: u16 = 0;
+/// F01-PR03 adds intrinsic directionality to logical edge creation. This
+/// exact-match bump protects the current codec only; F02 owns format 2.
+pub const WAL_VERSION_MINOR: u16 = 1;
 /// Fixed WAL file header length.
 pub const WAL_FILE_HEADER_LEN: usize = 24;
 
@@ -342,7 +344,7 @@ mod tests {
         // Guards the atomicity hazard: a frame-layout change that lands without
         // a version bump produces an on-disk identity indistinguishable from a
         // released build's.
-        assert_eq!((WAL_VERSION_MAJOR, WAL_VERSION_MINOR), (3, 0));
+        assert_eq!((WAL_VERSION_MAJOR, WAL_VERSION_MINOR), (3, 1));
         assert_eq!(WAL_FILE_HEADER_LEN, 24);
     }
 

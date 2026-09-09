@@ -61,6 +61,10 @@ pub(super) fn insert_edge_row(
 ) -> crate::GraphResult<()> {
     while graph.edge_store.len() < row_index.index() {
         graph.edge_store.label.push(edge_hole_label()?);
+        graph
+            .edge_store
+            .directionality
+            .push(selene_core::EdgeDirectionality::Directed);
         graph.edge_store.source.push(NodeId::TOMBSTONE);
         graph.edge_store.target.push(NodeId::TOMBSTONE);
         graph.edge_store.properties.push(PropertyMap::new());
@@ -69,12 +73,17 @@ pub(super) fn insert_edge_row(
     }
     if graph.edge_store.len() == row_index.index() {
         graph.edge_store.label.push(row.label);
+        graph.edge_store.directionality.push(row.directionality);
         graph.edge_store.source.push(row.source);
         graph.edge_store.target.push(row.target);
         graph.edge_store.properties.push(row.properties);
         graph.edge_store.row_to_id.push(id);
     } else {
         graph.edge_store.label.set(row_index.index(), row.label);
+        graph
+            .edge_store
+            .directionality
+            .set(row_index.index(), row.directionality);
         graph.edge_store.source.set(row_index.index(), row.source);
         graph.edge_store.target.set(row_index.index(), row.target);
         graph

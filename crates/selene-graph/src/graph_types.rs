@@ -108,6 +108,30 @@ impl GraphTypeDef {
         })
     }
 
+    /// Match endpoints without assigning an orientation to an undirected edge.
+    /// Ambiguous unordered declarations do not select an arbitrary property schema.
+    #[must_use]
+    pub fn find_mixed_edge_type(
+        &self,
+        label: DbString,
+        first: u32,
+        second: u32,
+        directionality: selene_core::EdgeDirectionality,
+    ) -> Option<&EdgeTypeDef> {
+        if directionality == selene_core::EdgeDirectionality::Directed {
+            return self.find_edge_type(label, first, second);
+        }
+        let mut matches = self.edge_types.iter().filter(|edge| {
+            edge.label == label
+                && ((edge.source_node_type.matches_node_type(first)
+                    && edge.target_node_type.matches_node_type(second))
+                    || (edge.source_node_type.matches_node_type(second)
+                        && edge.target_node_type.matches_node_type(first)))
+        });
+        let matched = matches.next()?;
+        matches.next().is_none().then_some(matched)
+    }
+
     /// Return the first edge type carrying `label`.
     #[must_use]
     pub fn first_edge_type_with_label(&self, label: DbString) -> Option<&EdgeTypeDef> {

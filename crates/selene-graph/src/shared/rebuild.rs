@@ -21,6 +21,7 @@ pub(crate) fn rebuild_derived_state(graph: &mut SeleneGraph) -> GraphResult<()> 
     graph.idx_edge_label = Default::default();
     graph.adjacency_out = engine_id_map();
     graph.adjacency_in = engine_id_map();
+    graph.adjacency_undirected = engine_id_map();
 
     let node_count = graph.node_store.labels.len();
     for row_index in 0..node_count {
@@ -184,6 +185,39 @@ fn rebuild_adjacency(graph: &mut SeleneGraph) -> GraphResult<()> {
                     row.get()
                 ),
             })?;
+        let directionality = graph
+            .edge_store
+            .directionality
+            .get(row_index)
+            .copied()
+            .ok_or_else(|| GraphError::Inconsistent {
+                reason: format!("edge directionality column missing row {row_index}"),
+            })?;
+        if !graph.is_node_alive(source) || !graph.is_node_alive(target) {
+            return Err(GraphError::Inconsistent {
+                reason: format!("edge {edge_id} has an absent endpoint"),
+            });
+        }
+        if directionality == selene_core::EdgeDirectionality::Undirected {
+            if source > target {
+                return Err(GraphError::Inconsistent {
+                    reason: format!("edge {edge_id} has noncanonical undirected endpoints"),
+                });
+            }
+            get_or_insert_default(&mut graph.adjacency_undirected, source).add(AdjacencyEdge {
+                label: label.clone(),
+                neighbor: target,
+                edge_id,
+            });
+            if source != target {
+                get_or_insert_default(&mut graph.adjacency_undirected, target).add(AdjacencyEdge {
+                    label,
+                    neighbor: source,
+                    edge_id,
+                });
+            }
+            continue;
+        }
         get_or_insert_default(&mut graph.adjacency_out, source).add(AdjacencyEdge {
             label: label.clone(),
             neighbor: target,

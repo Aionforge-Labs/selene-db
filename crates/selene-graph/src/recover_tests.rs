@@ -251,6 +251,7 @@ fn recover_from_wal_only_replays_changes_to_state() {
         node_created(1),
         node_created(2),
         Change::EdgeCreated {
+            directionality: selene_core::EdgeDirectionality::Directed,
             id: EdgeId::new(1),
             label: edge_label.clone(),
             source: NodeId::new(1),

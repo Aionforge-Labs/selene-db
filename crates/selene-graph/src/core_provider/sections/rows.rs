@@ -95,11 +95,13 @@ pub struct NodeRow {
 /// Serialized edge-store row.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct EdgeRow {
+    /// Intrinsic directionality of this edge, independent of row order.
+    pub directionality: selene_core::EdgeDirectionality,
     /// Edge label.
     pub label: DbString,
-    /// Source node ID.
+    /// Source node ID, or first canonical undirected endpoint.
     pub source: NodeId,
-    /// Target node ID.
+    /// Target node ID, or second canonical undirected endpoint.
     pub target: NodeId,
     /// Edge properties.
     pub properties: PropertyMap,
@@ -140,6 +142,7 @@ impl NodeArchiveRow {
 
 #[derive(rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
 struct EdgeArchiveRow {
+    directionality: selene_core::EdgeDirectionality,
     label: DbString,
     source: NodeId,
     target: NodeId,
@@ -151,6 +154,7 @@ struct EdgeArchiveRow {
 impl EdgeArchiveRow {
     fn from_parts(
         label: DbString,
+        directionality: selene_core::EdgeDirectionality,
         source: NodeId,
         target: NodeId,
         properties: &PropertyMap,
@@ -159,6 +163,7 @@ impl EdgeArchiveRow {
     ) -> Result<Self, crate::ProviderError> {
         Ok(Self {
             label,
+            directionality,
             source,
             target,
             properties_blob: encode_properties_blob(properties, section)?,
@@ -168,6 +173,7 @@ impl EdgeArchiveRow {
 
     fn into_runtime(self, section: &'static str) -> Result<EdgeRow, crate::ProviderError> {
         Ok(EdgeRow {
+            directionality: self.directionality,
             label: self.label,
             source: self.source,
             target: self.target,
@@ -303,6 +309,16 @@ pub(in crate::core_provider) fn encode_edges(
             id,
             EdgeArchiveRow::from_parts(
                 label.clone(),
+                graph
+                    .edge_store
+                    .directionality
+                    .get(row_index)
+                    .copied()
+                    .ok_or_else(|| {
+                        inconsistent(format!(
+                            "edge directionality column missing row {row_index}"
+                        ))
+                    })?,
                 *source,
                 *target,
                 properties,

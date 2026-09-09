@@ -126,9 +126,14 @@ impl CandidateState {
                 label,
                 source,
                 target,
+                directionality,
                 ..
             } => {
-                if watches_label(specs, label) {
+                // These predicates require directed incoming/outgoing edges;
+                // canonical undirected endpoint order must not satisfy either.
+                if *directionality == selene_core::EdgeDirectionality::Directed
+                    && watches_label(specs, label)
+                {
                     let edge = TrackedEdge {
                         label: label.clone(),
                         source: *source,

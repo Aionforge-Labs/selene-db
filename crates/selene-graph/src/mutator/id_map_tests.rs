@@ -155,6 +155,10 @@ fn non_identity_map_read_paths_resolve_by_map() {
     // Row 0 -> EdgeId(3): NodeId(5) -> NodeId(8).
     built.edge_store.label.push(elabel.clone());
     built.edge_store.source.push(NodeId::new(5));
+    built
+        .edge_store
+        .directionality
+        .push(selene_core::EdgeDirectionality::Directed);
     built.edge_store.target.push(NodeId::new(8));
     built.edge_store.properties.push(PropertyMap::new());
     built.edge_store.row_to_id.push(EdgeId::new(3));

@@ -25,6 +25,7 @@ impl Change {
         },
         || Self::NodeDeleted { id: NodeId::new(1) },
         || Self::EdgeCreated {
+            directionality: crate::EdgeDirectionality::Directed,
             id: EdgeId::new(1),
             label: changeset_variant_string("change.all.edge"),
             source: NodeId::new(1),

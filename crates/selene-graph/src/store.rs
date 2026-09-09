@@ -159,16 +159,17 @@ impl Default for NodeStore {
 
 /// Edge columns plus liveness bitmap.
 ///
-/// Stored edges are directed by construction: every live row has exactly one
-/// source node and one target node. Undirected query patterns are a matching
-/// convenience and do not add an undirected storage bit.
+/// One row per identity, including parallel undirected edges and self-loops.
+/// Endpoint order on an undirected row is canonical, not semantic orientation.
 #[derive(Clone, Debug)]
 pub struct EdgeStore {
+    /// Intrinsic directionality for each row.
+    pub directionality: ChunkedVec<selene_core::EdgeDirectionality>,
     /// Per-row edge label.
     pub label: ChunkedVec<DbString>,
-    /// Per-row edge source node.
+    /// Source for directed edges; first canonical endpoint for undirected edges.
     pub source: ChunkedVec<NodeId>,
-    /// Per-row edge target node.
+    /// Target for directed edges; second canonical endpoint for undirected edges.
     pub target: ChunkedVec<NodeId>,
     /// Per-row edge property maps.
     pub properties: ChunkedVec<PropertyMap>,
@@ -188,6 +189,7 @@ impl EdgeStore {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            directionality: ChunkedVec::new(),
             label: ChunkedVec::new(),
             source: ChunkedVec::new(),
             target: ChunkedVec::new(),

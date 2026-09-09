@@ -26,6 +26,9 @@
 //! Edge-property index registrations then added an entity discriminator to
 //! `CORE/SCMA`, which bumped `SNAPSHOT_VERSION_MINOR` 4 -> 5 and
 //! `SCMA_VERSION` 2 -> 3.
+//! F01-PR03 adds edge directionality to reconstruction inputs, guarded by
+//! `SNAPSHOT_VERSION_MINOR` 5 -> 6. This only adapts the current alpha codec;
+//! F02-PR03 still owns format-2 byte encoding.
 //!
 //! Schema rows are stored in canonical wire order by their string keys and are
 //! decoded defensively before duplicate validation.

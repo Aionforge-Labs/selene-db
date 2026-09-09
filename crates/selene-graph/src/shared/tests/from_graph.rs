@@ -14,6 +14,10 @@ fn from_graph_floor_derives_allocator_from_storage_when_meta_is_stale() {
         .label
         .push(selene_core::db_string("e").unwrap());
     graph.edge_store.source.push(selene_core::NodeId::new(1));
+    graph
+        .edge_store
+        .directionality
+        .push(selene_core::EdgeDirectionality::Directed);
     graph.edge_store.target.push(selene_core::NodeId::new(1));
     graph.edge_store.properties.push(PropertyMap::new());
     graph.edge_store.alive_mut().insert(0);
@@ -63,6 +67,10 @@ fn from_graph_rebuilds_label_indexes_from_stores() {
     graph.edge_store.label.push(edge_label.clone());
     graph.edge_store.source.push(CoreNodeId::new(1));
     graph.edge_store.target.push(CoreNodeId::new(1));
+    graph
+        .edge_store
+        .directionality
+        .push(selene_core::EdgeDirectionality::Directed);
     graph.edge_store.properties.push(PropertyMap::new());
     graph.edge_store.alive_mut().insert(0);
 
@@ -101,6 +109,10 @@ fn from_graph_rebuilds_adjacency_from_edge_store() {
     graph.edge_store.label.push(edge_label.clone());
     graph.edge_store.source.push(CoreNodeId::new(1));
     graph.edge_store.target.push(CoreNodeId::new(2));
+    graph
+        .edge_store
+        .directionality
+        .push(selene_core::EdgeDirectionality::Directed);
     graph.edge_store.properties.push(PropertyMap::new());
     graph.edge_store.alive_mut().insert(0);
     graph.adjacency_out = crate::id_map::engine_id_map();

@@ -82,6 +82,7 @@ impl RecoveryState {
             }
             Change::EdgeCreated {
                 id,
+                directionality,
                 label,
                 source,
                 target,
@@ -89,6 +90,11 @@ impl RecoveryState {
             } => {
                 require_live_node_ref(&self.nodes, *source)?;
                 require_live_node_ref(&self.nodes, *target)?;
+                if directionality.canonical_endpoints(*source, *target) != (*source, *target) {
+                    return Err(inconsistent(format!(
+                        "edge {id} has noncanonical undirected endpoints"
+                    )));
+                }
                 if self.edges.contains_key(id) {
                     return Err(inconsistent(format!(
                         "WAL replay attempted to recreate edge {id}; edge ids are never \
@@ -98,6 +104,7 @@ impl RecoveryState {
                 self.edges.insert(
                     *id,
                     RecoveredEdgeRow::from_wal(EdgeRow {
+                        directionality: *directionality,
                         label: label.clone(),
                         source: *source,
                         target: *target,

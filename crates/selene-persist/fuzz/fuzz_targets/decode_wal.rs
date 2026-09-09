@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use selene_persist::WalReader;
+use selene_persist::{WAL_VERSION_MAJOR, WAL_VERSION_MINOR, WalReader};
 use xxhash_rust::xxh3::xxh3_64;
 
 // Drives the whole streaming WAL decode on attacker bytes: SLDB file-header
@@ -43,8 +43,8 @@ fn synthesize(data: &[u8]) -> Vec<u8> {
 
     let mut header = [0_u8; FILE_HEADER_LEN];
     header[0..4].copy_from_slice(b"SLDB");
-    header[4..6].copy_from_slice(&3_u16.to_le_bytes());
-    header[6..8].copy_from_slice(&0_u16.to_le_bytes());
+    header[4..6].copy_from_slice(&WAL_VERSION_MAJOR.to_le_bytes());
+    header[6..8].copy_from_slice(&WAL_VERSION_MINOR.to_le_bytes());
     // snapshot_seq and the reserved word stay zero, so sequence 1 is the first
     // frame the reader will accept.
     let checksum = checksum_lo(&header[..FILE_HEADER_CHECKSUM_OFFSET]);

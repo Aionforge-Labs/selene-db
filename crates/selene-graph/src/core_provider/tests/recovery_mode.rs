@@ -56,6 +56,7 @@ fn recovery_mode_on_change_applies_each_change_variant() {
     IndexProvider::on_change(
         provider.as_ref(),
         &Change::EdgeCreated {
+            directionality: selene_core::EdgeDirectionality::Directed,
             id: EdgeId::new(1),
             label: db_string("core.connects").unwrap(),
             source: NodeId::new(1),

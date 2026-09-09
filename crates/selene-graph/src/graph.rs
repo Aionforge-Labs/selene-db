@@ -69,6 +69,8 @@ pub struct SeleneGraph {
     pub adjacency_out: EngineIdMap<NodeId, AdjacencyEntry>,
     /// Incoming adjacency keyed by target node.
     pub adjacency_in: EngineIdMap<NodeId, AdjacencyEntry>,
+    /// Undirected incidence, once per distinct endpoint, without orientation.
+    pub adjacency_undirected: EngineIdMap<NodeId, AdjacencyEntry>,
     /// Bitmap of node rows carrying each label.
     pub idx_label: MapM<DbString, RoaringBitmap>,
     /// Bitmap of edge rows carrying each edge label.
@@ -108,6 +110,7 @@ impl SeleneGraph {
             edge_store: EdgeStore::new(),
             adjacency_out: engine_id_map(),
             adjacency_in: engine_id_map(),
+            adjacency_undirected: engine_id_map(),
             idx_label: MapM::new(),
             idx_edge_label: MapM::new(),
             property_index: FxHashMap::default(),
@@ -205,7 +208,8 @@ impl SeleneGraph {
             .and_then(|row| self.edge_store.label.get(row))
     }
 
-    /// Return edge endpoints for an alive edge.
+    /// Return stored endpoints for an alive edge. For undirected edges these
+    /// are canonical ID order, never a semantic source/destination pair.
     #[must_use]
     pub fn edge_endpoints(&self, id: EdgeId) -> Option<(NodeId, NodeId)> {
         self.live_edge_row(id).and_then(|row| {
@@ -221,6 +225,33 @@ impl SeleneGraph {
     pub fn edge_properties(&self, id: EdgeId) -> Option<&PropertyMap> {
         self.live_edge_row(id)
             .and_then(|row| self.edge_store.properties.get(row))
+    }
+
+    /// Return intrinsic directionality for an alive edge.
+    #[must_use]
+    pub fn edge_directionality(&self, id: EdgeId) -> Option<selene_core::EdgeDirectionality> {
+        self.live_edge_row(id)
+            .and_then(|row| self.edge_store.directionality.get(row).copied())
+    }
+
+    /// Construct a versioned logical record independent of physical row layout.
+    #[must_use]
+    pub fn edge_record(&self, id: EdgeId) -> Option<selene_core::EdgeRecordV1> {
+        let (first, second) = self.edge_endpoints(id)?;
+        Some(selene_core::EdgeRecordV1 {
+            id,
+            label: self.edge_label(id)?.clone(),
+            directionality: self.edge_directionality(id)?,
+            first,
+            second,
+            properties: self.edge_properties(id)?.clone(),
+        })
+    }
+
+    /// Return undirected incidence, once per edge identity at this endpoint.
+    #[must_use]
+    pub fn undirected_edges(&self, endpoint: NodeId) -> Option<&AdjacencyEntry> {
+        self.adjacency_undirected.get(&endpoint)
     }
 
     /// Return outgoing adjacency for `source`.
@@ -242,6 +273,9 @@ impl SeleneGraph {
             .is_some_and(|entry| !entry.is_empty())
             || self
                 .incoming_edges(id)
+                .is_some_and(|entry| !entry.is_empty())
+            || self
+                .undirected_edges(id)
                 .is_some_and(|entry| !entry.is_empty())
     }
 

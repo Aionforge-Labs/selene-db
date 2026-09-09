@@ -294,6 +294,7 @@ mod tests {
             (1_u64..10_000, 1_u64..10_000, property_map_strategy()).prop_map({
                 let value = edge_label.clone();
                 move |(id, target, properties)| Change::EdgeCreated {
+                    directionality: selene_core::EdgeDirectionality::Directed,
                     id: EdgeId::new(id),
                     label: value.clone(),
                     source: NodeId::new(id),

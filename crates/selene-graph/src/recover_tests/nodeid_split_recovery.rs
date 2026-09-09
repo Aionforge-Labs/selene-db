@@ -69,6 +69,9 @@ fn non_identity_graph() -> SeleneGraph {
                 elabel.clone()
             });
             g.edge_store.source.push(source);
+            g.edge_store
+                .directionality
+                .push(selene_core::EdgeDirectionality::Directed);
             g.edge_store.target.push(target);
             g.edge_store.properties.push(PropertyMap::new());
             g.edge_store.row_to_id.push(id);
@@ -381,6 +384,7 @@ fn post_compaction_wal_edge_create_recovers_dense_without_rebloat() {
     let shared = compacted_sample();
     write_snapshot(&dir, &shared, 3);
     let edge = Change::EdgeCreated {
+        directionality: selene_core::EdgeDirectionality::Directed,
         id: EdgeId::new(2),
         label: db_string("recover.wal.edge").unwrap(),
         source: NodeId::new(1),

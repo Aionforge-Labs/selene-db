@@ -24,6 +24,7 @@ mod character_string_type;
 pub mod db_string;
 mod decimal_type;
 mod duration_type;
+mod edge;
 pub mod error;
 pub mod extension_type_ids;
 pub mod gqlstatus;
@@ -60,6 +61,7 @@ pub use duration_type::{
     DurationOrderKey, DurationTypeQualifier, DurationValueFamily, duration_order_key,
     duration_value_family,
 };
+pub use edge::{EdgeDirectionality, EdgeRecordV1};
 pub use error::{CoreError, CoreResult};
 pub use extension_type_ids::{
     ExtensionTypeId, FIRST_PARTY_EXTENSION_TYPE_IDS, SELENE_RDF, SELENE_TIMESERIES,

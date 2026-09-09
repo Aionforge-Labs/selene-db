@@ -342,6 +342,7 @@ fn provider_node_delete_prunes_incident_tracked_edges_without_edge_tombstones() 
                 properties: PropertyMap::new(),
             },
             Change::EdgeCreated {
+                directionality: selene_core::EdgeDirectionality::Directed,
                 id: edge,
                 label: contradicts,
                 source: blocker,

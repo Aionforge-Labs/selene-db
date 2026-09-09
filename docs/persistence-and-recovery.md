@@ -719,7 +719,12 @@ Format identities shipped to date:
 | v1.1.0 | 2.0 | 1.1 | 1 |
 | v1.2.0 | 2.2 | 1.4 | 1 |
 | v1.3.0, v1.4.0 | 2.2 | 1.5 | 1 |
-| current | **3.0** | 1.5 | **2** |
+| current alpha | **3.1** | **1.6** | **2** |
+
+F01-PR03 carries intrinsic directionality in logical edge creation and snapshot
+reconstruction. The current codecs therefore use exact-match minor bumps to
+reject their previous, directed-only payload shapes. These are mechanical
+guards for the alpha codecs, not the F02-PR03 format-2 byte-layout decision.
 
 WAL 3.0 brings the frame layout under integrity protection (see
 [WAL framing integrity](#wal-framing-integrity)); it is not readable by any

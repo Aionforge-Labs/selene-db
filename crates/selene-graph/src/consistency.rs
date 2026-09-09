@@ -2,7 +2,7 @@
 //!
 //! Every selene-graph derived index — the label / edge-label bitmaps, the
 //! per-`(label, property)` typed indexes, the composite typed indexes, and the
-//! in/out adjacency maps — is maintained incrementally on the commit path
+//! directed adjacency and undirected incidence maps — is maintained incrementally on the commit path
 //! (`crate::mutator`) and rebuilt wholesale on the snapshot-load /
 //! recovery path (`crate::shared::rebuild_derived_state` +
 //! `crate::property_index::rebuild_property_indexes` +
@@ -63,8 +63,8 @@ impl SeleneGraph {
     ///    fields after a `from_graph` / recovery load (the real allocator
     ///    floor is enforced separately by `IdAllocator::from_meta_with_floors`),
     ///    so they are not a derived-index invariant.
-    /// 7. **Adjacency** matches a re-derivation from alive edges in both
-    ///    directions, with no present-but-empty entry.
+    /// 7. **Adjacency** matches a re-derivation of directed adjacency and
+    ///    undirected incidence, with no present-but-empty entry.
     ///
     /// # Errors
     ///
@@ -98,6 +98,7 @@ impl SeleneGraph {
         }
         let edge_len = self.edge_store.label.len();
         if self.edge_store.source.len() != edge_len
+            || self.edge_store.directionality.len() != edge_len
             || self.edge_store.target.len() != edge_len
             || self.edge_store.properties.len() != edge_len
             || self.edge_store.row_to_id.len() != edge_len
@@ -367,6 +368,7 @@ impl SeleneGraph {
     fn check_adjacency(&self) -> Result<(), String> {
         let mut out_reference: EngineIdMap<NodeId, Vec<AdjacencyEdge>> = engine_id_map();
         let mut in_reference: EngineIdMap<NodeId, Vec<AdjacencyEdge>> = engine_id_map();
+        let mut undirected_reference: EngineIdMap<NodeId, Vec<AdjacencyEdge>> = engine_id_map();
         for row in self.edge_store.alive_rows() {
             let Some(edge_id) = self.edge_id_for_edge_row(row) else {
                 return Err(format!(
@@ -392,6 +394,28 @@ impl SeleneGraph {
                     row.get()
                 ));
             };
+            if self.edge_directionality(edge_id)
+                == Some(selene_core::EdgeDirectionality::Undirected)
+            {
+                if source > target {
+                    return Err(format!(
+                        "edge {edge_id} has noncanonical undirected endpoints"
+                    ));
+                }
+                get_or_insert_default(&mut undirected_reference, source).push(AdjacencyEdge {
+                    label: label.clone(),
+                    neighbor: target,
+                    edge_id,
+                });
+                if source != target {
+                    get_or_insert_default(&mut undirected_reference, target).push(AdjacencyEdge {
+                        label,
+                        neighbor: source,
+                        edge_id,
+                    });
+                }
+                continue;
+            }
             get_or_insert_default(&mut out_reference, source).push(AdjacencyEdge {
                 label: label.clone(),
                 neighbor: target,
@@ -405,6 +429,11 @@ impl SeleneGraph {
         }
         compare_adjacency("outgoing", &self.adjacency_out, &out_reference)?;
         compare_adjacency("incoming", &self.adjacency_in, &in_reference)?;
+        compare_adjacency(
+            "undirected",
+            &self.adjacency_undirected,
+            &undirected_reference,
+        )?;
         Ok(())
     }
 }

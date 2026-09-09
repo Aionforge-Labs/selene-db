@@ -58,6 +58,10 @@ fn decode_edges_rejects_duplicate_committed_id() {
     for _ in 0..2 {
         graph.edge_store.label.push(label.clone());
         graph.edge_store.source.push(NodeId::new(1));
+        graph
+            .edge_store
+            .directionality
+            .push(selene_core::EdgeDirectionality::Directed);
         graph.edge_store.target.push(NodeId::new(2));
         graph.edge_store.properties.push(PropertyMap::new());
         graph.edge_store.row_to_id.push(EdgeId::new(5)); // DUPLICATE id

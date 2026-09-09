@@ -312,7 +312,7 @@ fn rollback_after_panic_during_mutation() {
 }
 
 #[test]
-fn rollback_after_panic_during_meta_bump() {
+fn rollback_after_counter_exhaustion_during_meta_bump() {
     let mut graph = crate::SeleneGraph::new(GraphId::new(1));
     graph.meta.generation = u64::MAX;
     let shared = Arc::new(SharedGraph::from_graph(graph));
@@ -327,10 +327,15 @@ fn rollback_after_panic_during_meta_bump() {
                 .create_node(LabelSet::new(), PropertyMap::new())
                 .expect("create_node succeeds");
         }
-        let _ = txn.commit();
+        txn.commit()
     }));
 
-    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap(),
+        Err(crate::GraphError::CounterExhausted {
+            kind: "graph generation"
+        })
+    ));
     assert_eq!(shared.read().node_count(), pre_count);
     assert_eq!(shared.read().meta.generation, u64::MAX);
     let txn = shared.begin_write();
