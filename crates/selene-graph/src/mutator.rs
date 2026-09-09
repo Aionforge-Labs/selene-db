@@ -55,7 +55,7 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
     pub fn create_node(&mut self, labels: LabelSet, mut props: PropertyMap) -> GraphResult<NodeId> {
         fill_node_defaults(self.txn.read(), &labels, &mut props)?;
         assignment::coerce_node_properties(self.txn.read(), &labels, &mut props)?;
-        let id = self.txn.allocator.allocate_node();
+        let id = self.txn.allocator.allocate_node()?;
         {
             let graph = self.txn.guard_mut();
             // BRIEF-Item-4c: append at the dense end (row = current row count)
@@ -131,19 +131,87 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
         label: DbString,
         source: NodeId,
         target: NodeId,
+        props: PropertyMap,
+    ) -> GraphResult<EdgeId> {
+        self.create_mixed_edge(
+            label,
+            source,
+            target,
+            selene_core::EdgeDirectionality::Directed,
+            props,
+        )
+    }
+
+    /// Create one edge identity with intrinsic directionality. Undirected
+    /// endpoints are canonicalized; reverse construction still creates a new
+    /// parallel edge, never a second directed half of an existing identity.
+    ///
+    /// Directionality is immutable for the lifetime of an identity. Directed
+    /// endpoint/type validation retains commit-time behavior; undirected
+    /// endpoints are checked before incidence is staged, matching either order
+    /// against the closed type's endpoint declarations. Ambiguous unordered
+    /// declarations are rejected rather than choosing a property schema.
+    ///
+    /// # Errors
+    /// Returns an error for absent endpoints, incompatible closed endpoint
+    /// types, invalid properties, or exhausted identity/row space.
+    ///
+    /// ```
+    /// use selene_core::{EdgeDirectionality, GraphId, LabelSet, PropertyMap, db_string};
+    /// use selene_graph::SharedGraph;
+    /// let graph = SharedGraph::new(GraphId::new(1));
+    /// let mut tx = graph.begin_write();
+    /// let mut m = tx.mutator();
+    /// let a = m.create_node(LabelSet::new(), PropertyMap::new())?;
+    /// let b = m.create_node(LabelSet::new(), PropertyMap::new())?;
+    /// let edge = m.create_mixed_edge(db_string("E")?, b, a,
+    ///     EdgeDirectionality::Undirected, PropertyMap::new())?;
+    /// tx.commit()?;
+    /// assert_eq!(graph.read().edge_endpoints(edge), Some((a, b)));
+    /// assert_eq!(graph.read().undirected_edges(b).unwrap().len(), 1);
+    /// # Ok::<(), selene_graph::GraphError>(())
+    /// ```
+    pub fn create_mixed_edge(
+        &mut self,
+        label: DbString,
+        first: NodeId,
+        second: NodeId,
+        directionality: selene_core::EdgeDirectionality,
         mut props: PropertyMap,
     ) -> GraphResult<EdgeId> {
+        let (source, target) = directionality.canonical_endpoints(first, second);
         self.require_live_node(source)?;
         self.require_live_node(target)?;
-        fill_edge_defaults(self.txn.read(), label.clone(), source, target, &mut props)?;
+        fill_edge_defaults(
+            self.txn.read(),
+            label.clone(),
+            source,
+            target,
+            directionality,
+            &mut props,
+        )?;
         assignment::coerce_edge_properties(
             self.txn.read(),
             label.clone(),
             source,
             target,
+            directionality,
             &mut props,
         )?;
-        let id = self.txn.allocator.allocate_edge();
+        let id = self.txn.allocator.allocate_edge()?;
+        if directionality == selene_core::EdgeDirectionality::Undirected
+            && let Some(type_def) = self.txn.read().meta.bound_type.as_deref()
+        {
+            crate::type_validator::validate_edge_endpoints(
+                id,
+                label.clone(),
+                (source, target),
+                directionality,
+                self.txn.read(),
+                type_def,
+            )
+            .map_err(GraphError::TypeViolation)?;
+        }
         {
             let graph = self.txn.guard_mut();
             // BRIEF-Item-4c: append at the dense end (see create_node).
@@ -163,6 +231,7 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
                 row.get(),
             )?;
             graph.edge_store.label.push(label.clone());
+            graph.edge_store.directionality.push(directionality);
             graph.edge_store.source.push(source);
             graph.edge_store.target.push(target);
             graph.edge_store.properties.push(props.clone());
@@ -172,19 +241,37 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
             graph.edge_rows.insert_cow(id, row);
             insert_index_row(&mut graph.idx_edge_label, label.clone(), row.get());
 
-            get_or_insert_default(&mut graph.adjacency_out, source).add(AdjacencyEdge {
-                label: label.clone(),
-                neighbor: target,
-                edge_id: id,
-            });
-            get_or_insert_default(&mut graph.adjacency_in, target).add(AdjacencyEdge {
-                label: label.clone(),
-                neighbor: source,
-                edge_id: id,
-            });
+            if directionality == selene_core::EdgeDirectionality::Directed {
+                get_or_insert_default(&mut graph.adjacency_out, source).add(AdjacencyEdge {
+                    label: label.clone(),
+                    neighbor: target,
+                    edge_id: id,
+                });
+                get_or_insert_default(&mut graph.adjacency_in, target).add(AdjacencyEdge {
+                    label: label.clone(),
+                    neighbor: source,
+                    edge_id: id,
+                });
+            } else {
+                get_or_insert_default(&mut graph.adjacency_undirected, source).add(AdjacencyEdge {
+                    label: label.clone(),
+                    neighbor: target,
+                    edge_id: id,
+                });
+                if source != target {
+                    get_or_insert_default(&mut graph.adjacency_undirected, target).add(
+                        AdjacencyEdge {
+                            label: label.clone(),
+                            neighbor: source,
+                            edge_id: id,
+                        },
+                    );
+                }
+            }
         }
         self.txn.changes.push(Change::EdgeCreated {
             id,
+            directionality,
             label,
             source,
             target,
@@ -464,6 +551,7 @@ fn fill_edge_defaults(
     label: DbString,
     source: NodeId,
     target: NodeId,
+    directionality: selene_core::EdgeDirectionality,
     props: &mut PropertyMap,
 ) -> GraphResult<()> {
     let Some(graph_type) = graph.meta.bound_type.as_deref() else {
@@ -475,7 +563,9 @@ fn fill_edge_defaults(
     let Some(target_type) = node_type_index_for_node(graph, graph_type, target) else {
         return Ok(());
     };
-    let Some(edge_type) = graph_type.find_edge_type(label, source_type, target_type) else {
+    let Some(edge_type) =
+        graph_type.find_mixed_edge_type(label, source_type, target_type, directionality)
+    else {
         return Ok(());
     };
     fill_property_defaults(&edge_type.properties, props)
@@ -536,7 +626,14 @@ fn reject_immutable_edge_update(
     let Some(target_type) = node_type_index_for_node(graph, graph_type, target) else {
         return Ok(());
     };
-    let Some(edge_type) = graph_type.find_edge_type(label, source_type, target_type) else {
+    let Some(edge_type) = graph_type.find_mixed_edge_type(
+        label,
+        source_type,
+        target_type,
+        graph
+            .edge_directionality(id)
+            .ok_or(GraphError::EdgeNotFound { id })?,
+    ) else {
         return Ok(());
     };
     reject_immutable_property_update(

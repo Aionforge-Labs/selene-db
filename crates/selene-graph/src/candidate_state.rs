@@ -218,7 +218,9 @@ impl MaintainedCandidateStateProvider {
             let label = graph
                 .edge_label(id)
                 .ok_or_else(|| inconsistent(format!("live edge {id} has no label")))?;
-            if !watches_label(&self.specs, label) {
+            if graph.edge_directionality(id) != Some(selene_core::EdgeDirectionality::Directed)
+                || !watches_label(&self.specs, label)
+            {
                 continue;
             }
             let (source, target) = graph

@@ -1,11 +1,18 @@
 //! In-memory property graph runtime.
 //!
-//! The graph crate owns node/edge storage, label sets, property maps, directed
-//! adjacency, built-in label/property indexes, typed mutation validation, and
+//! The graph crate owns node/edge storage, label sets, property maps, mixed-edge
+//! incidence, built-in label/property indexes, typed mutation validation, and
 //! the CORE persistence provider. `SharedGraph` serializes writes through a
 //! transaction boundary while readers observe immutable snapshots. selene-db is
 //! a single native engine: the higher `selene-gql` layer owns GQL
 //! binding/planning and the one frozen native procedure registry.
+//!
+//! Edges have intrinsic [`selene_core::EdgeDirectionality`].
+//! [`Mutator::create_edge`](mutator::Mutator::create_edge) remains directed;
+//! [`Mutator::create_mixed_edge`](mutator::Mutator::create_mixed_edge) accepts
+//! either kind with one stable identity. Undirected incidence is separate from
+//! directed incoming/outgoing adjacency and canonical endpoints are not a
+//! source/destination pair. Query/path orientation is owned by F01-PR04.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

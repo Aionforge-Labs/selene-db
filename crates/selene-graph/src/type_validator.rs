@@ -301,6 +301,11 @@ fn revalidate_incident_edges(
             }
         }
     }
+    if let Some(entry) = graph.undirected_edges(node) {
+        for edge in entry.iter() {
+            warnings.extend(validate_edge_state(edge.edge_id, graph, type_def)?.1);
+        }
+    }
     Ok(warnings)
 }
 
@@ -377,11 +382,41 @@ fn validate_edge_state<'a>(
                 id,
                 label: label.clone(),
             })?;
+    let directionality =
+        graph
+            .edge_directionality(id)
+            .ok_or_else(|| TypeViolation::UnknownEdgeLabel {
+                id,
+                label: label.clone(),
+            })?;
+    let (edge_type, mut warnings) =
+        validate_edge_endpoints(id, label, (source, target), directionality, graph, type_def)?;
+    let empty_props = PropertyMap::new();
+    let properties = graph.edge_properties(id).unwrap_or(&empty_props);
+    warnings.extend(validate_properties(
+        EntityId::Edge(id),
+        edge_type.name.clone(),
+        edge_type.validation_mode,
+        &edge_type.properties,
+        properties,
+    )?);
+    Ok((edge_type, warnings))
+}
+
+pub(crate) fn validate_edge_endpoints<'a>(
+    id: EdgeId,
+    label: DbString,
+    (source, target): (NodeId, NodeId),
+    directionality: selene_core::EdgeDirectionality,
+    graph: &SeleneGraph,
+    type_def: &'a GraphTypeDef,
+) -> Result<(&'a crate::graph_types::EdgeTypeDef, Vec<TypeWarning>), TypeViolation> {
     let (source_type, mut warnings) = validate_node_state(source, graph, type_def)?;
     let (target_type, target_warnings) = validate_node_state(target, graph, type_def)?;
     warnings.extend(target_warnings);
-
-    let Some(edge_type) = type_def.find_edge_type(label.clone(), source_type, target_type) else {
+    let Some(edge_type) =
+        type_def.find_mixed_edge_type(label.clone(), source_type, target_type, directionality)
+    else {
         let Some(expected) = type_def.first_edge_type_with_label(label.clone()) else {
             return Err(TypeViolation::UnknownEdgeLabel { id, label });
         };
@@ -394,15 +429,6 @@ fn validate_edge_state<'a>(
             observed_target_type: target_type,
         });
     };
-    let empty_props = PropertyMap::new();
-    let properties = graph.edge_properties(id).unwrap_or(&empty_props);
-    warnings.extend(validate_properties(
-        EntityId::Edge(id),
-        edge_type.name.clone(),
-        edge_type.validation_mode,
-        &edge_type.properties,
-        properties,
-    )?);
     Ok((edge_type, warnings))
 }
 

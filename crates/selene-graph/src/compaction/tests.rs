@@ -540,6 +540,10 @@ fn compaction_rejects_edge_with_dead_endpoint() {
         .push(db_string("cmp.dangling").unwrap());
     graph.edge_store.source.push(NodeId::new(1));
     graph.edge_store.target.push(NodeId::new(99)); // dead endpoint
+    graph
+        .edge_store
+        .directionality
+        .push(selene_core::EdgeDirectionality::Directed);
     graph.edge_store.properties.push(PropertyMap::new());
     graph.edge_store.row_to_id.push(EdgeId::new(1));
     graph.edge_store.alive_mut().insert(0);
@@ -589,6 +593,10 @@ fn compaction_rejects_alive_edge_row_with_no_external_id() {
         .push(db_string("cmp.noid.edge").unwrap());
     graph.edge_store.source.push(NodeId::new(1));
     graph.edge_store.target.push(NodeId::new(1));
+    graph
+        .edge_store
+        .directionality
+        .push(selene_core::EdgeDirectionality::Directed);
     graph.edge_store.properties.push(PropertyMap::new());
     graph.edge_store.row_to_id.push(EdgeId::TOMBSTONE); // alive but no id
     graph.edge_store.alive_mut().insert(0);

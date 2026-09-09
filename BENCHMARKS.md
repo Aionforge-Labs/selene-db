@@ -618,7 +618,39 @@ object-map entry API so unique keys require one map lookup.
 
 ## §2 selene-graph — read hot paths
 
-Bench bins: `single_graph`, `vector_index_rebuild`, `vector_pq`,
+### F01-PR03 mixed-edge storage control (2026-09-09)
+
+Command: `scripts/run-benches.sh --profile full --bench mixed_edge_storage --sample-size 30 --measurement-time 2`.
+Native Apple M5, Darwin arm64, rustc 1.97.1, optimized bench profile, mimalloc;
+serialized execution. Each fixture has 1,024 nodes and 1k or 10k empty-property
+edges on the same ring, including parallel identities. The directed control has
+no undirected edges; the mixed fixture alternates directed/undirected identities.
+Both have exactly N edge identities and 2N incidences. Node setup is outside the
+mutation timing; creation includes one in-memory commit, not WAL durability.
+
+| Operation | Edges | Directed time estimate | Mixed time estimate |
+|---|---:|---:|---:|
+| Enumerate all endpoint incidences | 1,000 | 9.0995 µs | 12.349 µs |
+| Enumerate IDs and inspect directionality | 1,000 | 20.296 µs | 22.213 µs |
+| Create + commit batch | 1,000 | 253.89 µs | 256.58 µs |
+| Enumerate all endpoint incidences | 10,000 | 15.358 µs | 17.540 µs |
+| Enumerate IDs and inspect directionality | 10,000 | 147.21 µs | 144.82 µs |
+| Create + commit batch | 10,000 | 2.8538 ms | 2.8211 ms |
+
+The incidence comparison adds about 36% at 1k and 14% at 10k for this topology.
+The 10k creation confidence intervals overlap (directed 2.8039–2.9183 ms;
+mixed 2.8124–2.8341 ms); this is not evidence of a mutation speedup. This is a
+same-revision topology control, **not** a pre/post revision regression claim.
+
+Fresh-process native `ps` RSS deltas after edge creation/commit were 3,964,928 B
+for both 1k fixtures (3,964.93 B/edge), and 45,465,600 B directed versus
+45,383,680 B mixed at 10k (4,546.56 versus 4,538.37 B/edge). These single-sample
+RSS deltas include allocator retention and transient commit allocations; they
+are not exact retained graph ownership sizes or evidence of a memory saving.
+The intrinsic directionality column adds one byte of payload per allocated row;
+undirected edges retain one row and one identity rather than two directed rows.
+
+Bench bins: `single_graph`, `mixed_edge_storage`, `vector_index_rebuild`, `vector_pq`,
 `vector_ivf_pq`, `vector_turbo_projection`, `vector_turbo_churn`, `vector_ivf_pressure`, `vector_mixed_workload`,
 `bulk_mutation`, `concurrent_read`, `bfs`, `text_search_bm25`. Most medians below
 predate CORE-06 (measured at the 128 B `Value` layout). `graph_node_fetch`

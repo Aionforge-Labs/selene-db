@@ -349,6 +349,7 @@ fn wal_replay_restores_edge_property_index_created_after_edge_state() {
         provider.as_ref(),
         &Change::EdgeCreated {
             id: EdgeId::new(1),
+            directionality: selene_core::EdgeDirectionality::Directed,
             label: edge_label.clone(),
             source: NodeId::new(1),
             target: NodeId::new(2),
@@ -427,6 +428,7 @@ fn wal_replay_delete_clears_dead_edge_payload() {
         provider.as_ref(),
         &Change::EdgeCreated {
             id: edge,
+            directionality: selene_core::EdgeDirectionality::Directed,
             label: db_string("WalPayloadEdge").unwrap(),
             source,
             target,

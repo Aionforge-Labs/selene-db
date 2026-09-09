@@ -625,6 +625,7 @@ fn core_provider_writes_one_wal_entry_per_commit() {
             properties: PropertyMap::new(),
         },
         Change::EdgeCreated {
+            directionality: selene_core::EdgeDirectionality::Directed,
             id: EdgeId::new(1),
             label: db_string("core.wal.edge").unwrap(),
             source: NodeId::new(1),

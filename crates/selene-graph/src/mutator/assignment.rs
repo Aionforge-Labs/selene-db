@@ -34,9 +34,10 @@ pub(crate) fn coerce_edge_properties(
     label: DbString,
     source: NodeId,
     target: NodeId,
+    directionality: selene_core::EdgeDirectionality,
     props: &mut PropertyMap,
 ) -> GraphResult<()> {
-    let Some(edge_type) = edge_type(graph, label, source, target) else {
+    let Some(edge_type) = edge_type(graph, label, source, target, directionality) else {
         return Ok(());
     };
     coerce_property_map(&edge_type.properties, props)
@@ -67,7 +68,15 @@ pub(crate) fn coerce_edge_property_diff(
     let Some((source, target)) = graph.edge_endpoints(edge) else {
         return Ok(());
     };
-    let Some(edge_type) = edge_type(graph, label, source, target) else {
+    let Some(edge_type) = edge_type(
+        graph,
+        label,
+        source,
+        target,
+        graph
+            .edge_directionality(edge)
+            .ok_or(GraphError::EdgeNotFound { id: edge })?,
+    ) else {
         return Ok(());
     };
     coerce_property_diff(&edge_type.properties, diff)
@@ -78,11 +87,12 @@ fn edge_type(
     label: DbString,
     source: NodeId,
     target: NodeId,
+    directionality: selene_core::EdgeDirectionality,
 ) -> Option<&crate::graph_types::EdgeTypeDef> {
     let graph_type = graph.meta.bound_type.as_deref()?;
     let source_type = node_type_index_for_node(graph, graph_type, source)?;
     let target_type = node_type_index_for_node(graph, graph_type, target)?;
-    graph_type.find_edge_type(label, source_type, target_type)
+    graph_type.find_mixed_edge_type(label, source_type, target_type, directionality)
 }
 
 fn node_type_index_for_node(

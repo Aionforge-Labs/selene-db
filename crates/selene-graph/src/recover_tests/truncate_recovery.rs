@@ -21,6 +21,7 @@ fn node_created(id: u64, label: &str) -> Change {
 
 fn edge_created(id: u64, source: u64, target: u64, label: &str) -> Change {
     Change::EdgeCreated {
+        directionality: selene_core::EdgeDirectionality::Directed,
         id: EdgeId::new(id),
         label: db_string(label).unwrap(),
         source: NodeId::new(source),

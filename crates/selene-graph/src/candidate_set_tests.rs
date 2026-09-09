@@ -33,6 +33,10 @@ fn identity_graph(width: u32) -> SeleneGraph {
         graph.edge_store.source.push(NodeId::new(101));
         graph
             .edge_store
+            .directionality
+            .push(selene_core::EdgeDirectionality::Directed);
+        graph
+            .edge_store
             .target
             .push(NodeId::new(u64::from(raw) + 101));
         graph.edge_store.properties.push(PropertyMap::new());

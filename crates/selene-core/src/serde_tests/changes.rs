@@ -27,6 +27,7 @@ fn change_postcard_round_trip() {
             label: label.clone(),
         },
         Change::EdgeCreated {
+            directionality: EdgeDirectionality::Directed,
             id: EdgeId::new(1),
             label: label.clone(),
             source: NodeId::new(1),

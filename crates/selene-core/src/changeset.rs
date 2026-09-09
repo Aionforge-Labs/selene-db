@@ -56,11 +56,13 @@ pub enum Change {
     EdgeCreated {
         /// Created edge ID.
         id: EdgeId,
+        /// Intrinsic directionality; endpoint order is not orientation for an undirected edge.
+        directionality: crate::EdgeDirectionality,
         /// Edge label.
         label: DbString,
-        /// Source node ID.
+        /// Source node ID, or first canonical undirected endpoint.
         source: NodeId,
-        /// Target node ID.
+        /// Target node ID, or second canonical undirected endpoint.
         target: NodeId,
         /// Initial properties.
         properties: PropertyMap,

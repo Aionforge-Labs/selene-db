@@ -168,6 +168,14 @@ pub enum GraphError {
         max_rows: u64,
     },
 
+    /// A monotonic identity or generation counter cannot advance without reuse.
+    #[error("{kind} counter exhausted")]
+    #[diagnostic(code(SLENE_G_030))]
+    CounterExhausted {
+        /// Counter whose next value cannot be represented.
+        kind: &'static str,
+    },
+
     /// The graph snapshot violates a structural invariant (e.g., row count
     /// exceeds the addressable u32 range).
     #[error("graph snapshot is inconsistent: {reason}")]
@@ -477,7 +485,7 @@ impl GraphError {
             | Self::EdgeNotFound { .. }
             | Self::NodeNotAlive { .. }
             | Self::EdgeNotAlive { .. } => "22G03",
-            Self::RowSpaceExhausted { .. } => "53000",
+            Self::RowSpaceExhausted { .. } | Self::CounterExhausted { .. } => "53000",
             Self::Inconsistent { .. } => "5GQL0",
             Self::PropertyIndexAlreadyExists { .. }
             | Self::PropertyIndexNotFound { .. }
@@ -518,6 +526,7 @@ mod tests {
     #[case(GraphError::EdgeNotFound { id: EdgeId::new(1) }, "22G03")]
     #[case(GraphError::NodeNotAlive { id: NodeId::new(1) }, "22G03")]
     #[case(GraphError::EdgeNotAlive { id: EdgeId::new(1) }, "22G03")]
+    #[case(GraphError::CounterExhausted { kind: "edge identity" }, "53000")]
     #[case(
         GraphError::RowSpaceExhausted { kind: "node", rows: 4_294_967_295, max_rows: 4_294_967_295 },
         "53000"
