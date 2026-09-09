@@ -243,6 +243,8 @@ pub(crate) struct DatabaseInner {
     #[cfg(test)]
     pub(crate) drop_blocked: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     #[cfg(test)]
+    pub(crate) before_implicit_commit: Mutex<Option<ImplicitCommitPause>>,
+    #[cfg(test)]
     pub(crate) replacement_graph_constructions: std::sync::atomic::AtomicUsize,
 }
 
@@ -266,6 +268,8 @@ impl DatabaseInner {
             #[cfg(test)]
             drop_blocked: Mutex::new(None),
             #[cfg(test)]
+            before_implicit_commit: Mutex::new(None),
+            #[cfg(test)]
             replacement_graph_constructions: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -287,6 +291,13 @@ impl DatabaseInner {
     pub(crate) fn set_next_transaction_id(&self, next: u64) {
         self.next_transaction_id.store(next, Ordering::Relaxed);
     }
+}
+
+/// One-shot, per-database rendezvous after implicit staging, outside the reservation.
+#[cfg(test)]
+pub(crate) struct ImplicitCommitPause {
+    pub(crate) staged: std::sync::mpsc::Sender<crate::Transaction>,
+    pub(crate) resume: std::sync::mpsc::Receiver<()>,
 }
 
 /// Test-only per-thread count of active graph request leases.
