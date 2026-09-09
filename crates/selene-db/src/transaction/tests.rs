@@ -17,6 +17,9 @@ use crate::{
     TransactionSlotState, catalog::FailurePoint, database::DatabaseState,
 };
 
+#[path = "catalog_conflicts.rs"]
+mod catalog_conflicts;
+
 fn fixture() -> (Database, SchemaPath, ObjectPath) {
     let database = Database::builder().build();
     let schema = SchemaPath::regular("selene", "authority").unwrap();
@@ -310,44 +313,6 @@ fn selected_maintenance_is_42n01_and_publishes_nothing() {
         session.context().transaction_slot(),
         crate::TransactionSlotState::Vacant
     );
-}
-
-#[test]
-fn direct_catalog_and_selected_write_share_one_reservation_without_loss() {
-    let (database, _, graph_path) = fixture();
-    let (_, graph_id) = ids(&database, &graph_path);
-    let inner = Arc::clone(&database.catalog().inner);
-    let session = database.session(&graph_path).unwrap();
-    let catalog = database.catalog();
-    let start = Arc::new(std::sync::Barrier::new(3));
-    let write_start = Arc::clone(&start);
-    let writer = std::thread::spawn(move || {
-        write_start.wait();
-        session.execute("INSERT (:Concurrent) FINISH").unwrap();
-    });
-    let catalog_start = Arc::clone(&start);
-    let catalog_writer = std::thread::spawn(move || {
-        catalog_start.wait();
-        catalog
-            .create_schema(
-                &SchemaPath::regular("selene", "alongside_write").unwrap(),
-                CreatePolicy::Strict,
-            )
-            .unwrap();
-    });
-    start.wait();
-    writer.join().unwrap();
-    catalog_writer.join().unwrap();
-
-    let state = inner.state.load_full();
-    assert_eq!(state.graphs[&graph_id].graph.read().node_count(), 1);
-    assert!(
-        state
-            .catalog
-            .schema(&selene_catalog::CatalogName::regular("alongside_write").unwrap())
-            .is_some()
-    );
-    assert_eq!(state.high_water.schema, 2);
 }
 
 #[test]
