@@ -5,9 +5,9 @@
 | Field | Value |
 |---|---|
 | Profile | `selene-gql-core-2.0` |
-| Profile hash | `85413c299ff16724f5b450895ecab1a3ff85f4700724c1568322184907fd7dc3` |
-| Rules hash | `e0f287892538fc4542c728fe4efbc82a3d528642f4b46b29a1df0b0142478d77` |
-| Evidence hash | `066f30de47e7987dd2c78a11da7e76e9c6af8d9edd28adba175572eec94b5168` |
+| Profile hash | `d0ac69ae54e1d8c5e4ae42699bfd5f2d4c3499b2d25d704a3db08ee069a1458c` |
+| Rules hash | `f74ce2ce506b4b79071e41abce88360017b8879a54cc047215bfc0a33431bd40` |
+| Evidence hash | `8ab6d9260aa65af4c544a60aa6a320137fe396b7bd4cff7d28071fd7c778f9dc` |
 | Inventory | `seeded_incomplete` |
 | Release claimable | **false** |
 
@@ -24,7 +24,7 @@
 ## Current blockers
 
 - `annex_b`: 35 applicable decisions remain pending
-- `feature_claims`: {"implemented_unclaimed": 129, "unsupported": 12}
+- `feature_claims`: {"implemented_unclaimed": 133, "unsupported": 11}
 - `inventory_state`: rule inventory is seeded_incomplete
 - `pending_evidence:EVID-CONFORMANCE-INVENTORY-PENDING`: owner M10-PR05: M10-PR05 owns complete inventory and the final claim transition.
 - `release_claimable`: profile release_claimable is false

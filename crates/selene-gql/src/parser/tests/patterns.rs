@@ -43,7 +43,7 @@ fn parse_edge_quantifier_and_undirected_direction() {
         crate::ast::PatternElement::Edge(edge) => edge,
         _ => panic!("expected edge pattern"),
     };
-    assert_eq!(edge.direction, EdgeDirection::Undirected);
+    assert_eq!(edge.direction, EdgeDirection::Any);
     assert_eq!(
         edge.quantifier,
         Some(crate::ast::Quantifier::GraphPattern {

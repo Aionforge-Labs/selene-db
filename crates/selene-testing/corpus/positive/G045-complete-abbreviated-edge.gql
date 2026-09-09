@@ -1,0 +1,4 @@
+// corpus: positive
+// feature: G045
+// expects: parse-ok
+MATCH (a)<->(b) RETURN a

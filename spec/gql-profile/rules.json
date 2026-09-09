@@ -5,8 +5,8 @@
   "inventory_state": "seeded_incomplete",
   "target": {
     "kind": "profile_target_closure",
-    "expected_count": 141,
-    "feature_ids_hash": "b0808ed0e8bce27025cfab37c2038eadafdac1523513bf4e8f9bc416a4e698ea"
+    "expected_count": 144,
+    "feature_ids_hash": "46ec2d245547093ee31a7046398b707dabb1d82e684a44aa4afbaf9ddb0afd09"
   },
   "approved_domains": [
     "CLAUSE-24.2",

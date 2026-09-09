@@ -11,7 +11,7 @@ const SOURCE: &str = include_str!("../../../spec/gql-profile/profile.json");
 const BASE_SUPPORTED: &str = include_str!("fixtures/m01_pr01_supported.txt");
 
 const DOWNGRADED: &[&str] = &[
-    "GC03", "GE04", "GE05", "GH02", "GG02", "GG20", "GG21", "GV66", "GV67",
+    "GC03", "GE04", "GE05", "GG02", "GG20", "GG21", "GV66", "GV67",
 ];
 
 const PROMOTED: &[&str] = &["GS05", "GS06"];
@@ -24,8 +24,6 @@ const IMPORTED: &[(&str, &str)] = &[
     ("G038", "Regular value specification"),
     ("G039", "Extended value specification"),
     ("G041", "Basic binding table expressions"),
-    ("G044", "List value constructors"),
-    ("G045", "Extended list value constructors"),
     ("G048", "Path value constructors"),
     ("G049", "Record value constructors"),
     ("G050", "Field references"),
@@ -274,7 +272,10 @@ fn imported_endpoint_names_and_orders_are_exact() {
         .profile()
         .features
         .iter()
-        .filter(|feature| feature.runtime_order >= 234 && feature.id.as_str() != "GC01")
+        .filter(|feature| {
+            feature.runtime_order >= 234
+                && !["GC01", "G043", "G044", "G045"].contains(&feature.id.as_str())
+        })
         .map(|feature| {
             assert_eq!(feature.runtime_support, RuntimeSupport::Referenced);
             assert_eq!(feature.claim_state, ClaimState::Unsupported);
@@ -288,7 +289,7 @@ fn imported_endpoint_names_and_orders_are_exact() {
             .profile()
             .features
             .iter()
-            .filter(|feature| feature.runtime_order >= 234)
+            .filter(|feature| feature.runtime_order >= 234 && feature.id.as_str() != "G043")
             .map(|feature| feature.runtime_order)
             .collect::<Vec<_>>(),
         (234..=265).collect::<Vec<_>>()
@@ -301,9 +302,11 @@ fn direct_target_and_surviving_compatibility_order_preserve_m01_pr01() {
     let base = BASE_SUPPORTED.lines().collect::<Vec<_>>();
     assert_eq!(base.len(), 147);
     let downgraded = DOWNGRADED.iter().copied().collect::<BTreeSet<_>>();
-    let mut expected_survivors = Vec::new();
+    // F01-PR04 adds the complete spelling family and restores GH02 support;
+    // the relative order of all previously surviving capabilities is unchanged.
+    let mut expected_survivors = vec!["G043", "G044", "G045", "GH02"];
     for id in base.iter().copied() {
-        if !downgraded.contains(id) && id != "IM_DROP_GRAPH" {
+        if !downgraded.contains(id) && id != "IM_DROP_GRAPH" && id != "GH02" {
             expected_survivors.push(id);
             if id == "GS04" {
                 expected_survivors.extend(PROMOTED.iter().copied());
@@ -327,6 +330,7 @@ fn direct_target_and_surviving_compatibility_order_preserve_m01_pr01() {
         .collect::<BTreeSet<_>>();
     assert_eq!(expected_iso.len(), 136);
     expected_iso.extend(PROMOTED.iter().copied());
+    expected_iso.extend(["G043", "G044", "G045"]);
     assert_eq!(
         profile
             .profile()
@@ -556,9 +560,9 @@ fn generated_claim_matrix_pins_counts_blockers_and_boundary() {
         .find(|(path, _)| path == std::path::Path::new("docs/gql/conformance/features.md"))
         .expect("claim matrix")
         .1;
-    assert!(markdown.contains("| Direct selections | 138 |"));
-    assert!(markdown.contains("| Complete Table 10 closure | 141 |"));
-    assert_eq!(markdown.matches("| direct selection | ").count(), 276);
+    assert!(markdown.contains("| Direct selections | 141 |"));
+    assert!(markdown.contains("| Complete Table 10 closure | 144 |"));
+    assert_eq!(markdown.matches("| direct selection | ").count(), 282);
     assert!(markdown.contains("| GC03 | GC04 | transitive dependency | GC03 → GG02 → GC04 |"));
     assert!(markdown.contains("71 direct all-of relationships"));
     assert!(markdown.contains("96 endpoint features"));

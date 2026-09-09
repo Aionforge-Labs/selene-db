@@ -10,7 +10,7 @@ use self::{
     labels::{
         candidate_node_types, endpoint_indices, endpoint_type, exact_node_type, fresh_binding,
         insert_edge_label, insert_label_set, is_fresh_edge, is_fresh_node, node_at,
-        static_label_set, unique_edge_type,
+        static_label_set,
     },
     properties::{
         PropertyAgreement, RequiredPropertyCheck, property_agreement, set_value_index,
@@ -141,14 +141,14 @@ fn validate_insert_edge(
         });
     }
 
-    if edge.direction == EdgeDirection::Undirected {
-        if let Some(edge_type) = unique_edge_type(graph_type, label) {
-            validate_insert_edge_properties(edge, edge_type, graph_type, stmt_index, analyzed)?;
-        }
-        return Ok(());
-    }
-
-    let Some((source_index, target_index)) = endpoint_indices(pattern, index, edge.direction)
+    // Intrinsic undirected INSERT accepts either endpoint declaration order;
+    // canonical storage ordering must not select its property schema.
+    let endpoint_direction = if edge.direction == EdgeDirection::Undirected {
+        EdgeDirection::Right
+    } else {
+        edge.direction
+    };
+    let Some((source_index, target_index)) = endpoint_indices(pattern, index, endpoint_direction)
     else {
         return Ok(());
     };
@@ -165,7 +165,16 @@ fn validate_insert_edge(
         return Ok(());
     };
 
-    let Some(edge_type) = graph_type.find_edge_type(label.clone(), source_type, target_type) else {
+    let Some(edge_type) = graph_type.find_mixed_edge_type(
+        label.clone(),
+        source_type,
+        target_type,
+        if edge.direction == EdgeDirection::Undirected {
+            selene_core::EdgeDirectionality::Undirected
+        } else {
+            selene_core::EdgeDirectionality::Directed
+        },
+    ) else {
         let expected = graph_type
             .first_edge_type_with_label(label.clone())
             .expect("edge label existence was checked before endpoint validation");

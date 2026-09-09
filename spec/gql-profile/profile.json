@@ -18,6 +18,9 @@
     "G020",
     "G036",
     "G037",
+    "G043",
+    "G044",
+    "G045",
     "G060",
     "G061",
     "G100",
@@ -144,6 +147,10 @@
   ],
   "release_claimable": false,
   "clause_anchors": [
+    {
+      "id": "CLAUSE-16.7",
+      "citation": "ISO/IEC 39075:2024, Clause 16.7, SR14 and CR11–13; Clause 22.3, GR3f2C–D"
+    },
     {
       "id": "CLAUSE-24.2",
       "citation": "ISO/IEC 39075:2024, Clause 24.2"
@@ -433,25 +440,48 @@
       "applicability": "APP-ALWAYS"
     },
     {
+      "id": "G043",
+      "name": "Complete full edge patterns",
+      "runtime_support": "supported",
+      "claim_state": "implemented_unclaimed",
+      "unsupported_rationale": "",
+      "runtime_order": 300,
+      "clause_anchors": [
+        "CLAUSE-16.7"
+      ],
+      "evidence": [
+        "EVID-MIXED-ORIENTATION"
+      ],
+      "applicability": "APP-ALWAYS"
+    },
+    {
       "id": "G044",
-      "name": "List value constructors",
-      "runtime_support": "referenced",
-      "claim_state": "unsupported",
+      "name": "Basic abbreviated edge patterns",
+      "runtime_support": "supported",
+      "claim_state": "implemented_unclaimed",
       "unsupported_rationale": "",
       "runtime_order": 241,
-      "clause_anchors": [],
-      "evidence": [],
+      "clause_anchors": [
+        "CLAUSE-16.7"
+      ],
+      "evidence": [
+        "EVID-MIXED-ORIENTATION"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
       "id": "G045",
-      "name": "Extended list value constructors",
-      "runtime_support": "referenced",
-      "claim_state": "unsupported",
+      "name": "Complete abbreviated edge patterns",
+      "runtime_support": "supported",
+      "claim_state": "implemented_unclaimed",
       "unsupported_rationale": "",
       "runtime_order": 242,
-      "clause_anchors": [],
-      "evidence": [],
+      "clause_anchors": [
+        "CLAUSE-16.7"
+      ],
+      "evidence": [
+        "EVID-MIXED-ORIENTATION"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -1073,12 +1103,16 @@
     {
       "id": "GH02",
       "name": "Undirected edge patterns",
-      "runtime_support": "unsupported",
-      "claim_state": "unsupported",
-      "unsupported_rationale": "The parser observes undirected-edge syntax, but runtime matching does not implement the complete undirected-edge behavior.",
+      "runtime_support": "supported",
+      "claim_state": "implemented_unclaimed",
+      "unsupported_rationale": "",
       "runtime_order": 130,
-      "clause_anchors": [],
-      "evidence": [],
+      "clause_anchors": [
+        "CLAUSE-16.7"
+      ],
+      "evidence": [
+        "EVID-MIXED-ORIENTATION"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -2359,6 +2393,10 @@
     }
   ],
   "supported_feature_order": [
+    "G043",
+    "G044",
+    "G045",
+    "GH02",
     "G002",
     "G003",
     "G010",
@@ -2530,7 +2568,6 @@
     "GC03",
     "GE04",
     "GE05",
-    "GH02",
     "GG02",
     "GG20",
     "GG21",
@@ -5900,6 +5937,11 @@
       "id": "EVID-MATCH-MODE",
       "reference": "crates/selene-gql/src/plan/lowering/match_mode.rs",
       "description": "ID086 default lowering and REPEATABLE ELEMENTS equivalence."
+    },
+    {
+      "id": "EVID-MIXED-ORIENTATION",
+      "reference": "docs/gql/mixed-edge-orientation.md",
+      "description": "Independent seven-form orientation vectors, indexed/adjacency execution, facade undirected INSERT and predicates; no formal conformance claim."
     },
     {
       "id": "EVID-NULL-SORT",

@@ -48,7 +48,7 @@ profile-generated output is stale.
 `selene_profile::load_conformance` validates each declared closure count and
 hash against the canonical profile, plus profile and rule hash bindings, IDs,
 references, owners, expected dimensions, and dispositions. The checked-in seed
-currently pins 138 features; profile growth does not require a validator-code
+currently pins 144 features; profile growth does not require a validator-code
 change. Semantic array reordering does not change canonical bytes or hashes.
 
 The three executable seed records have explicit compiled registrations and

@@ -15,6 +15,7 @@ pub mod conformance;
 pub mod corpus;
 pub mod executor_corpus;
 pub mod local_omlx;
+pub mod mixed_orientation;
 pub mod mock_index_catalog;
 pub mod mock_procedure_registry;
 pub mod plan_corpus;

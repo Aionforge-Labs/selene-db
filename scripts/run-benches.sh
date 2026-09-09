@@ -93,6 +93,7 @@ selene-db-persist|snapshot|0
 selene-db-gql|parse|1
 selene-db-gql|analyze|1
 selene-db-gql|plan_optimize|1
+selene-db-gql|mixed_orientation|1
 selene-db-gql|write_e2e|1
 selene-db-gql|expression_eval|0
 selene-db-gql|procedure_call_repeat|1

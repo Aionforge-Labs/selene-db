@@ -64,16 +64,8 @@ pub fn label_propagation_with_checker(
             check_algorithm_stride(checker, &mut rows_since_check)?;
             touched_labels.clear();
 
-            // Multiplicity-faithful: count each directed half-edge separately
-            // per §E25. Parallel edges therefore contribute multiple times.
-            for nb in proj.out_neighbors_dense(d) {
-                bump_label_count(
-                    labels[nb.dense as usize],
-                    &mut label_counts,
-                    &mut touched_labels,
-                );
-            }
-            for nb in proj.in_neighbors_dense(d) {
+            // Count logical incidence once; distinct parallel IDs still vote.
+            for nb in proj.incident_neighbors_dense(d) {
                 bump_label_count(
                     labels[nb.dense as usize],
                     &mut label_counts,

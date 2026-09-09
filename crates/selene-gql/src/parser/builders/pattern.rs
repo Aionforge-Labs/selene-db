@@ -422,13 +422,31 @@ fn build_edge_pattern(pair: Pair<'_, Rule>) -> Result<EdgePattern, ParserError> 
     let direction = match child.as_rule() {
         Rule::edge_right | Rule::abbrev_right => EdgeDirection::Right,
         Rule::edge_left | Rule::abbrev_left => EdgeDirection::Left,
-        Rule::edge_any | Rule::abbrev_any => EdgeDirection::Undirected,
+        Rule::edge_any | Rule::abbrev_any => EdgeDirection::Any,
+        Rule::edge_undirected | Rule::abbrev_undirected => EdgeDirection::Undirected,
+        Rule::edge_left_or_undirected | Rule::abbrev_left_or_undirected => {
+            EdgeDirection::LeftOrUndirected
+        }
+        Rule::edge_undirected_or_right | Rule::abbrev_undirected_or_right => {
+            EdgeDirection::UndirectedOrRight
+        }
+        Rule::edge_left_or_right | Rule::abbrev_left_or_right => EdgeDirection::LeftOrRight,
         _ => return Err(unexpected_pair(child, "expected edge pattern")),
     };
 
     let mut pattern = EdgePattern {
         binding: None,
         direction,
+        abbreviated: matches!(
+            child.as_rule(),
+            Rule::abbrev_right
+                | Rule::abbrev_left
+                | Rule::abbrev_any
+                | Rule::abbrev_undirected
+                | Rule::abbrev_left_or_undirected
+                | Rule::abbrev_undirected_or_right
+                | Rule::abbrev_left_or_right
+        ),
         label_expr: None,
         properties: Vec::new(),
         quantifier: None,

@@ -1,4 +1,4 @@
 // corpus: positive
 // feature: GH02
 // expects: parse-ok
-MATCH (a)-[e:KNOWS]-(b) RETURN e
+MATCH (a)~[e:KNOWS]~(b) RETURN e

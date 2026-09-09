@@ -70,7 +70,7 @@ fn defers_edge_set_when_label_has_multiple_edge_types() {
 }
 
 #[test]
-fn edge_direction_matrix_checks_right_and_left_but_defers_undirected() {
+fn edge_direction_matrix_checks_right_left_and_unordered_endpoints() {
     let graph_type = person_company_graph_type();
     analyze_with_schema(
         "INSERT (a:Person { name: 'A' })-[:WORKS_AT]->(b:Company { name: 'B' })",
@@ -102,7 +102,7 @@ fn edge_direction_matrix_checks_right_and_left_but_defers_undirected() {
         span: SourceSpan::new(0, 3),
     });
     analyze(statement, &EmptyProcedureRegistry, Some(&graph_type))
-        .expect("undirected INSERT edge endpoint check defers to runtime");
+        .expect("undirected INSERT accepts reverse endpoint type order");
 }
 
 #[test]

@@ -140,6 +140,7 @@ fn edge(label: &str, direction: EdgeDirection, span: SourceSpan) -> PatternEleme
     PatternElement::Edge(EdgePattern {
         binding: None,
         direction,
+        abbreviated: false,
         label_expr: label_expr(label),
         properties: Vec::new(),
         quantifier: None,

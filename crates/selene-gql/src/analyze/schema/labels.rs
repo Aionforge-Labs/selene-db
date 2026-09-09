@@ -1,5 +1,5 @@
 use selene_core::{DbString, LabelSet};
-use selene_graph::{EdgeTypeDef, GraphTypeDef, NodeTypeDef};
+use selene_graph::{GraphTypeDef, NodeTypeDef};
 
 use crate::{
     EdgeDirection, EdgePattern, GraphPattern, LabelExpr, NodePattern, PatternElement, SourceSpan,
@@ -160,7 +160,11 @@ pub(super) fn endpoint_indices(
     match direction {
         EdgeDirection::Right => index.checked_sub(1).map(|source| (source, index + 1)),
         EdgeDirection::Left => index.checked_sub(1).map(|target| (index + 1, target)),
-        EdgeDirection::Undirected => None,
+        EdgeDirection::Undirected
+        | EdgeDirection::Any
+        | EdgeDirection::LeftOrRight
+        | EdgeDirection::LeftOrUndirected
+        | EdgeDirection::UndirectedOrRight => None,
     }
     .filter(|(_, target)| *target < pattern.elements.len())
 }
@@ -237,13 +241,4 @@ pub(super) fn reused_binding(
                 && reference.kind == BindingUseKind::PatternReuse
         })
         .map(|reference| reference.binding)
-}
-
-pub(super) fn unique_edge_type(graph_type: &GraphTypeDef, label: DbString) -> Option<&EdgeTypeDef> {
-    let mut matches = graph_type
-        .edge_types
-        .iter()
-        .filter(|edge_type| edge_type.label == label);
-    let first = matches.next()?;
-    matches.next().is_none().then_some(first)
 }

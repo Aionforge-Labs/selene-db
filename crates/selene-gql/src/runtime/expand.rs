@@ -1,6 +1,6 @@
 //! Expand join-tree operator.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use selene_core::{EdgeId, NodeId, Value};
 use selene_graph::{CandidateSet, Edge};
@@ -101,38 +101,8 @@ fn expand_from_source(
     direction: EdgeDirection,
     state: &mut ExpandState<'_, '_, '_, '_, '_, '_>,
 ) -> Result<(), ExecutorError> {
-    let mut seen = BTreeSet::new();
-    match direction {
-        EdgeDirection::Right => {
-            if let Some(entry) = state.ctx.tx.snapshot().outgoing_edges(source) {
-                for adjacent in entry.iter() {
-                    maybe_emit(adjacent.edge_id, adjacent.neighbor, row, state)?;
-                }
-            }
-        }
-        EdgeDirection::Left => {
-            if let Some(entry) = state.ctx.tx.snapshot().incoming_edges(source) {
-                for adjacent in entry.iter() {
-                    maybe_emit(adjacent.edge_id, adjacent.neighbor, row, state)?;
-                }
-            }
-        }
-        EdgeDirection::Undirected => {
-            if let Some(entry) = state.ctx.tx.snapshot().outgoing_edges(source) {
-                for adjacent in entry.iter() {
-                    if seen.insert(adjacent.edge_id) {
-                        maybe_emit(adjacent.edge_id, adjacent.neighbor, row, state)?;
-                    }
-                }
-            }
-            if let Some(entry) = state.ctx.tx.snapshot().incoming_edges(source) {
-                for adjacent in entry.iter() {
-                    if seen.insert(adjacent.edge_id) {
-                        maybe_emit(adjacent.edge_id, adjacent.neighbor, row, state)?;
-                    }
-                }
-            }
-        }
+    for adjacent in edge_access::adjacent_edges(state.ctx.tx.snapshot(), source, direction) {
+        maybe_emit(adjacent.edge_id, adjacent.neighbor, row, state)?;
     }
     Ok(())
 }
@@ -162,18 +132,14 @@ fn expand_from_indexed_edges(
         let Some((source, target)) = state.ctx.tx.snapshot().edge_endpoints(edge_id) else {
             continue;
         };
-        match direction {
-            EdgeDirection::Right => {
-                emit_indexed_edge_for_source(edge_id, target, source, &rows_by_source, state)?;
-            }
-            EdgeDirection::Left => {
-                emit_indexed_edge_for_source(edge_id, source, target, &rows_by_source, state)?;
-            }
-            EdgeDirection::Undirected => {
-                emit_indexed_edge_for_source(edge_id, target, source, &rows_by_source, state)?;
-                if source != target {
-                    emit_indexed_edge_for_source(edge_id, source, target, &rows_by_source, state)?;
-                }
+        for current in [Some(source), (target != source).then_some(target)]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(next) =
+                edge_access::next_node(state.ctx.tx.snapshot(), edge_id, current, direction)
+            {
+                emit_indexed_edge_for_source(edge_id, next, current, &rows_by_source, state)?;
             }
         }
     }
