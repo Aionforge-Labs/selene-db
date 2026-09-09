@@ -264,6 +264,17 @@ impl Session {
         if transaction.is_explicit() {
             return Ok(outcome);
         }
+        #[cfg(test)]
+        {
+            let pause = self.inner.before_implicit_commit.lock().take();
+            if let Some(pause) = pause {
+                pause.staged.send(transaction.descriptor().clone()).unwrap();
+                pause
+                    .resume
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .expect("test must release the staged implicit transaction");
+            }
+        }
         match self.commit_transaction_checked(slot) {
             Ok(_) => Ok(outcome),
             Err(error) => Err(error),
