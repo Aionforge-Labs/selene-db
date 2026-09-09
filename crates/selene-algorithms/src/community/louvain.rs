@@ -60,16 +60,14 @@ pub fn louvain_with_checker(
     }
     let n = idx.len();
 
-    // Total directed weight: Σ over u of Σ over outgoing edges of u of weight.
-    // Under selene-db's directed-storage convention this is the absolute
-    // weight scale; `weighted_degree[v]` is computed as the sum of out and in
-    // weights, so the modularity invariant `Σ d_i = 2 · total_weight` holds.
+    // Half the logical-incidence weight sum maintains Σ d_i = 2·total_weight.
+    // A self-loop has one incidence, including in this normalization.
     let mut total_weight: f64 = 0.0;
     let mut rows_since_check = 0usize;
     for d in 0..n as u32 {
         check_algorithm_stride(checker, &mut rows_since_check)?;
-        for nb in proj.out_neighbors_dense(d) {
-            total_weight += nb.weight;
+        for nb in proj.incident_neighbors_dense(d) {
+            total_weight += nb.weight / 2.0;
         }
     }
     if total_weight == 0.0 {
@@ -80,23 +78,14 @@ pub fn louvain_with_checker(
     // community[d] = current community ID (encoded as a dense index initially).
     let mut community: Vec<u32> = (0..n as u32).collect();
 
-    // weighted_degree[d] = undirected degree under selene-db's directed-
-    // storage convention: sum of outgoing + incoming neighbor weights. A
-    // bidirectional undirected edge stored as two directed edges contributes
-    // to both sums (correct: undirected degree counts each endpoint once,
-    // matching the modularity invariant `Σ d_i = 2 · total_weight` where
-    // total_weight is the outgoing-only sum). Edges referencing rows outside
-    // the projection scope are skipped (matches §E26 / dense-remap contract).
-    // (Brief-back-reviewer-55 P1-rec: clarify undirected interpretation.)
+    // Distinct parallel edges retain their weights. A reciprocal CSR view of
+    // the same undirected identity does not double its contribution.
     let mut weighted_degree: Vec<f64> = vec![0.0; n];
     rows_since_check = 0;
     for d in 0..n as u32 {
         check_algorithm_stride(checker, &mut rows_since_check)?;
         let mut deg = 0.0;
-        for nb in proj.out_neighbors_dense(d) {
-            deg += nb.weight;
-        }
-        for nb in proj.in_neighbors_dense(d) {
+        for nb in proj.incident_neighbors_dense(d) {
             deg += nb.weight;
         }
         weighted_degree[d as usize] = deg;
@@ -132,11 +121,7 @@ pub fn louvain_with_checker(
             let ki = weighted_degree[idx_d];
 
             comm_weights.clear();
-            for nb in proj.out_neighbors_dense(d) {
-                let nb_comm = community[nb.dense as usize];
-                comm_weights.add(nb_comm, nb.weight);
-            }
-            for nb in proj.in_neighbors_dense(d) {
+            for nb in proj.incident_neighbors_dense(d) {
                 let nb_comm = community[nb.dense as usize];
                 comm_weights.add(nb_comm, nb.weight);
             }

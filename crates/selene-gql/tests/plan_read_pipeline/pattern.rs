@@ -52,7 +52,7 @@ fn direction_matrix_preserves_pattern_direction() {
     assert_eq!(expand(&left).1, EdgeDirection::Left);
 
     let undirected = plan_one("MATCH (a)-[:K]-(b) RETURN a, b");
-    assert_eq!(expand(&undirected).1, EdgeDirection::Undirected);
+    assert_eq!(expand(&undirected).1, EdgeDirection::Any);
 }
 
 #[test]

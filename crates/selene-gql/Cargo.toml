@@ -97,6 +97,11 @@ harness = false
 required-features = ["test-harness"]
 
 [[bench]]
+name = "mixed_orientation"
+harness = false
+required-features = ["test-harness"]
+
+[[bench]]
 name = "write_e2e"
 harness = false
 required-features = ["test-harness"]

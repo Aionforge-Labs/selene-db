@@ -1,6 +1,6 @@
 //! Evaluation for ISO `PATH[...]` value construction.
 
-use selene_core::{EdgeDirection, Path, PathSegment, Value};
+use selene_core::{EdgeDirection, EdgeDirectionality, Path, PathSegment, Value};
 use smallvec::SmallVec;
 
 use crate::{
@@ -56,7 +56,12 @@ fn construct_path(
         let Some((source, target)) = ctx.tx.snapshot().edge_endpoints(*edge) else {
             return malformed_path("PATH constructor edge is not live", span);
         };
-        let direction = if source == current && target == *node {
+        let direction = if ctx.tx.snapshot().edge_directionality(*edge)
+            == Some(EdgeDirectionality::Undirected)
+            && ((source == current && target == *node) || (target == current && source == *node))
+        {
+            EdgeDirection::Undirected
+        } else if source == current && target == *node {
             EdgeDirection::Outgoing
         } else if target == current && source == *node {
             EdgeDirection::Incoming

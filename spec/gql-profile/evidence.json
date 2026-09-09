@@ -2,8 +2,8 @@
   "format_version": 1,
   "registry_version": 2,
   "profile_id": "selene-gql-core-2.0",
-  "profile_hash": "85413c299ff16724f5b450895ecab1a3ff85f4700724c1568322184907fd7dc3",
-  "rules_hash": "e0f287892538fc4542c728fe4efbc82a3d528642f4b46b29a1df0b0142478d77",
+  "profile_hash": "d0ac69ae54e1d8c5e4ae42699bfd5f2d4c3499b2d25d704a3db08ee069a1458c",
+  "rules_hash": "f74ce2ce506b4b79071e41abce88360017b8879a54cc047215bfc0a33431bd40",
   "evidence": [
     {
       "id": "EVID-CONFORMANCE-G010-POSITIVE",

@@ -139,11 +139,13 @@ fn build_insert_edge_pattern(pair: Pair<'_, Rule>) -> Result<EdgePattern, Parser
     let direction = match inner.as_rule() {
         Rule::insert_edge_right => EdgeDirection::Right,
         Rule::insert_edge_left => EdgeDirection::Left,
+        Rule::insert_edge_undirected => EdgeDirection::Undirected,
         _ => return Err(unexpected_pair(inner, "expected INSERT edge pattern")),
     };
     let mut pattern = EdgePattern {
         binding: None,
         direction,
+        abbreviated: false,
         label_expr: None,
         properties: Vec::new(),
         quantifier: None,

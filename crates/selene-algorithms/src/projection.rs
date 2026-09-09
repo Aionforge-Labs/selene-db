@@ -8,6 +8,10 @@
 //!   non-numeric / null values default to `1.0` per spec 16 §E04).
 //! - Cached out-direction and in-direction CSR adjacency.
 //!
+//! Intrinsic undirected edges occur in both directions with the same `EdgeId`.
+//! Directed algorithms therefore see reciprocal arcs, not an arbitrary canonical
+//! source. Each loop contributes one incidence per node in each directional view.
+//!
 //! Projections are immutable once built. When the underlying graph mutates and
 //! its `meta.generation` advances, the projection is logically stale. The
 //! `ProjectionCatalog` rebuilds projections from stored configs when staleness
@@ -71,6 +75,7 @@ pub struct GraphProjection {
     row_index: RowIndex,
     out_csr: ProjCsr,
     in_csr: ProjCsr,
+    logical_edges: usize,
     generation: u64,
 }
 
@@ -108,7 +113,7 @@ impl GraphProjection {
 
         let row_index = RowIndex::from_candidates(&nodes);
 
-        let out_csr = build_csr_out(
+        let (out_csr, logical_edges) = build_csr_out(
             snapshot,
             &row_index,
             &config.edge_labels,
@@ -126,6 +131,7 @@ impl GraphProjection {
             row_index,
             out_csr,
             in_csr,
+            logical_edges,
             generation: snapshot.meta.generation,
         })
     }
@@ -168,16 +174,11 @@ impl GraphProjection {
         self.nodes.len()
     }
 
-    /// Number of **outgoing** edges in this projection.
-    ///
-    /// For directed graphs this is the total edge count; for algorithms
-    /// treating the projection as undirected (e.g., WCC, label propagation),
-    /// iterate `out_neighbors()` ∪ `in_neighbors()` per node to avoid
-    /// double-counting — do NOT sum `out_degree() + in_degree()` over all
-    /// nodes.
+    /// Number of logical edge identities after node/scope/edge-label filtering.
+    /// Undirected edges and loops count once, not once per traversal arc.
     #[must_use]
     pub fn edge_count(&self) -> usize {
-        self.out_csr.total_neighbors()
+        self.logical_edges
     }
 
     /// Graph generation pinned at build time. The projection catalog compares
@@ -215,6 +216,17 @@ impl GraphProjection {
     #[must_use]
     pub(crate) fn in_neighbors_dense(&self, dense: u32) -> &[ProjNeighbor] {
         self.in_csr.neighbors_of_dense(dense)
+    }
+
+    /// Identity-preserving incidence union for algorithms ignoring direction.
+    pub(crate) fn incident_neighbors_dense(
+        &self,
+        dense: u32,
+    ) -> impl Iterator<Item = &ProjNeighbor> {
+        csr::incident_neighbors(
+            self.out_neighbors_dense(dense),
+            self.in_neighbors_dense(dense),
+        )
     }
 
     /// In-neighbors of `node`, sorted ASC by `node_id` per spec 16 §E03.

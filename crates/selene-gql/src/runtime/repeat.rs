@@ -1,7 +1,5 @@
 //! Bounded variable-length edge repeat operator.
 
-use std::collections::BTreeSet;
-
 use selene_core::{EdgeId, NodeId, Value};
 use selene_graph::adjacency::AdjacencyEdge;
 
@@ -314,39 +312,9 @@ fn adjacent_edges(
     direction: EdgeDirection,
     ctx: &EvalCtx<'_, '_, '_, '_>,
 ) -> Vec<AdjacencyEdge> {
-    match direction {
-        EdgeDirection::Right => ctx
-            .tx
-            .snapshot()
-            .outgoing_edges(node)
-            .map(|entry| entry.iter().cloned().collect())
-            .unwrap_or_default(),
-        EdgeDirection::Left => ctx
-            .tx
-            .snapshot()
-            .incoming_edges(node)
-            .map(|entry| entry.iter().cloned().collect())
-            .unwrap_or_default(),
-        EdgeDirection::Undirected => {
-            let mut seen = BTreeSet::new();
-            let mut edges = Vec::new();
-            if let Some(entry) = ctx.tx.snapshot().outgoing_edges(node) {
-                for adjacent in entry.iter().cloned() {
-                    if seen.insert(adjacent.edge_id) {
-                        edges.push(adjacent);
-                    }
-                }
-            }
-            if let Some(entry) = ctx.tx.snapshot().incoming_edges(node) {
-                for adjacent in entry.iter().cloned() {
-                    if seen.insert(adjacent.edge_id) {
-                        edges.push(adjacent);
-                    }
-                }
-            }
-            edges
-        }
-    }
+    super::edge_access::adjacent_edges(ctx.tx.snapshot(), node, direction)
+        .cloned()
+        .collect()
 }
 
 fn edge_label_matches(

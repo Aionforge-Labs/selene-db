@@ -274,7 +274,29 @@ fn node_pattern(pattern: &NodePattern, uses: &mut Vec<FeatureUse>) {
 }
 
 fn edge_pattern(pattern: &EdgePattern, uses: &mut Vec<FeatureUse>) {
-    if pattern.direction == EdgeDirection::Undirected {
+    let complete = !matches!(
+        pattern.direction,
+        EdgeDirection::Right | EdgeDirection::Left | EdgeDirection::Any
+    );
+    if pattern.abbreviated {
+        record_feature(
+            uses,
+            if complete {
+                FeatureId::G045
+            } else {
+                FeatureId::G044
+            },
+            pattern.span,
+        );
+    } else if complete {
+        record_feature(uses, FeatureId::G043, pattern.span);
+    }
+    if matches!(
+        pattern.direction,
+        EdgeDirection::Undirected
+            | EdgeDirection::LeftOrUndirected
+            | EdgeDirection::UndirectedOrRight
+    ) {
         record_feature(uses, FeatureId::GH02, pattern.span);
     }
     if let Some(quantifier) = pattern.quantifier {

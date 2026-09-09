@@ -2741,9 +2741,44 @@ Commands:
 
 ## §5 selene-gql — parse / plan / execute
 
-Bench bins: `parse`, `analyze`, `plan_optimize`, `expression_eval`,
+Bench bins: `parse`, `analyze`, `plan_optimize`, `expression_eval`, `mixed_orientation`,
 `procedure_call_repeat`, `correlated_subquery`, `read_pipeline`, `write_e2e`.
 The first four are scale-independent (single-query CPU).
+
+### F01-PR04 one-hop mixed orientation runtime
+
+`mixed_orientation` measures preplanned `execute_pattern` including the root
+label scan, orientation filtering, bindings, and result allocation/drop. Parsing,
+planning, fixture construction, and correctness guards are outside timing.
+Degrees 8 and 1024 use respectively 9 and 1025 nodes. The directed and mixed
+controls share node/edge identities and topology; half of the mixed edges are
+intrinsically undirected. All rows produce exactly `degree` distinct edge IDs,
+checked against the independent contiguous fixture ID sequence before timing.
+There are no index-performance or pre/post speedup claims from this topology
+comparison. The separate `mixed_edge_storage` target measures storage incidence,
+not this GQL runtime operation.
+
+Command: `scripts/run-benches.sh --profile full --bench mixed_orientation --sample-size 30 --measurement-time 5`.
+Measured 2026-09-09 on Apple M5 (10 cores, 16 GiB), macOS 27.0 (26A5425a),
+rustc 1.97.1 / LLVM 22.1.6, native aarch64. Full measurements used 30 samples,
+3-second warmup, 5-second measurement, mimalloc, and the workspace bench profile
+(opt-level 3, thin LTO, one codegen unit). Compilation completed before the
+serialized run; no competing Cargo/benchmark run was active.
+
+| Runtime row | Degree | Criterion time estimate | 95% interval |
+|---|---:|---:|---:|
+| `directed_right` | 8 | 909.18 ns | 906.45–913.36 ns |
+| `directed_any` | 8 | 920.00 ns | 912.69–926.98 ns |
+| `mixed_any` | 8 | 940.58 ns | 935.89–946.30 ns |
+| `directed_right` | 1024 | 109.39 µs | 109.35–109.42 µs |
+| `directed_any` | 1024 | 109.77 µs | 109.53–110.16 µs |
+| `mixed_any` | 1024 | 110.16 µs | 110.04–110.32 µs |
+
+The mixed/Any point estimate is 2.24% above directed/Any at degree 8 and 0.36%
+above at degree 1024 (the high-degree intervals overlap). These are topology
+controls, **not** before/after speedups. The new benchmark did not exist at the
+supplied baseline; no baseline checkout/build was made and no historical
+performance claim is inferred. This run does not measure indexed expansion.
 
 | Bench | Median | Notes |
 |---|---:|---|

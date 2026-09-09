@@ -577,13 +577,21 @@ node_var     = { ident }
 
 // -- Edge pattern ---------------------------------------------------
 
-edge_pattern = { edge_right | edge_left | edge_any | abbrev_right | abbrev_left | abbrev_any }
+edge_pattern = { edge_right | edge_left_or_right | edge_left | edge_undirected_or_right | edge_left_or_undirected | edge_undirected | edge_any | abbrev_right | abbrev_left_or_right | abbrev_left | abbrev_undirected_or_right | abbrev_left_or_undirected | abbrev_undirected | abbrev_any }
 edge_right   = { "-" ~ "[" ~ edge_interior ~ "]" ~ "->" ~ quantifier? }
+edge_left_or_right = { "<-" ~ "[" ~ edge_interior ~ "]" ~ "->" ~ quantifier? }
 edge_left    = { "<-" ~ "[" ~ edge_interior ~ "]" ~ "-" ~ quantifier? }
+edge_undirected_or_right = { "~" ~ "[" ~ edge_interior ~ "]" ~ "~>" ~ quantifier? }
+edge_left_or_undirected = { "<~" ~ "[" ~ edge_interior ~ "]" ~ "~" ~ quantifier? }
+edge_undirected = { "~" ~ "[" ~ edge_interior ~ "]" ~ "~" ~ quantifier? }
 edge_any     = { "-" ~ "[" ~ edge_interior ~ "]" ~ "-" ~ !(">" | "[") ~ quantifier? }
-// Abbreviated edge patterns (Feature G044) - no brackets
+// Basic (G044) and complete (G045) abbreviated patterns (§16.7 CR12–13).
 abbrev_right = { "->" }
+abbrev_left_or_right = { "<->" }
 abbrev_left  = { "<-" ~ !("[") }
+abbrev_undirected_or_right = { "~>" }
+abbrev_left_or_undirected = { "<~" ~ !("[") }
+abbrev_undirected = { "~" ~ !("[") }
 abbrev_any   = { "-" ~ !("-" | "[" | ">" | ASCII_DIGIT) }
 
 edge_interior = { edge_var? ~ label_expr? ~ quantifier? ~ property_map? ~ inline_where? }
@@ -746,9 +754,10 @@ insert_path_pattern = { insert_node_pattern ~ (insert_edge_pattern ~ insert_node
 insert_node_pattern = { "(" ~ ident? ~ insert_label_set? ~ property_map? ~ ")" }
 // INSERT label set: reuses full label_expr (AND-only semantics enforced by executor)
 insert_label_set = { label_expr }
-insert_edge_pattern = { insert_edge_right | insert_edge_left }
+insert_edge_pattern = { insert_edge_right | insert_edge_left | insert_edge_undirected }
 insert_edge_right = { "-" ~ "[" ~ edge_var? ~ label_expr? ~ property_map? ~ "]" ~ "->" }
 insert_edge_left  = { "<-" ~ "[" ~ edge_var? ~ label_expr? ~ property_map? ~ "]" ~ "-" }
+insert_edge_undirected = { "~" ~ "[" ~ edge_var? ~ label_expr? ~ property_map? ~ "]" ~ "~" }
 
 // Multi-item SET (spec section13.3): SET a.x = 1, b.y = 2, n = {x: 1}, n IS Label
 set_stmt = { set_kw ~ set_item ~ ("," ~ set_item)* }

@@ -194,7 +194,7 @@ fn feature_status_reports_generated_capability_records() {
     let evidence_counts = uint_column(&table, "evidence_count");
     let profile_hashes = string_column(&table, "profile_hash");
 
-    assert_eq!(feature_ids.len(), 208);
+    assert_eq!(feature_ids.len(), 209);
     assert_eq!(
         feature_ids,
         capabilities()
@@ -230,7 +230,7 @@ fn feature_status_reports_generated_capability_records() {
     }
 
     for feature_id in [
-        "GC03", "GE04", "GE05", "GG02", "GG20", "GG21", "GH02", "GV66", "GV67",
+        "GC03", "GE04", "GE05", "GG02", "GG20", "GG21", "GV66", "GV67",
     ] {
         let index = feature_ids
             .iter()
@@ -239,7 +239,7 @@ fn feature_status_reports_generated_capability_records() {
         assert_eq!(statuses[index], "unsupported");
         assert!(!rationales[index].is_empty());
     }
-    for feature_id in ["GS04", "GS05", "GS06"] {
+    for feature_id in ["GS04", "GS05", "GS06", "G043", "G044", "G045", "GH02"] {
         let index = feature_ids
             .iter()
             .position(|value| value == feature_id)
@@ -253,7 +253,7 @@ fn feature_status_reports_generated_capability_records() {
     assert_eq!(statuses[gv65], "referenced");
     assert_eq!(relations[gv65], "implied");
 
-    for feature_id in ["GG02", "GH02", "GV66"] {
+    for feature_id in ["GG02", "GV66"] {
         let index = feature_ids
             .iter()
             .position(|value| value == feature_id)

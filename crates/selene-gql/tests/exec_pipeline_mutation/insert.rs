@@ -128,7 +128,7 @@ fn insert_edge_label_conjunction_reports_edge_label_maximum_error() {
 }
 
 #[test]
-fn undirected_insert_edge_is_rejected_at_runtime() {
+fn forged_union_insert_edge_is_rejected_at_runtime() {
     let graph = empty_graph();
     let mut plan = planned("INSERT (:A)-[:REL]->(:B) RETURN 1 AS ok");
     let edge = plan
@@ -139,14 +139,14 @@ fn undirected_insert_edge_is_rejected_at_runtime() {
             _ => None,
         })
         .expect("plan inserts an edge");
-    *edge = EdgeDirection::Undirected;
+    *edge = EdgeDirection::Any;
 
-    let err = run_write(&graph, &plan).expect_err("undirected INSERT edge rejects");
+    let err = run_write(&graph, &plan).expect_err("union INSERT edge rejects");
 
     assert!(matches!(
         err,
         ExecutorError::FeatureNotSupportedYet {
-            feature: "INSERT undirected edge",
+            feature: "INSERT edge orientation union",
             ..
         }
     ));

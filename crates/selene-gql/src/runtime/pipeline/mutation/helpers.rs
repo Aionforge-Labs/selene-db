@@ -125,11 +125,13 @@ pub(super) fn edge_endpoints(
     span: SourceSpan,
 ) -> Result<(NodeId, NodeId), ExecutorError> {
     match direction {
-        EdgeDirection::Right => Ok((left, right)),
+        EdgeDirection::Right | EdgeDirection::Undirected => Ok((left, right)),
         EdgeDirection::Left => Ok((right, left)),
-        // INSERT of an undirected edge is ISO-legal but not yet implemented; 42N01.
-        EdgeDirection::Undirected => Err(ExecutorError::FeatureNotSupportedYet {
-            feature: "INSERT undirected edge",
+        EdgeDirection::Any
+        | EdgeDirection::LeftOrRight
+        | EdgeDirection::LeftOrUndirected
+        | EdgeDirection::UndirectedOrRight => Err(ExecutorError::FeatureNotSupportedYet {
+            feature: "INSERT edge orientation union",
             span,
         }),
     }

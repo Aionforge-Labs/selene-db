@@ -9,8 +9,9 @@
 //! ## Multiplicity (spec 16 §E25)
 //!
 //! Parallel edges contribute via multiplicity to `label_propagation`'s
-//! label counts and `louvain`'s modularity gain (donor pattern: iterate both
-//! `out_neighbors` and `in_neighbors` without deduping). For
+//! label counts and `louvain`'s modularity gain. The incidence union deduplicates
+//! only identical `EdgeId`s, so an intrinsic undirected edge or self-loop votes
+//! once at each incident node, while distinct parallel edges still count. For
 //! `triangle_count`, parallel edges collapse to a single neighbor via
 //! `sort_unstable() + dedup()`; a triangle is defined as 3 distinct mutually-
 //! connected nodes (§E29).

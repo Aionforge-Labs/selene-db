@@ -279,9 +279,23 @@ fn fmt_node_pattern(out: &mut String, node: &NodePattern) -> fmt::Result {
 }
 
 fn fmt_edge_pattern(out: &mut String, edge: &EdgePattern) -> fmt::Result {
+    if edge.abbreviated {
+        out.push_str(match edge.direction {
+            EdgeDirection::Right => "->",
+            EdgeDirection::Left => "<-",
+            EdgeDirection::Undirected => "~",
+            EdgeDirection::LeftOrUndirected => "<~",
+            EdgeDirection::UndirectedOrRight => "~>",
+            EdgeDirection::LeftOrRight => "<->",
+            EdgeDirection::Any => "-",
+        });
+        return Ok(());
+    }
     match edge.direction {
-        EdgeDirection::Right | EdgeDirection::Undirected => out.push_str("-["),
-        EdgeDirection::Left => out.push_str("<-["),
+        EdgeDirection::Right | EdgeDirection::Any => out.push_str("-["),
+        EdgeDirection::Left | EdgeDirection::LeftOrRight => out.push_str("<-["),
+        EdgeDirection::Undirected | EdgeDirection::UndirectedOrRight => out.push_str("~["),
+        EdgeDirection::LeftOrUndirected => out.push_str("<~["),
     }
     if let Some(binding) = &edge.binding {
         out.push_str(&fmt_ident(binding.clone()));
@@ -309,8 +323,10 @@ fn fmt_edge_pattern(out: &mut String, edge: &EdgePattern) -> fmt::Result {
         fmt_expr(out, where_clause)?;
     }
     match edge.direction {
-        EdgeDirection::Right => out.push_str("]->"),
-        EdgeDirection::Left | EdgeDirection::Undirected => out.push_str("]-"),
+        EdgeDirection::Right | EdgeDirection::LeftOrRight => out.push_str("]->"),
+        EdgeDirection::Left | EdgeDirection::Any => out.push_str("]-"),
+        EdgeDirection::Undirected | EdgeDirection::LeftOrUndirected => out.push_str("]~"),
+        EdgeDirection::UndirectedOrRight => out.push_str("]~>"),
     }
     Ok(())
 }

@@ -270,20 +270,16 @@ fn next_node(
     direction: EdgeDirection,
     env: pattern::WalkContext<'_, '_, '_, '_, '_, '_>,
 ) -> Result<NodeId, ExecutorError> {
-    let Some((source, target)) = env.ctx.tx.snapshot().edge_endpoints(edge) else {
+    if env.ctx.tx.snapshot().edge_endpoints(edge).is_none() {
         return Err(ExecutorError::ImplementationDefined {
             detail: "path-mode contributor references missing edge",
         });
-    };
-    match direction {
-        EdgeDirection::Right if source == current => Ok(target),
-        EdgeDirection::Left if target == current => Ok(source),
-        EdgeDirection::Undirected if source == current => Ok(target),
-        EdgeDirection::Undirected if target == current => Ok(source),
-        _ => Err(ExecutorError::ImplementationDefined {
-            detail: "path-mode edge endpoints are inconsistent with path direction",
-        }),
     }
+    super::edge_access::next_node(env.ctx.tx.snapshot(), edge, current, direction).ok_or(
+        ExecutorError::ImplementationDefined {
+            detail: "path-mode edge endpoints are inconsistent with path direction",
+        },
+    )
 }
 
 fn insert_edge_list(value: Value, seen: &mut FxHashSet<EdgeId>) -> Result<bool, ExecutorError> {

@@ -1,7 +1,5 @@
 //! Questioned edge (`?`) join-tree operator.
 
-use std::collections::BTreeSet;
-
 use selene_core::{EdgeId, NodeId, Value};
 use selene_graph::{CandidateSet, Edge};
 
@@ -134,38 +132,8 @@ fn expand_from_source(
     direction: EdgeDirection,
     state: &mut QuestionedState<'_, '_, '_, '_, '_, '_>,
 ) -> Result<(), ExecutorError> {
-    let mut seen = BTreeSet::new();
-    match direction {
-        EdgeDirection::Right => {
-            if let Some(entry) = state.ctx.tx.snapshot().outgoing_edges(source) {
-                for adjacent in entry.iter() {
-                    maybe_emit_taken(adjacent.edge_id, adjacent.neighbor, row, state)?;
-                }
-            }
-        }
-        EdgeDirection::Left => {
-            if let Some(entry) = state.ctx.tx.snapshot().incoming_edges(source) {
-                for adjacent in entry.iter() {
-                    maybe_emit_taken(adjacent.edge_id, adjacent.neighbor, row, state)?;
-                }
-            }
-        }
-        EdgeDirection::Undirected => {
-            if let Some(entry) = state.ctx.tx.snapshot().outgoing_edges(source) {
-                for adjacent in entry.iter() {
-                    if seen.insert(adjacent.edge_id) {
-                        maybe_emit_taken(adjacent.edge_id, adjacent.neighbor, row, state)?;
-                    }
-                }
-            }
-            if let Some(entry) = state.ctx.tx.snapshot().incoming_edges(source) {
-                for adjacent in entry.iter() {
-                    if seen.insert(adjacent.edge_id) {
-                        maybe_emit_taken(adjacent.edge_id, adjacent.neighbor, row, state)?;
-                    }
-                }
-            }
-        }
+    for adjacent in edge_access::adjacent_edges(state.ctx.tx.snapshot(), source, direction) {
+        maybe_emit_taken(adjacent.edge_id, adjacent.neighbor, row, state)?;
     }
     Ok(())
 }

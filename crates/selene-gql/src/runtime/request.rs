@@ -217,13 +217,18 @@ fn validate_path(
                 span,
             ));
         };
-        let connected = match segment.direction {
-            EdgeDirection::Outgoing => source == current && target == segment.node,
-            EdgeDirection::Incoming => target == current && source == segment.node,
-            EdgeDirection::Undirected => {
+        let connected = match (graph.edge_directionality(segment.edge), segment.direction) {
+            (Some(selene_core::EdgeDirectionality::Directed), EdgeDirection::Outgoing) => {
+                source == current && target == segment.node
+            }
+            (Some(selene_core::EdgeDirectionality::Directed), EdgeDirection::Incoming) => {
+                target == current && source == segment.node
+            }
+            (Some(selene_core::EdgeDirectionality::Undirected), EdgeDirection::Undirected) => {
                 (source == current && target == segment.node)
                     || (target == current && source == segment.node)
             }
+            _ => false,
         };
         if !connected {
             return Err(invalid_reference(

@@ -107,8 +107,39 @@ pub enum EdgeDirection {
     Right,
     /// `<-[]-`.
     Left,
-    /// `-[]-`, matching either direction.
+    /// `~[]~`, matching only intrinsically undirected edges.
     Undirected,
+    /// `<~[]~`, matching left-directed or undirected edges.
+    LeftOrUndirected,
+    /// `~[]~>`, matching undirected or right-directed edges.
+    UndirectedOrRight,
+    /// `<-[]->`, matching directed edges in either direction.
+    LeftOrRight,
+    /// `-[]-`, matching all three orientations.
+    Any,
+}
+
+impl EdgeDirection {
+    pub(crate) const fn includes_right(self) -> bool {
+        matches!(
+            self,
+            Self::Right | Self::UndirectedOrRight | Self::LeftOrRight | Self::Any
+        )
+    }
+
+    pub(crate) const fn includes_left(self) -> bool {
+        matches!(
+            self,
+            Self::Left | Self::LeftOrUndirected | Self::LeftOrRight | Self::Any
+        )
+    }
+
+    pub(crate) const fn includes_undirected(self) -> bool {
+        matches!(
+            self,
+            Self::Undirected | Self::LeftOrUndirected | Self::UndirectedOrRight | Self::Any
+        )
+    }
 }
 
 /// Edge-pattern quantifier.
@@ -147,6 +178,8 @@ pub struct EdgePattern {
     pub binding: Option<DbString>,
     /// Direction.
     pub direction: EdgeDirection,
+    /// Whether the source used the bracket-free abbreviated syntax (§16.7).
+    pub abbreviated: bool,
     /// Optional label expression.
     pub label_expr: Option<LabelExpr>,
     /// Inline property predicates in source order.

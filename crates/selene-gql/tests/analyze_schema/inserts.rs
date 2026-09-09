@@ -58,7 +58,7 @@ fn rejects_unknown_label_on_undirected_insert_edge() {
         span: SourceSpan::new(0, 3),
     });
     let error = analyze(statement, &EmptyProcedureRegistry, Some(&graph_type))
-        .expect_err("unknown edge label rejects before undirected defer");
+        .expect_err("unknown edge label rejects before unordered endpoint validation");
     assert!(matches!(error, AnalysisError::SchemaUnknownEdgeType { .. }));
 }
 

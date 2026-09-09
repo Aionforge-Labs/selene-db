@@ -70,6 +70,7 @@ impl ProjCsr {
     }
 
     /// Total neighbor count across all rows.
+    #[cfg(debug_assertions)]
     pub(crate) fn total_neighbors(&self) -> usize {
         self.neighbors.len()
     }
@@ -88,9 +89,10 @@ pub(crate) fn build_csr_out(
     row_index: &RowIndex,
     edge_labels: &[DbString],
     weight_property: Option<&DbString>,
-) -> ProjCsr {
+) -> (ProjCsr, usize) {
     let dense_n = row_index.len();
     let mut offsets = vec![0u32; dense_n + 1];
+    let mut logical_edges = 0;
 
     // selene-graph adjacency entries inline label + neighbor + edge_id; no
     // per-edge id → data lookup is needed during the filter pass (cf. donor
@@ -100,17 +102,22 @@ pub(crate) fn build_csr_out(
 
     // Pass 1: count qualifying neighbors per dense index.
     for (dense, nid) in row_index.iter_node_ids().enumerate() {
-        let Some(entry) = snapshot.outgoing_edges(nid) else {
-            continue;
-        };
-        for adj in entry.iter() {
-            if row_index.dense_of_node(adj.neighbor).is_none() {
-                continue;
+        for (entry, undirected) in [
+            (snapshot.outgoing_edges(nid), false),
+            (snapshot.undirected_edges(nid), true),
+        ] {
+            for adj in entry.into_iter().flat_map(|e| e.iter()) {
+                if row_index.dense_of_node(adj.neighbor).is_none() {
+                    continue;
+                }
+                if !edge_labels.is_empty() && !edge_labels.contains(&adj.label) {
+                    continue;
+                }
+                offsets[dense] += 1;
+                if !undirected || nid <= adj.neighbor {
+                    logical_edges += 1;
+                }
             }
-            if !edge_labels.is_empty() && !edge_labels.contains(&adj.label) {
-                continue;
-            }
-            offsets[dense] += 1;
         }
     }
 
@@ -142,10 +149,12 @@ pub(crate) fn build_csr_out(
     let mut cursor = offsets.clone();
 
     for (dense, nid) in row_index.iter_node_ids().enumerate() {
-        let Some(entry) = snapshot.outgoing_edges(nid) else {
-            continue;
-        };
-        for adj in entry.iter() {
+        for adj in snapshot
+            .outgoing_edges(nid)
+            .into_iter()
+            .chain(snapshot.undirected_edges(nid))
+            .flat_map(|e| e.iter())
+        {
             // Capture the neighbor's dense index here (ALGO-01): this pass is
             // already resolving it for the projection-membership skip, so caching
             // it costs one extra u32 write and zero additional map probes.
@@ -178,7 +187,7 @@ pub(crate) fn build_csr_out(
         sort_neighbors_by_node_id(&mut neighbors[start..end]);
     }
 
-    ProjCsr { offsets, neighbors }
+    (ProjCsr { offsets, neighbors }, logical_edges)
 }
 
 /// Build the incoming-direction CSR by transposing an already-filtered out CSR.
@@ -245,11 +254,43 @@ pub(crate) fn transpose_csr_in(out_csr: &ProjCsr, row_index: &RowIndex) -> ProjC
 fn sort_neighbors_by_node_id(neighbors: &mut [ProjNeighbor]) {
     if neighbors
         .windows(2)
-        .all(|pair| pair[0].node_id <= pair[1].node_id)
+        .all(|pair| (pair[0].node_id, pair[0].edge_id) <= (pair[1].node_id, pair[1].edge_id))
     {
         return;
     }
-    neighbors.sort_by_key(|n| n.node_id);
+    neighbors.sort_by_key(|n| (n.node_id, n.edge_id));
+}
+
+/// Merge sorted incidence slices, preserving parallel IDs but not duplicate
+/// views of the same intrinsic undirected edge or self-loop.
+pub(super) fn incident_neighbors<'a>(
+    mut out: &'a [ProjNeighbor],
+    mut incoming: &'a [ProjNeighbor],
+) -> impl Iterator<Item = &'a ProjNeighbor> {
+    std::iter::from_fn(move || match (out.first(), incoming.first()) {
+        (Some(a), Some(b)) => {
+            let order = (a.node_id, a.edge_id).cmp(&(b.node_id, b.edge_id));
+            if order.is_le() {
+                out = &out[1..];
+                if order.is_eq() {
+                    incoming = &incoming[1..];
+                }
+                Some(a)
+            } else {
+                incoming = &incoming[1..];
+                Some(b)
+            }
+        }
+        (Some(a), None) => {
+            out = &out[1..];
+            Some(a)
+        }
+        (None, Some(b)) => {
+            incoming = &incoming[1..];
+            Some(b)
+        }
+        (None, None) => None,
+    })
 }
 
 /// Extract the edge weight per spec 16 §E04 (permissive: missing / non-numeric

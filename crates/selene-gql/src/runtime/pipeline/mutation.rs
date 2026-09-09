@@ -238,7 +238,17 @@ fn execute_insert_edge(
         let edge_id = {
             let mut mutator = ctx.mutator()?;
             mutator
-                .create_edge(label.clone(), source, target, props)
+                .create_mixed_edge(
+                    label.clone(),
+                    source,
+                    target,
+                    if direction == EdgeDirection::Undirected {
+                        selene_core::EdgeDirectionality::Undirected
+                    } else {
+                        selene_core::EdgeDirectionality::Directed
+                    },
+                    props,
+                )
                 .map_err(|source| graph_mutation(source, span))?
         };
         let mut values = row.cloned_values();
