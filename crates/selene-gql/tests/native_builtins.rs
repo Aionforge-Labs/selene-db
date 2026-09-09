@@ -312,6 +312,53 @@ fn verify_reports_ok_for_a_consistent_graph() {
     );
 }
 
+#[test]
+fn verify_reports_ok_for_mixed_parallel_edges_and_both_loop_kinds() {
+    use selene_core::{
+        EdgeDirectionality::{Directed, Undirected},
+        LabelSet, PropertyMap,
+    };
+    let graph = graph(330_007);
+    let mut tx = graph.begin_write();
+    {
+        let mut m = tx.mutator();
+        let a = m.create_node(LabelSet::new(), PropertyMap::new()).unwrap();
+        let b = m.create_node(LabelSet::new(), PropertyMap::new()).unwrap();
+        for (first, second, kind) in [
+            (a, b, Directed),
+            (b, a, Directed),
+            (a, b, Directed),
+            (a, b, Undirected),
+            (b, a, Undirected),
+            (a, a, Directed),
+            (a, a, Undirected),
+        ] {
+            m.create_mixed_edge(db_string("E"), first, second, kind, PropertyMap::new())
+                .unwrap();
+        }
+    }
+    tx.commit().unwrap();
+    let before = graph.read();
+    let registry = BuiltinProcedureRegistry::new();
+    let mut session = Session::new(&graph);
+    for (source, expected_rows) in [
+        ("CALL selene.verify() YIELD check, status, detail", 4),
+        ("CALL selene.verify(true) YIELD check, status, detail", 6),
+    ] {
+        let table = execute_rows(&mut session, source, &registry);
+        assert_eq!(table.row_count(), expected_rows);
+        assert!(
+            string_column(&table, "status")
+                .iter()
+                .all(|status| status == "ok"),
+            "healthy mixed graph failed verify: {:?}",
+            string_column(&table, "detail")
+        );
+    }
+    assert_eq!(graph.read().meta.generation, before.meta.generation);
+    assert_eq!(graph.read().edge_count(), 7);
+}
+
 /// Deep verify re-derives each row's expected key through the same float key
 /// constructors the index used, so collapsing `-0.0` onto `+0.0` has to leave
 /// both sides agreeing. A collapse applied on only one side would surface here

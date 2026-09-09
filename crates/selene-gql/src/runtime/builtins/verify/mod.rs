@@ -1,12 +1,11 @@
 //! `selene.verify` native built-in.
 //!
-//! Read-only graph-tier integrity check against graph invariants. Ported
-//! verbatim from the historical procedure-pack `verify` built-in; the check
-//! logic is identical (only relocated). To stay clear of the 700-LOC file cap the
-//! procedure is split: this module owns metadata, argument parsing, the
-//! `verify_snapshot` orchestration, and the row/`CheckResult` shaping; the
-//! individual integrity checks live in [`checks`].
+//! Read-only graph-tier integrity check against graph invariants. This module
+//! owns metadata, argument parsing, `verify_snapshot` orchestration and result
+//! shaping. Mixed-edge incidence auditing lives in [`adjacency`]; other
+//! integrity checks live in [`checks`].
 
+mod adjacency;
 mod checks;
 
 use selene_core::{Value, db_string};
@@ -89,7 +88,7 @@ pub(crate) fn verify_snapshot(
         )?,
         check_row(
             "adjacency_symmetry",
-            checks::check_adjacency_symmetry(snapshot),
+            adjacency::check_adjacency_symmetry(snapshot),
         )?,
         check_row(
             "edge_endpoint_liveness",
@@ -148,3 +147,6 @@ impl CheckResult {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod mixed_tests;

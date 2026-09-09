@@ -5,10 +5,10 @@
 //! summarizing the inconsistencies it found; the orchestration and row shaping
 //! live in the parent [`super`] module.
 
-use selene_core::{DbString, DurationOrderKey, EdgeId, NodeId, Value, duration_order_key};
+use selene_core::{DbString, DurationOrderKey, Value, duration_order_key};
 use selene_graph::{
-    AdjacencyEntry, CompositeKey, CompositeKeyComponent, CompositeTypedIndex, NotNanF32, NotNanF64,
-    SeleneGraph, TypedIndex,
+    CompositeKey, CompositeKeyComponent, CompositeTypedIndex, NotNanF32, NotNanF64, SeleneGraph,
+    TypedIndex,
 };
 
 use super::CheckResult;
@@ -158,136 +158,6 @@ pub(super) fn check_property_index_coverage(snapshot: &SeleneGraph) -> CheckResu
              drifted rows={drifted_rows}; issues={issues}"
         ),
     )
-}
-
-pub(super) fn check_adjacency_symmetry(snapshot: &SeleneGraph) -> CheckResult {
-    let mut issues = 0_usize;
-    let mut outgoing_edges = 0_usize;
-    let mut incoming_edges = 0_usize;
-    let mut live_edges = 0_usize;
-
-    for (source, entry) in &snapshot.adjacency_out {
-        for edge in entry.iter() {
-            outgoing_edges += 1;
-            if !snapshot.is_node_alive(*source) || !snapshot.is_node_alive(edge.neighbor) {
-                issues += 1;
-            }
-            match expected_edge(snapshot, edge.edge_id) {
-                Some((actual_source, actual_target, actual_label)) => {
-                    if actual_source != *source || actual_target != edge.neighbor {
-                        issues += 1;
-                    }
-                    if actual_label != edge.label {
-                        issues += 1;
-                    }
-                }
-                None => {
-                    issues += 1;
-                }
-            }
-            if !snapshot
-                .incoming_edges(edge.neighbor)
-                .is_some_and(|incoming| {
-                    incoming.iter().any(|candidate| {
-                        candidate.edge_id == edge.edge_id
-                            && candidate.neighbor == *source
-                            && candidate.label == edge.label
-                    })
-                })
-            {
-                issues += 1;
-            }
-        }
-    }
-
-    for (target, entry) in &snapshot.adjacency_in {
-        for edge in entry.iter() {
-            incoming_edges += 1;
-            if !snapshot.is_node_alive(*target) || !snapshot.is_node_alive(edge.neighbor) {
-                issues += 1;
-            }
-            match expected_edge(snapshot, edge.edge_id) {
-                Some((actual_source, actual_target, actual_label)) => {
-                    if actual_source != edge.neighbor || actual_target != *target {
-                        issues += 1;
-                    }
-                    if actual_label != edge.label {
-                        issues += 1;
-                    }
-                }
-                None => {
-                    issues += 1;
-                }
-            }
-            if !snapshot
-                .outgoing_edges(edge.neighbor)
-                .is_some_and(|outgoing| {
-                    outgoing.iter().any(|candidate| {
-                        candidate.edge_id == edge.edge_id
-                            && candidate.neighbor == *target
-                            && candidate.label == edge.label
-                    })
-                })
-            {
-                issues += 1;
-            }
-        }
-    }
-
-    if let Ok(live_edge_candidates) = snapshot.live_edge_candidates() {
-        for edge_id in live_edge_candidates.iter() {
-            live_edges += 1;
-            let Some((source, target, label)) = expected_edge(snapshot, edge_id) else {
-                issues += 1;
-                continue;
-            };
-            if !adjacency_entry_contains(
-                snapshot.outgoing_edges(source),
-                target,
-                edge_id,
-                label.clone(),
-            ) {
-                issues += 1;
-            }
-            if !adjacency_entry_contains(snapshot.incoming_edges(target), source, edge_id, label) {
-                issues += 1;
-            }
-        }
-    } else {
-        issues += 1;
-    }
-
-    if outgoing_edges != live_edges {
-        issues += outgoing_edges.abs_diff(live_edges);
-    }
-    if incoming_edges != live_edges {
-        issues += incoming_edges.abs_diff(live_edges);
-    }
-    CheckResult::new(
-        issues,
-        format!(
-            "live edges={live_edges}; outgoing adjacency edges={outgoing_edges}; incoming adjacency edges={incoming_edges}; issues={issues}"
-        ),
-    )
-}
-
-fn expected_edge(snapshot: &SeleneGraph, edge_id: EdgeId) -> Option<(NodeId, NodeId, DbString)> {
-    let (source, target) = snapshot.edge_endpoints(edge_id)?;
-    let label = snapshot.edge_label(edge_id)?.clone();
-    Some((source, target, label))
-}
-
-fn adjacency_entry_contains(
-    entry: Option<&AdjacencyEntry>,
-    neighbor: NodeId,
-    edge_id: EdgeId,
-    label: DbString,
-) -> bool {
-    entry.is_some_and(|entry| {
-        entry
-            .iter()
-            .any(|edge| edge.neighbor == neighbor && edge.edge_id == edge_id && edge.label == label)
-    })
 }
 
 pub(super) fn check_edge_endpoint_liveness(snapshot: &SeleneGraph) -> CheckResult {
