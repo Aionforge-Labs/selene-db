@@ -2,7 +2,7 @@
 
 use selene_gql::{
     AnalyzedStatement, BindingTableColumn, EmptyProcedureRegistry, ExecutionPlan,
-    InsertEndpointRef, MutationOp, PipelineOp, PlannerError, analyze, parse, plan,
+    InsertEndpointRef, MutationOp, PipelineOp, analyze, parse, plan,
 };
 
 fn analyzed(source: &str) -> AnalyzedStatement {
@@ -165,13 +165,9 @@ fn finish_and_missing_terminator_have_empty_output_schema() {
     }
 }
 
-#[test]
-fn write_set_missing_is_defensive_planner_error() {
-    let mut analyzed = analyzed("INSERT (n)");
-    analyzed.write_set = None;
-    let err = plan(&analyzed, &EmptyProcedureRegistry).expect_err("missing write set");
-    assert!(matches!(err, PlannerError::WriteSetMissing { .. }));
-}
+// Immutable analyzer output cannot be corrupted by external callers. The
+// missing-write-set defensive case is exercised by the adapter's unit test
+// `missing_write_set_reports_planner_error` instead.
 
 #[test]
 fn sentinel_mutation_plan_shape_snapshot() {

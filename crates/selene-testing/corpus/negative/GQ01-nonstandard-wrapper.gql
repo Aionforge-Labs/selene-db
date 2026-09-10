@@ -1,0 +1,4 @@
+// corpus: negative
+// feature: GQ01
+// expects: parse-rejected(syntax)
+USE GRAPH main RETURN 1

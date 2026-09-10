@@ -154,6 +154,8 @@ impl GqlStatus {
     pub const INVALID_TRANSACTION_STATE_MIXING: Self = Self(*b"25G02");
     /// Maps to GQLSTATUS 25G03 per ISO/IEC 39075:2024 section 23.1 Table 8.
     pub const READ_ONLY_TRANSACTION_VIOLATION: Self = Self(*b"25G03");
+    /// ISO §9.1 GR1d: accessing multiple graphs is not supported (GT03).
+    pub const MULTIPLE_GRAPHS_NOT_SUPPORTED: Self = Self(*b"25G04");
     /// Maps to GQLSTATUS 25N02, a selene-db implementation-defined subclass
     /// under standard class 25 per ISO/IEC 39075:2024 section 23.1.
     pub const IN_FAILED_TRANSACTION: Self = Self(*b"25N02");

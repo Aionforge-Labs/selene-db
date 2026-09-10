@@ -6,10 +6,7 @@ use selene_graph::{EdgeTypeDef, GraphTypeDef, NodeTypeDef, PropertyTypeDef};
 use crate::{
     GqlType, MutationStatement, RecordType, SetItem, SourceSpan, ValueExpr,
     analyze::{
-        ast::{AnalyzedStatement, AnalyzedStatementKind},
-        binding::BindingId,
-        error::AnalysisError,
-        types::AnalyzedType,
+        ast::AnalyzedStatement, binding::BindingId, error::AnalysisError, types::AnalyzedType,
         write_set::WriteKind,
     },
 };
@@ -144,7 +141,7 @@ fn required_property_supplied(
 /// (which was O(W×S) — one rescan of all S set values per W write entries).
 pub(super) fn set_value_index(analyzed: &AnalyzedStatement) -> HashMap<SourceSpan, &ValueExpr> {
     let mut index = HashMap::new();
-    let AnalyzedStatementKind::Mutate(pipeline) = &analyzed.statement else {
+    let crate::Statement::Mutate(pipeline) = analyzed.source() else {
         return index;
     };
     for statement in &pipeline.statements {

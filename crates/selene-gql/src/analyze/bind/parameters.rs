@@ -20,8 +20,8 @@ struct ParameterCollector {
     uses: Vec<ParameterUse>,
 }
 
-pub(crate) fn apply_statement_parameter_declarations(
-    statement: &mut Statement,
+pub(crate) fn collect_statement_parameters(
+    statement: &Statement,
 ) -> Result<Vec<ParameterUse>, AnalysisError> {
     let mut collector = ParameterCollector::default();
     collect_statement_parameter_declarations(statement, &mut collector)?;
@@ -29,12 +29,6 @@ pub(crate) fn apply_statement_parameter_declarations(
         declarations,
         mut uses,
     } = collector;
-    if !declarations.is_empty() {
-        super::parameter_inheritance::inherit_statement_parameter_declarations(
-            statement,
-            &declarations,
-        );
-    }
     for parameter in &mut uses {
         parameter.declared_type = declarations
             .get(&parameter.name)

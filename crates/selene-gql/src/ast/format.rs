@@ -7,6 +7,7 @@ mod keywords;
 mod preflight;
 mod trim;
 mod type_name;
+mod working_scope;
 
 use std::fmt::{self, Write as _};
 
@@ -131,6 +132,7 @@ pub enum FormatError {
 }
 
 pub(super) fn fmt_pipeline(out: &mut String, pipeline: &QueryPipeline) -> fmt::Result {
+    let braces = working_scope::prefixes(out, &pipeline.working_scopes)?;
     for (index, statement) in pipeline.statements.iter().enumerate() {
         if index > 0 {
             out.push('\n');
@@ -189,6 +191,9 @@ pub(super) fn fmt_pipeline(out: &mut String, pipeline: &QueryPipeline) -> fmt::R
             crate::PipelineStatement::Call(value) => fmt_call(out, value)?,
             crate::PipelineStatement::CallSubquery(value) => fmt_inline_call(out, value)?,
         }
+    }
+    for _ in 0..braces {
+        out.push_str(" }");
     }
     Ok(())
 }

@@ -226,6 +226,8 @@ fn is_typed_unsupported_variant_errors_for_hand_built_ast() {
         span,
     };
     let statement = Statement::Query(QueryPipeline {
+        working_scopes: Vec::new(),
+        select_origin: None,
         statements: vec![PipelineStatement::Return(ReturnClause {
             distinct: false,
             star: false,

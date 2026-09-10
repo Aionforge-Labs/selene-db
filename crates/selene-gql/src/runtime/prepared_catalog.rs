@@ -1,5 +1,7 @@
 //! Single-parse selected-facade request preparation and staged execution.
 
+mod analysis;
+
 use std::{mem, panic::AssertUnwindSafe, sync::Arc};
 
 use selene_graph::write_txn::PreparedGraphCommit;
@@ -32,6 +34,7 @@ pub struct PreparedCatalogRequest {
     graph_id: selene_core::GraphId,
     graph_generation: u64,
     schema_version: u64,
+    catalog: Option<Arc<crate::analyze::catalog::CatalogResolution>>,
 }
 
 /// Request-independent selected-facade plan suitable for facade-owned reuse.
@@ -46,8 +49,8 @@ pub struct PreparedCatalogPlan {
     plan: Arc<ExecutionPlan>,
     parameter_uses: Arc<[ParameterUse]>,
     graph_id: selene_core::GraphId,
-    graph_generation: u64,
     schema_version: u64,
+    catalog: Option<Arc<crate::analyze::catalog::CatalogResolution>>,
 }
 
 /// Hidden selected-facade statement classification retained after one compile pass.
@@ -215,8 +218,8 @@ impl PreparedCatalogRequest {
             plan: Arc::clone(&self.plan),
             parameter_uses: Arc::clone(&self.parameter_uses),
             graph_id: self.graph_id,
-            graph_generation: self.graph_generation,
             schema_version: self.schema_version,
+            catalog: self.catalog.clone(),
         }
     }
 
@@ -284,6 +287,11 @@ impl PreparedCatalogPlan {
         request: RequestExecutionInput,
         graph: &selene_graph::SeleneGraph,
     ) -> Result<PreparedCatalogRequest, ExecutorError> {
+        if graph.graph_id() != self.graph_id {
+            return Err(ExecutorError::ImplementationDefined {
+                detail: "cached plan belongs to another graph",
+            });
+        }
         super::request::validate(&request, &self.parameter_uses, graph)?;
         Ok(PreparedCatalogRequest {
             source: Arc::clone(&self.source),
@@ -291,8 +299,9 @@ impl PreparedCatalogPlan {
             parameter_uses: Arc::clone(&self.parameter_uses),
             request,
             graph_id: self.graph_id,
-            graph_generation: self.graph_generation,
+            graph_generation: graph.meta.generation,
             schema_version: self.schema_version,
+            catalog: self.catalog.clone(),
         })
     }
 }
@@ -352,6 +361,7 @@ impl<'g> Session<'g> {
             graph_id,
             graph_generation,
             schema_version,
+            catalog: None,
         })
     }
 

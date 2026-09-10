@@ -2,6 +2,8 @@
 
 #[path = "types/expr_lookup.rs"]
 mod expr_lookup;
+#[path = "types/fingerprint.rs"]
+mod fingerprint;
 
 pub use expr_lookup::ExprIdLookup;
 

@@ -101,13 +101,13 @@ pub(super) fn lower_query_pipeline(
             PipelineStatement::Offset(offset) => {
                 if let Some(PipelineStatement::Limit(limit)) = tail.get(index + 1) {
                     ops.push(PipelineOp::Limit {
-                        offset: limit_amount(offset),
-                        count: limit_amount(limit),
+                        offset: limit_amount(offset, analyzed),
+                        count: limit_amount(limit, analyzed),
                     });
                     index += 1;
                 } else {
                     ops.push(PipelineOp::Limit {
-                        offset: limit_amount(offset),
+                        offset: limit_amount(offset, analyzed),
                         count: LimitAmount::Literal(u64::MAX),
                     });
                 }
@@ -119,14 +119,14 @@ pub(super) fn lower_query_pipeline(
                 // take" semantics regardless of source order.
                 if let Some(PipelineStatement::Offset(offset)) = tail.get(index + 1) {
                     ops.push(PipelineOp::Limit {
-                        offset: limit_amount(offset),
-                        count: limit_amount(limit),
+                        offset: limit_amount(offset, analyzed),
+                        count: limit_amount(limit, analyzed),
                     });
                     index += 1;
                 } else {
                     ops.push(PipelineOp::Limit {
                         offset: LimitAmount::Literal(0),
-                        count: limit_amount(limit),
+                        count: limit_amount(limit, analyzed),
                     });
                 }
             }
@@ -571,7 +571,7 @@ fn leading_matches(statements: &[PipelineStatement]) -> (Vec<&crate::MatchClause
     (matches, len)
 }
 
-fn limit_amount(value: &LimitValue) -> LimitAmount {
+fn limit_amount(value: &LimitValue, analyzed: &AnalyzedStatement) -> LimitAmount {
     match value {
         LimitValue::Count(value, _) => LimitAmount::Literal(*value),
         LimitValue::Parameter {
@@ -580,7 +580,11 @@ fn limit_amount(value: &LimitValue) -> LimitAmount {
             span,
         } => LimitAmount::Parameter {
             name: name.clone(),
-            declared_type: declared_type.clone(),
+            declared_type: analyzed
+                .expr_ids
+                .parameter_type(name)
+                .or(declared_type.as_ref())
+                .cloned(),
             span: *span,
         },
     }

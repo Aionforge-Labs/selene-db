@@ -35,6 +35,18 @@ use crate::{
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[non_exhaustive]
 pub enum AnalysisError {
+    /// A request would access a second graph under unsupported GT03.
+    #[error("accessing multiple graphs is not supported: {first:?} then {requested:?}")]
+    #[diagnostic(code(SLENE_GQL_25G04))]
+    MultipleGraphs {
+        /// The transaction's first or pinned graph.
+        first: selene_catalog::GraphId,
+        /// The second graph selected by source.
+        requested: selene_catalog::GraphId,
+        /// Original second-access span.
+        #[label("second graph in the transaction")]
+        span: SourceSpan,
+    },
     /// A reference does not resolve to any binding in the enclosing scopes.
     #[error("undefined reference: {name}")]
     #[diagnostic(code(SLENE_GQL_42N03))]
@@ -521,6 +533,7 @@ impl AnalysisError {
     #[must_use]
     pub const fn gqlstatus(&self) -> GqlStatus {
         match self {
+            Self::MultipleGraphs { .. } => GqlStatus::MULTIPLE_GRAPHS_NOT_SUPPORTED,
             Self::UndefinedReference { .. } => GqlStatus::UNDEFINED_REFERENCE,
             Self::Shadow { .. }
             | Self::PatternKindMismatch { .. }

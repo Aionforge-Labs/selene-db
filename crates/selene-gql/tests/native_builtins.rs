@@ -194,7 +194,7 @@ fn feature_status_reports_generated_capability_records() {
     let evidence_counts = uint_column(&table, "evidence_count");
     let profile_hashes = string_column(&table, "profile_hash");
 
-    assert_eq!(feature_ids.len(), 209);
+    assert_eq!(feature_ids.len(), 210);
     assert_eq!(
         feature_ids,
         capabilities()
@@ -214,6 +214,13 @@ fn feature_status_reports_generated_capability_records() {
     assert_eq!(claims[gp04], "implemented_unclaimed");
     assert_eq!(evidence_statuses[gp04], "incomplete");
     assert_eq!(evidence_counts[gp04], 0);
+    for feature in ["GQ01", "GP16"] {
+        let index = feature_ids.iter().position(|id| id == feature).unwrap();
+        assert_eq!(statuses[index], "unsupported");
+        assert_eq!(relations[index], "direct");
+        assert_eq!(claims[index], "unsupported");
+        assert!(!rationales[index].is_empty());
+    }
 
     for (feature_id, expected_name) in [
         ("GQ12", "ORDER BY and page statement: OFFSET clause"),

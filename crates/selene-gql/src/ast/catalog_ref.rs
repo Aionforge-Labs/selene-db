@@ -1,10 +1,9 @@
-//! Unresolved catalog object references carried by database-catalog DDL.
+//! Unresolved catalog object references carried by source syntax.
 //!
 //! The parser records the spelling of every path segment together with its
 //! lexical form. Name validation (NFC canonicalisation, UAX #31 profile,
-//! private-use rejection) is not repeated here: the database facade turns each
-//! segment into a validated catalog path segment, and that constructor is the
-//! only validation choke point.
+//! private-use rejection) is not repeated here: catalog-aware analysis and
+//! facade lifecycle commands use the catalog's validated name constructors.
 
 use selene_core::DbString;
 
@@ -36,7 +35,8 @@ pub struct CatalogPathSegment {
 /// reference has no leading solidus and, in this profile, exactly one segment
 /// that resolves against the current working schema (§17.2 SR2a). The parser
 /// never resolves references; segment-count and directory-depth rules are
-/// applied by the facade, which reports them as invalid references (`42002`).
+/// applied by catalog-aware analysis or the facade lifecycle boundary, which
+/// report them as invalid references (`42002`).
 #[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct CatalogObjectReference {
     /// Whether the reference started with `/`.

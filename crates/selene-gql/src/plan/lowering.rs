@@ -1,4 +1,9 @@
-//! Analyzed-statement to plan lowering.
+//! The explicit semantic-to-current-plan adapter (deletion owner: F03-PR04).
+//!
+//! Source is borrowed solely for unchanged syntax payloads required by today's
+//! row plan. Resolved identities, effective parameter declarations, types, and
+//! synthesized arguments come from the frozen semantic tree. This adapter does
+//! not analyze or mutate syntax. F03-PR04 replaces these mixed plan payloads.
 
 mod aggregate;
 mod binding_refs;
@@ -13,6 +18,8 @@ mod optional_filters;
 mod path_mode;
 mod path_search;
 mod query;
+#[cfg(test)]
+mod rejections;
 mod repeat;
 mod sequential_match;
 mod set_op;
@@ -21,8 +28,8 @@ use query::{lower_query_pipeline, lower_return, nullable_call_yield_type, visibl
 use set_op::assert_arms_column_name_equal;
 
 use crate::{
-    GqlType, ProcedureRegistry, QueryPipeline, SourceSpan,
-    analyze::{AnalyzedStatement, AnalyzedStatementKind, AnalyzedType, ExprId, StatementCategory},
+    GqlType, ProcedureRegistry, QueryPipeline, SourceSpan, Statement,
+    analyze::{AnalyzedStatement, AnalyzedType, ExprId, StatementCategory},
     plan::{
         BindingTableColumn, BindingTableSchema, ExecutionPlan, ImplDefinedCaps, PipelineOp,
         PlannerError, SessionOp, TxOp,
@@ -44,7 +51,7 @@ pub fn plan(
 /// Lower an analyzed statement into a literal, unoptimized execution plan,
 /// stamping the caller-supplied implementation-defined caps.
 ///
-/// Dispatches by [`AnalyzedStatementKind`]: queries / set-composed / NEXT-chained
+/// Adapts the source shape using immutable semantics: queries / set-composed / NEXT-chained
 /// pipelines walk the read pipeline; mutations lower from the analyzer's
 /// [`MutationWriteSet`]; DDL lowers to a single [`PipelineOp::Catalog`];
 /// transaction control lowers to a single [`PipelineOp::Tx`]; top-level CALL
@@ -67,7 +74,7 @@ pub fn plan_with_caps(
     registry: &dyn ProcedureRegistry,
     caps: &ImplDefinedCaps,
 ) -> Result<ExecutionPlan, PlannerError> {
-    let mut plan = lower_statement_kind(&analyzed.statement, registry, analyzed, caps)?;
+    let mut plan = lower_statement_kind(analyzed.source(), registry, analyzed, caps)?;
     plan.category = analyzed.category;
     plan.expr_ids = analyzed.expr_ids.clone();
     expr::populate_plan_subqueries(&mut plan, analyzed, registry, caps.max_quantifier)?;
@@ -82,7 +89,7 @@ pub fn plan_with_caps(
 }
 
 fn lower_statement_kind(
-    statement: &AnalyzedStatementKind,
+    statement: &Statement,
     registry: &dyn ProcedureRegistry,
     analyzed: &AnalyzedStatement,
     caps: &ImplDefinedCaps,
@@ -92,10 +99,10 @@ fn lower_statement_kind(
     // `caps` directly.
     let max_quantifier = caps.max_quantifier;
     match statement {
-        AnalyzedStatementKind::Query(pipeline) => {
+        Statement::Query(pipeline) => {
             lower_query_pipeline(pipeline, registry, analyzed, max_quantifier)
         }
-        AnalyzedStatementKind::Composite { first, rest, .. } => {
+        Statement::Composite { first, rest, .. } => {
             let mut plan = lower_query_pipeline(first, registry, analyzed, max_quantifier)?;
             for (op, rhs) in rest {
                 let rhs_plan = lower_query_pipeline(rhs, registry, analyzed, max_quantifier)?;
@@ -115,21 +122,17 @@ fn lower_statement_kind(
             }
             Ok(plan)
         }
-        AnalyzedStatementKind::Chained { blocks, .. } => {
+        Statement::Chained { blocks, .. } => {
             lower_chained(blocks, registry, analyzed, max_quantifier)
         }
-        AnalyzedStatementKind::Mutate(pipeline) => {
-            mutation::lower_mutation(pipeline, analyzed, max_quantifier)
-        }
-        AnalyzedStatementKind::Ddl(statement) => catalog::lower_ddl(statement, analyzed, caps),
-        AnalyzedStatementKind::Call(call) => call::lower_top_level_call(call, registry, analyzed),
-        AnalyzedStatementKind::Explain { inner, span } => {
-            lower_explain(inner, *span, registry, analyzed, caps)
-        }
-        AnalyzedStatementKind::StartTransaction(span) => Ok(tx_plan(TxOp::Start { span: *span })),
-        AnalyzedStatementKind::Commit(span) => Ok(tx_plan(TxOp::Commit { span: *span })),
-        AnalyzedStatementKind::Rollback(span) => Ok(tx_plan(TxOp::Rollback { span: *span })),
-        AnalyzedStatementKind::SessionSetValue {
+        Statement::Mutate(pipeline) => mutation::lower_mutation(pipeline, analyzed, max_quantifier),
+        Statement::Ddl(statement) => catalog::lower_ddl(statement, analyzed, caps),
+        Statement::Call(call) => call::lower_top_level_call(call, registry, analyzed),
+        Statement::Explain { inner, span } => lower_explain(inner, *span, registry, analyzed, caps),
+        Statement::StartTransaction { span } => Ok(tx_plan(TxOp::Start { span: *span })),
+        Statement::Commit { span } => Ok(tx_plan(TxOp::Commit { span: *span })),
+        Statement::Rollback { span } => Ok(tx_plan(TxOp::Rollback { span: *span })),
+        Statement::SessionSetValue {
             param,
             declared_type,
             value,
@@ -142,13 +145,13 @@ fn lower_statement_kind(
             if_not_exists: *if_not_exists,
             span: *span,
         })),
-        AnalyzedStatementKind::SessionSetTimeZone { zone, span } => {
+        Statement::SessionSetTimeZone { zone, span, .. } => {
             Ok(session_plan(SessionOp::SetTimeZone {
                 zone: zone.clone(),
                 span: *span,
             }))
         }
-        AnalyzedStatementKind::SessionSetGraph { target, span } => {
+        Statement::SessionSetGraph { target, span } => {
             if let crate::SessionSetGraphTarget::SchemaReference(reference) = target {
                 return Ok(session_plan(SessionOp::SetSchema {
                     reference: reference.clone(),
@@ -160,12 +163,10 @@ fn lower_statement_kind(
                 span: *span,
             }))
         }
-        AnalyzedStatementKind::SessionReset { target, span } => {
+        Statement::SessionReset { target, span } => {
             Ok(session_plan(session_reset_op(target, *span)))
         }
-        AnalyzedStatementKind::SessionClose(span) => {
-            Ok(session_plan(SessionOp::Close { span: *span }))
-        }
+        Statement::SessionClose { span } => Ok(session_plan(SessionOp::Close { span: *span })),
     }
 }
 
@@ -185,7 +186,7 @@ fn session_reset_op(target: &crate::SessionResetTarget, span: SourceSpan) -> Ses
 }
 
 fn lower_explain(
-    inner: &AnalyzedStatementKind,
+    inner: &Statement,
     span: SourceSpan,
     registry: &dyn ProcedureRegistry,
     analyzed: &AnalyzedStatement,
@@ -325,87 +326,30 @@ pub(super) fn next_expr_id(analyzed: &AnalyzedStatement) -> ExprId {
 mod defensive_tests {
     use super::*;
     use crate::{
-        EmptyProcedureRegistry, Literal, PipelineStatement, ReturnClause, ReturnItem, SourceSpan,
-        Statement, ValueExpr,
-        analyze::{BindingId, BindingScopeTree, ExprIdLookup, ExprTypeTable, StatementCategory},
+        EmptyProcedureRegistry,
+        analyze::{BindingScopeTree, ExprIdLookup},
         parse,
     };
 
     #[test]
     fn missing_expression_type_reports_planner_error() {
-        let expr = ValueExpr::Literal(Literal::Integer(1, SourceSpan::new(7, 1)));
-        let statement = AnalyzedStatement {
-            statement: AnalyzedStatementKind::Query(QueryPipeline {
-                statements: vec![PipelineStatement::Return(ReturnClause {
-                    distinct: false,
-                    star: false,
-                    items: vec![ReturnItem {
-                        expr,
-                        alias: None,
-                        span: SourceSpan::new(7, 1),
-                    }],
-                    group_by: None,
-                    having: None,
-                    span: SourceSpan::new(0, 8),
-                })],
-                span: SourceSpan::new(0, 8),
-            }),
-            scopes: BindingScopeTree::new(SourceSpan::new(0, 8)),
-            references: Vec::new(),
-            parameters: Vec::new(),
-            expr_types: ExprTypeTable::default(),
-            expr_ids: ExprIdLookup::default(),
-            span: SourceSpan::new(0, 8),
-            category: StatementCategory::ReadOnly,
-            write_set: None,
-        };
+        let mut statement =
+            crate::analyze(parse("RETURN 1").unwrap(), &EmptyProcedureRegistry, None).unwrap();
+        statement.corrupt_for_test(|_, semantic| semantic.expr_ids = ExprIdLookup::default());
         let err = plan(&statement, &EmptyProcedureRegistry).expect_err("missing expr cell");
         assert!(matches!(err, PlannerError::ExpressionTypeMissing { .. }));
     }
 
     #[test]
     fn lost_binding_reference_reports_planner_error() {
-        let parsed = parse("RETURN n").expect("test input parses");
-        let Statement::Query(parsed_query) = parsed else {
-            unreachable!("parser returns query");
-        };
-        let PipelineStatement::Return(parsed_return) = parsed_query.statements[0].clone() else {
-            unreachable!("parser returns return");
-        };
-        let ValueExpr::Variable { name, .. } = &parsed_return.items[0].expr else {
-            unreachable!("test projection is variable");
-        };
-        let name = name.clone();
-        let mut expr_types = ExprTypeTable::default();
-        let expr_id = expr_types.push(crate::AnalyzedType::DYNAMIC);
-        let mut statement = AnalyzedStatement {
-            statement: AnalyzedStatementKind::Query(QueryPipeline {
-                statements: vec![PipelineStatement::Return(parsed_return)],
-                span: parsed_query.span,
-            }),
-            scopes: BindingScopeTree::new(SourceSpan::new(0, 8)),
-            references: vec![crate::BindingUse {
-                name,
-                binding: BindingId::new(999),
-                span: SourceSpan::new(7, 1),
-                kind: crate::BindingUseKind::Variable,
-            }],
-            parameters: Vec::new(),
-            expr_types,
-            expr_ids: ExprIdLookup::default(),
-            span: SourceSpan::new(0, 8),
-            category: StatementCategory::ReadOnly,
-            write_set: None,
-        };
-        let AnalyzedStatementKind::Query(query) = &statement.statement else {
-            unreachable!("test builds query");
-        };
-        let PipelineStatement::Return(return_clause) = &query.statements[0] else {
-            unreachable!("test builds return");
-        };
-        let mut expr_ids = ExprIdLookup::default();
-        expr_ids.insert(&return_clause.items[0].expr, expr_id);
-        statement.expr_ids = expr_ids;
+        let mut statement = crate::analyze(
+            parse("LET n = 1 RETURN n").unwrap(),
+            &EmptyProcedureRegistry,
+            None,
+        )
+        .unwrap();
+        statement
+            .corrupt_for_test(|_, semantic| semantic.scopes = BindingScopeTree::new(semantic.span));
         let err = plan(&statement, &EmptyProcedureRegistry).expect_err("lost binding");
         assert!(matches!(err, PlannerError::BindingResolutionLost { .. }));
     }

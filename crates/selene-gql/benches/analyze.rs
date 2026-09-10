@@ -6,6 +6,7 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod common;
+mod semantic_measurement;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use selene_gql::{EmptyProcedureRegistry, analyze, parse};
@@ -15,7 +16,7 @@ fn bench_analyze_corpus(c: &mut Criterion) {
     let entries = common::corpus_entries();
     let statements = entries
         .iter()
-        .map(|entry| parse(entry.source).expect("source parses"))
+        .map(|entry| std::sync::Arc::new(parse(entry.source).expect("source parses")))
         .collect::<Vec<_>>();
     let empty = EmptyProcedureRegistry;
     let mock = PlanCorpus::standard_mock_registry();
@@ -36,6 +37,6 @@ fn bench_analyze_corpus(c: &mut Criterion) {
 criterion_group! {
     name = analyze_group;
     config = common::criterion_config();
-    targets = bench_analyze_corpus
+    targets = bench_analyze_corpus, semantic_measurement::bench
 }
 criterion_main!(analyze_group);

@@ -24,7 +24,7 @@ use crate::{
     EdgeDirection, EdgePattern, GraphPattern, LabelExpr, MutationPipeline, MutationStatement,
     NodePattern, PatternElement, SourceSpan, ValueExpr,
     analyze::{
-        ast::{AnalyzedStatement, AnalyzedStatementKind},
+        ast::AnalyzedStatement,
         binding::{BindingDecl, BindingDeclKind, BindingId},
         error::AnalysisError,
         write_set::{ElementKind, WriteKind, WriteSetEntry},
@@ -35,7 +35,7 @@ pub(crate) fn validate(
     analyzed: &AnalyzedStatement,
     graph_type: &GraphTypeDef,
 ) -> Result<(), AnalysisError> {
-    let AnalyzedStatementKind::Mutate(pipeline) = &analyzed.statement else {
+    let crate::Statement::Mutate(pipeline) = analyzed.source() else {
         return Ok(());
     };
     validate_inserts(pipeline, analyzed, graph_type)?;

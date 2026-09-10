@@ -513,11 +513,11 @@ mod defensive_tests {
             None,
         )
         .expect("analyzes");
-        let mut broken = AnalyzedStatement {
-            write_set: None,
-            ..analyzed
-        };
-        broken.category = StatementCategory::DataModifying;
+        let mut broken = analyzed;
+        broken.corrupt_for_test(|_, semantic| {
+            semantic.write_set = None;
+            semantic.category = StatementCategory::DataModifying;
+        });
         let err = plan(&broken, &EmptyProcedureRegistry).expect_err("missing write set");
         assert!(matches!(err, PlannerError::WriteSetMissing { .. }));
     }
@@ -530,13 +530,13 @@ mod defensive_tests {
             None,
         )
         .expect("analyzes");
-        let mut broken = AnalyzedStatement {
-            write_set: Some(MutationWriteSet {
+        let mut broken = analyzed;
+        broken.corrupt_for_test(|_, semantic| {
+            semantic.write_set = Some(MutationWriteSet {
                 entries: Vec::new(),
-            }),
-            ..analyzed
-        };
-        broken.span = SourceSpan::new(0, 10);
+            });
+            semantic.span = SourceSpan::new(0, 10);
+        });
         let err = plan(&broken, &EmptyProcedureRegistry).expect_err("mismatch");
         assert!(matches!(err, PlannerError::WriteSetPatternMismatch { .. }));
     }

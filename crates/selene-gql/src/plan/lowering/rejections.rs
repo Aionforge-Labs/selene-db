@@ -13,12 +13,12 @@
 //! into the rejected shape and drive the planner directly — making each
 //! defensive guard live and pinning its exact tag.
 
-use selene_core::db_string;
-use selene_gql::{
-    AnalyzedStatement, AnalyzedStatementKind, EmptyProcedureRegistry, JoinTree, MatchClause,
-    MatchMode, MutationStatement, PatternElement, PipelineStatement, PlannerError, WriteKind,
-    YieldColumn, YieldItem, analyze, parse, plan,
+use crate::{
+    AnalyzedStatement, EmptyProcedureRegistry, JoinTree, MatchClause, MatchMode, MutationStatement,
+    PatternElement, PipelineStatement, PlannerError, Statement, WriteKind, YieldColumn, YieldItem,
+    analyze, parse, plan,
 };
+use selene_core::db_string;
 
 fn analyzed(source: &str) -> AnalyzedStatement {
     let statement = parse(source).expect("base source parses");
@@ -34,47 +34,53 @@ fn mutate_match_pattern(
     analyzed: &mut AnalyzedStatement,
     mutate: impl FnOnce(&mut Vec<PatternElement>),
 ) {
-    let AnalyzedStatementKind::Query(query) = &mut analyzed.statement else {
-        panic!("expected query statement");
-    };
-    for statement in &mut query.statements {
-        if let PipelineStatement::Match(clause) = statement {
-            mutate(&mut clause.patterns[0].elements);
-            return;
+    analyzed.corrupt_for_test(|source, _| {
+        let Statement::Query(query) = source else {
+            panic!("expected query statement");
+        };
+        for statement in &mut query.statements {
+            if let PipelineStatement::Match(clause) = statement {
+                mutate(&mut clause.patterns[0].elements);
+                return;
+            }
         }
-    }
-    panic!("no MATCH clause to mutate");
+        panic!("no MATCH clause to mutate");
+    });
 }
 
 /// Apply `mutate` to the leading MATCH clause of a Query.
 fn mutate_match_clause(analyzed: &mut AnalyzedStatement, mutate: impl FnOnce(&mut MatchClause)) {
-    let AnalyzedStatementKind::Query(query) = &mut analyzed.statement else {
-        panic!("expected query statement");
-    };
-    for statement in &mut query.statements {
-        if let PipelineStatement::Match(clause) = statement {
-            mutate(clause);
-            return;
+    analyzed.corrupt_for_test(|source, _| {
+        let Statement::Query(query) = source else {
+            panic!("expected query statement");
+        };
+        for statement in &mut query.statements {
+            if let PipelineStatement::Match(clause) = statement {
+                mutate(clause);
+                return;
+            }
         }
-    }
-    panic!("no MATCH clause to mutate");
+        panic!("no MATCH clause to mutate");
+    });
 }
 
 /// Apply `mutate` to the leading inline `CALL { ... }` subquery of a Query.
 fn mutate_call_subquery(
     analyzed: &mut AnalyzedStatement,
-    mutate: impl FnOnce(&mut selene_gql::InlineProcedureCall),
+    mutate: impl FnOnce(&mut crate::InlineProcedureCall),
 ) {
-    let AnalyzedStatementKind::Query(query) = &mut analyzed.statement else {
-        panic!("expected query statement");
-    };
-    for statement in &mut query.statements {
-        if let PipelineStatement::CallSubquery(call) = statement {
-            mutate(call);
-            return;
+    analyzed.corrupt_for_test(|source, _| {
+        let Statement::Query(query) = source else {
+            panic!("expected query statement");
+        };
+        for statement in &mut query.statements {
+            if let PipelineStatement::CallSubquery(call) = statement {
+                mutate(call);
+                return;
+            }
         }
-    }
-    panic!("no CALL subquery to mutate");
+        panic!("no CALL subquery to mutate");
+    });
 }
 
 fn assert_not_implemented(error: PlannerError, expected_feature: &str) {
@@ -183,30 +189,32 @@ fn insert_pattern_starting_with_an_edge_is_a_write_set_pattern_mismatch() {
     // the edge sits at element index 0, keeping the write-set order in step.
     let mut analyzed = analyzed("INSERT (:A)-[:E]->(:B)");
 
-    let AnalyzedStatementKind::Mutate(pipeline) = &mut analyzed.statement else {
-        panic!("expected mutation pipeline");
-    };
-    for statement in pipeline.statements.iter_mut() {
-        if let MutationStatement::Insert(insert) = statement {
-            let elements = &mut insert.patterns[0].elements;
-            let edge_index = elements
-                .iter()
-                .position(|element| matches!(element, PatternElement::Edge(_)))
-                .expect("pattern has an edge");
-            let edge = elements.remove(edge_index);
-            elements.insert(0, edge);
+    analyzed.corrupt_for_test(|source, semantic| {
+        let Statement::Mutate(pipeline) = source else {
+            panic!("expected mutation pipeline");
+        };
+        for statement in pipeline.statements.iter_mut() {
+            if let MutationStatement::Insert(insert) = statement {
+                let elements = &mut insert.patterns[0].elements;
+                let edge_index = elements
+                    .iter()
+                    .position(|element| matches!(element, PatternElement::Edge(_)))
+                    .expect("pattern has an edge");
+                let edge = elements.remove(edge_index);
+                elements.insert(0, edge);
+            }
         }
-    }
-    // Reorder the write-set entries so the InsertEdge entry is consumed first,
-    // matching the new pattern-element walk order (the edge is now element 0).
-    let write_set = analyzed.write_set.as_mut().expect("insert has a write set");
-    let edge_entry = write_set
-        .entries
-        .iter()
-        .position(|entry| matches!(entry.kind, WriteKind::InsertEdge { .. }))
-        .expect("write set has an InsertEdge entry");
-    let edge = write_set.entries.remove(edge_entry);
-    write_set.entries.insert(0, edge);
+        // Reorder the write-set entries so the InsertEdge entry is consumed first,
+        // matching the new pattern-element walk order (the edge is now element 0).
+        let write_set = semantic.write_set.as_mut().expect("insert has a write set");
+        let edge_entry = write_set
+            .entries
+            .iter()
+            .position(|entry| matches!(entry.kind, WriteKind::InsertEdge { .. }))
+            .expect("write set has an InsertEdge entry");
+        let edge = write_set.entries.remove(edge_entry);
+        write_set.entries.insert(0, edge);
+    });
 
     let error = plan_err(&analyzed);
     assert!(

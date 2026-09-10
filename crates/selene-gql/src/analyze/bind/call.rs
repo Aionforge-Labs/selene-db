@@ -17,7 +17,7 @@ use crate::{
 
 pub(crate) fn bind_procedure_call(
     ctx: &mut BindContext,
-    call: &mut ProcedureCall,
+    call: &ProcedureCall,
 ) -> Result<(), AnalysisError> {
     let metadata = lookup_metadata(ctx, call)?;
     bind_procedure_call_with_metadata(ctx, call, metadata)
@@ -44,10 +44,11 @@ fn procedure_name(call: &ProcedureCall) -> Box<[DbString]> {
 
 pub(crate) fn bind_procedure_call_with_metadata(
     ctx: &mut BindContext,
-    call: &mut ProcedureCall,
+    call: &ProcedureCall,
     metadata: ProcedureMetadata,
 ) -> Result<(), AnalysisError> {
     let arity = metadata.signature.arity();
+    ctx.use_working_graph(call.span)?;
     let actual = call.args.len();
     if !arity.accepts(actual) {
         return Err(AnalysisError::WrongArgumentCount {
@@ -58,10 +59,10 @@ pub(crate) fn bind_procedure_call_with_metadata(
             span: call.span,
         });
     }
-    fill_missing_defaults(call, &metadata)?;
+    let defaults = missing_defaults(call, &metadata)?;
 
     let mut arg_types = Vec::with_capacity(call.args.len());
-    for arg in &call.args {
+    for arg in call.args.iter().chain(&defaults) {
         let id = expr::bind_value_expr(ctx, arg)?;
         arg_types.push((ctx.expr_type(id).clone(), arg.span()));
     }
@@ -120,18 +121,21 @@ pub(crate) fn bind_procedure_call_with_metadata(
             declare_output(ctx, output, name, item.span, call.optional)?;
         }
     }
+    ctx.calls.push(crate::analyze::semantic::ResolvedCall {
+        span: call.span,
+        metadata,
+        defaults,
+    });
     Ok(())
 }
 
-fn fill_missing_defaults(
-    call: &mut ProcedureCall,
+fn missing_defaults(
+    call: &ProcedureCall,
     metadata: &ProcedureMetadata,
-) -> Result<(), AnalysisError> {
+) -> Result<Vec<ValueExpr>, AnalysisError> {
     let provided = call.args.len();
     let expected = metadata.signature.parameters.len();
-    if provided == expected {
-        return Ok(());
-    }
+    let mut defaults = Vec::with_capacity(expected.saturating_sub(provided));
     for parameter in metadata.signature.parameters.iter().skip(provided) {
         let Some(default) = parameter.default else {
             return Err(AnalysisError::WrongArgumentCount {
@@ -142,9 +146,9 @@ fn fill_missing_defaults(
                 span: call.span,
             });
         };
-        call.args.push(default_expr(default, call.span)?);
+        defaults.push(default_expr(default, call.span)?);
     }
-    Ok(())
+    Ok(defaults)
 }
 
 fn default_expr(

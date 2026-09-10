@@ -14,8 +14,7 @@ use crate::{
 };
 
 use super::{
-    Rule, build_qualified_name, build_query_pipeline, db_string_pair, expr, span, unexpected_pair,
-    unsupported_feature,
+    Rule, build_qualified_name, db_string_pair, expr, span, unexpected_pair, unsupported_feature,
 };
 
 pub(super) fn build_top_level_call(pair: Pair<'_, Rule>) -> Result<Statement, ParserError> {
@@ -25,6 +24,7 @@ pub(super) fn build_top_level_call(pair: Pair<'_, Rule>) -> Result<Statement, Pa
         BuiltCall::Inline(call) => Ok(Statement::Query(QueryPipeline {
             statements: vec![PipelineStatement::CallSubquery(call)],
             span: source_span,
+            ..QueryPipeline::default()
         })),
     }
 }
@@ -81,7 +81,7 @@ fn build_inline_call(pair: Pair<'_, Rule>) -> Result<InlineProcedureCall, Parser
             Rule::variable_scope_clause => {
                 variable_scope = Some(build_variable_scope(child)?);
             }
-            Rule::query_pipeline => body = Some(build_query_pipeline(child)?),
+            Rule::query_specification => body = Some(super::scopes::build_specification(child)?),
             Rule::yield_clause => yield_items = build_yield_items(child)?,
             _ => return Err(unexpected_pair(child, "unexpected CALL subquery child")),
         }

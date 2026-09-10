@@ -6,8 +6,7 @@ use crate::{
     GqlType, Literal, ProcedureCall, ProcedureDefaultValue, ProcedureMetadata, ProcedureMutability,
     ProcedureOutputColumn, ProcedureRegistry, YieldColumn,
     analyze::{
-        AnalyzedStatement, AnalyzedStatementKind, AnalyzedType, BindingDecl, BindingDeclKind,
-        StatementCategory, infer,
+        AnalyzedStatement, AnalyzedType, BindingDecl, BindingDeclKind, StatementCategory, infer,
     },
     plan::{
         BindingTableColumn, BindingTableSchema, ExecutionPlan, ImplDefinedCaps, PipelineOp,
@@ -24,7 +23,7 @@ pub(crate) fn lower_top_level_call(
     analyzed: &AnalyzedStatement,
 ) -> Result<ExecutionPlan, PlannerError> {
     let planned = plan_call(call, registry, analyzed)?;
-    if matches!(analyzed.statement, AnalyzedStatementKind::Call(_)) {
+    if matches!(analyzed.source(), crate::Statement::Call(_)) {
         // Why: in-pipeline CALLs live inside query statements whose
         // analyzed.category describes the whole pipeline; only top-level CALL
         // has a category that is exactly the call's mutability classification.
@@ -65,7 +64,16 @@ pub(crate) fn plan_call(
             span: call.span,
         })?;
 
-    if metadata.signature.parameters.len() != call.args.len() {
+    let resolved = analyzed
+        .calls
+        .iter()
+        .find(|resolved| resolved.span() == call.span)
+        .ok_or_else(|| PlannerError::ProcedureMetadataMismatch {
+            procedure: call.name.clone().into_vec().into_boxed_slice(),
+            detail: "call has no semantic application",
+            span: call.span,
+        })?;
+    if metadata.signature.parameters.len() != call.args.len() + resolved.defaults().len() {
         return Err(PlannerError::ProcedureMetadataMismatch {
             procedure: call.name.clone().into_vec().into_boxed_slice(),
             detail: "signature parameter count changed",
@@ -76,6 +84,7 @@ pub(crate) fn plan_call(
     let args = call
         .args
         .iter()
+        .chain(resolved.defaults())
         .map(|arg| expr::project_expr(arg, None, analyzed))
         .collect::<Result<Vec<_>, _>>()?;
     validate_signature(call, &metadata, &args, analyzed)?;
@@ -94,7 +103,17 @@ pub(crate) fn plan_call(
         .collect();
 
     validate_output_schema(call, &metadata, analyzed)?;
-
+    let changed = if metadata.mutability != resolved.metadata().mutability {
+        Some("mutability classification changed")
+    } else if metadata.tier != resolved.metadata().tier {
+        Some("procedure tier changed")
+    } else if metadata.handle != resolved.metadata().handle {
+        Some("procedure handle changed")
+    } else if !resolved.same_signature(&metadata) {
+        Some("resolved procedure signature changed")
+    } else {
+        None
+    };
     let mut planned = PlannedCall {
         optional: call.optional,
         procedure: call.name.clone().into_vec().into_boxed_slice(),
@@ -108,6 +127,15 @@ pub(crate) fn plan_call(
         span: call.span,
     };
     planned.yield_schema = yield_to_columns(&planned)?;
+    // Preserve specific wildcard/column diagnostics before the complete
+    // dependency check. No changed metadata is allowed to escape this adapter.
+    if let Some(detail) = changed {
+        return Err(PlannerError::ProcedureMetadataMismatch {
+            procedure: call.name.clone().into_vec().into_boxed_slice(),
+            detail,
+            span: call.span,
+        });
+    }
     Ok(planned)
 }
 

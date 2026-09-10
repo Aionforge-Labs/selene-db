@@ -10,9 +10,11 @@
 
 pub mod ast;
 pub mod binding;
+pub mod catalog;
 pub mod category;
 pub mod error;
 pub mod scope;
+pub mod semantic;
 pub mod types;
 pub mod write_set;
 
@@ -24,7 +26,7 @@ use selene_graph::GraphTypeDef;
 
 use crate::{ProcedureRegistry, Statement};
 
-pub use ast::{AnalyzedStatement, AnalyzedStatementKind, ParameterUse};
+pub use ast::{AnalyzedStatement, ParameterUse, SemanticTree};
 pub use binding::{BindingDecl, BindingDeclKind, BindingId, BindingUse, BindingUseKind};
 pub use category::StatementCategory;
 pub use error::{
@@ -51,13 +53,27 @@ pub use write_set::{ElementKind, MutationWriteSet, WriteKind, WriteSetEntry};
     fields(schema_bound = schema.is_some())
 )]
 pub fn analyze(
-    stmt: Statement,
+    stmt: impl Into<std::sync::Arc<Statement>>,
     registry: &dyn ProcedureRegistry,
     schema: Option<&GraphTypeDef>,
 ) -> Result<AnalyzedStatement, AnalysisError> {
-    let analyzed = bind::bind_statement(stmt, registry)?;
+    let analyzed = bind::bind_statement(stmt.into(), registry, None)?;
     if let Some(graph_type) = schema {
         self::schema::validate(&analyzed, graph_type)?;
     }
     Ok(analyzed)
+}
+
+/// Resolve one immutable source tree against a catalog and lexical defaults.
+///
+/// # Errors
+/// Returns binding, catalog-reference, or single-graph transaction diagnostics
+/// with original source spans. The selected runtime schema is validated by the
+/// same schema pass when the owner supplies the selected execution snapshot.
+pub fn analyze_catalog(
+    stmt: impl Into<std::sync::Arc<Statement>>,
+    registry: &dyn ProcedureRegistry,
+    environment: catalog::CatalogEnvironment,
+) -> Result<AnalyzedStatement, AnalysisError> {
+    bind::bind_statement(stmt.into(), registry, Some(environment))
 }

@@ -7,10 +7,10 @@ use std::{
 
 use selene_core::{DbString, GraphId, Value};
 use selene_gql::{
-    AnalysisError, AnalyzedStatementKind, BindingTableSchema, GqlStatus, GqlType, PipelineOp,
-    ProcedureContext, ProcedureDefaultValue, ProcedureError, ProcedureHandle, ProcedureMetadata,
-    ProcedureMutability, ProcedureOutputSchema, ProcedureParameter, ProcedureRegistry,
-    ProcedureResult, ProcedureSignature, ProcedureTier, Session, analyze, parse, plan,
+    AnalysisError, BindingTableSchema, GqlStatus, GqlType, PipelineOp, ProcedureContext,
+    ProcedureDefaultValue, ProcedureError, ProcedureHandle, ProcedureMetadata, ProcedureMutability,
+    ProcedureOutputSchema, ProcedureParameter, ProcedureRegistry, ProcedureResult,
+    ProcedureSignature, ProcedureTier, Session, Statement, analyze, parse, plan,
 };
 use selene_graph::SharedGraph;
 
@@ -169,10 +169,11 @@ fn analyzer_and_planner_both_see_defaulted_argument() {
     let statement = parse("CALL test.optional(7)").expect("test source parses");
     let analyzed = analyze(statement, &registry, None).expect("test source analyzes");
 
-    match &analyzed.statement {
-        AnalyzedStatementKind::Call(call) => assert_eq!(call.args.len(), 2),
+    match analyzed.source() {
+        Statement::Call(call) => assert_eq!(call.args.len(), 1),
         other => panic!("expected analyzed CALL, got {other:?}"),
     }
+    assert_eq!(analyzed.calls[0].defaults().len(), 1);
 
     let plan = plan(&analyzed, &registry).expect("test source plans");
     assert_eq!(plan.output_schema, BindingTableSchema { columns: vec![] });

@@ -13,8 +13,8 @@ use crate::{
 
 use super::{Rule, build_value_expr, first_child, literal};
 use crate::parser::builders::{
-    build_exists_match_body_pipeline, build_qualified_name, build_query_pipeline,
-    db_string_from_owned, pattern, span, unexpected_pair,
+    build_exists_match_body_pipeline, build_qualified_name, db_string_from_owned, pattern, span,
+    unexpected_pair,
 };
 
 pub(super) enum PredicateKind {
@@ -514,12 +514,12 @@ pub(super) fn build_value_subquery(pair: Pair<'_, Rule>) -> Result<ValueExpr, Pa
     let source_span = span(&pair);
     let body_pair = pair
         .into_inner()
-        .find(|child| child.as_rule() == Rule::query_pipeline)
+        .find(|child| child.as_rule() == Rule::query_specification)
         .ok_or_else(|| {
             ParserError::syntax("VALUE subquery is missing query body", source_span, None)
         })?;
     Ok(ValueExpr::ValueSubquery {
-        body: Box::new(build_query_pipeline(body_pair)?),
+        body: Box::new(super::super::scopes::build_specification(body_pair)?),
         span: source_span,
     })
 }

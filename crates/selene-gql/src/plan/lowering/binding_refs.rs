@@ -31,16 +31,16 @@ fn collect_binding_refs_in_expr(
     refs: &mut Vec<(BindingId, SourceSpan)>,
 ) -> Result<(), PlannerError> {
     match expr {
-        // A `Variable` resolves to the binding(s) recorded for its exact
-        // name+span by the analyzer; this is leaf work, not child recursion.
-        ValueExpr::Variable { name, span } => {
-            refs.extend(
-                analyzed
-                    .references
-                    .iter()
-                    .filter(|reference| reference.name == *name && reference.span == *span)
-                    .map(|reference| (reference.binding, *span)),
-            );
+        // Consume the semantic namespace decision; never re-resolve a name in
+        // the adapter or confuse a parameter with a same-spelled binding.
+        ValueExpr::Variable { span, .. } => {
+            let node = analyzed
+                .expression(expr)
+                .ok_or(PlannerError::ExpressionTypeMissing { span: *span })?;
+            let crate::analyze::semantic::ExpressionKind::Binding(binding) = node.kind else {
+                return Err(PlannerError::ExpressionTypeMissing { span: *span });
+            };
+            refs.push((binding, *span));
         }
         // Subquery bodies are `MatchClause` / `QueryPipeline`, not `ValueExpr`
         // children: collect the outer-binding uses they reference rather than

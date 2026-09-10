@@ -180,23 +180,18 @@ fn database_catalog_ddl_lowers_to_its_storage_neutral_command() {
         }],
         span: selene_gql::SourceSpan::new(0, 1),
     };
-    let analyzed = selene_gql::AnalyzedStatement {
-        statement: selene_gql::AnalyzedStatementKind::Ddl(DdlStatement::CreateGraph {
+    let analyzed = selene_gql::analyze(
+        selene_gql::Statement::Ddl(DdlStatement::CreateGraph {
             reference: reference.clone(),
             or_replace: true,
             if_not_exists: true,
             graph_type: None,
             span: selene_gql::SourceSpan::new(0, 1),
         }),
-        scopes: selene_gql::BindingScopeTree::new(selene_gql::SourceSpan::new(0, 1)),
-        references: Vec::new(),
-        parameters: Vec::new(),
-        expr_types: selene_gql::ExprTypeTable::default(),
-        expr_ids: selene_gql::ExprIdLookup::default(),
-        span: selene_gql::SourceSpan::new(0, 1),
-        category: selene_gql::StatementCategory::CatalogModifying,
-        write_set: None,
-    };
+        &EmptyProcedureRegistry,
+        None,
+    )
+    .expect("DDL analyzes");
     let plan = plan(&analyzed, &EmptyProcedureRegistry).expect("plans");
     assert_eq!(
         catalog_op(&plan),

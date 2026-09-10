@@ -1,8 +1,8 @@
 //! Analyzer coverage for temporal instant plus duration expressions.
 
 use selene_gql::{
-    AnalysisError, AnalyzedStatement, AnalyzedStatementKind, AnalyzedType, EmptyProcedureRegistry,
-    ExpectedType, GqlStatus, GqlType, PipelineStatement, Side, TypeMismatchContext, analyze, parse,
+    AnalysisError, AnalyzedStatement, AnalyzedType, EmptyProcedureRegistry, ExpectedType,
+    GqlStatus, GqlType, PipelineStatement, Side, Statement, TypeMismatchContext, analyze, parse,
 };
 
 fn analyze_one(source: &str) -> Result<AnalyzedStatement, AnalysisError> {
@@ -11,7 +11,7 @@ fn analyze_one(source: &str) -> Result<AnalyzedStatement, AnalysisError> {
 }
 
 fn projection_type(analyzed: &AnalyzedStatement, name: &str) -> AnalyzedType {
-    let AnalyzedStatementKind::Query(query) = &analyzed.statement else {
+    let Statement::Query(query) = analyzed.source() else {
         panic!("expected query statement");
     };
     let item = query

@@ -19,11 +19,17 @@ use crate::analyze::scope::ScopeKind;
 
 pub(crate) fn bind_query_pipeline(
     ctx: &mut BindContext,
-    pipeline: &mut QueryPipeline,
+    pipeline: &QueryPipeline,
 ) -> Result<(), AnalysisError> {
+    ctx.with_working_scopes(&pipeline.working_scopes, |ctx| {
+        bind_query_body(ctx, pipeline)
+    })
+}
+
+fn bind_query_body(ctx: &mut BindContext, pipeline: &QueryPipeline) -> Result<(), AnalysisError> {
     super::parameters::validate_parameter_declarations(pipeline)?;
     let mut return_sort_context = None;
-    for statement in &mut pipeline.statements {
+    for statement in &pipeline.statements {
         match statement {
             PipelineStatement::Return(clause) => {
                 bind_return_clause(ctx, clause)?;
@@ -44,7 +50,7 @@ pub(crate) fn bind_query_pipeline(
 
 pub(crate) fn bind_pipeline_statement(
     ctx: &mut BindContext,
-    statement: &mut PipelineStatement,
+    statement: &PipelineStatement,
 ) -> Result<(), AnalysisError> {
     match statement {
         PipelineStatement::Match(clause) => pattern::bind_match_clause(ctx, clause),
@@ -56,7 +62,7 @@ pub(crate) fn bind_pipeline_statement(
         PipelineStatement::For(statement) => bind_for(ctx, statement),
         PipelineStatement::Sorting(terms) => bind_sorting(ctx, terms, None),
         PipelineStatement::Limit(value) | PipelineStatement::Offset(value) => {
-            bind_limit_value(value)
+            bind_limit_value(ctx, value)
         }
         PipelineStatement::Return(clause) => bind_return_clause(ctx, clause),
         PipelineStatement::With(clause) => bind_with_clause(ctx, clause),
@@ -81,23 +87,18 @@ pub(crate) fn bind_pipeline_statement(
 
 fn bind_inline_call(
     ctx: &mut BindContext,
-    call: &mut InlineProcedureCall,
+    call: &InlineProcedureCall,
 ) -> Result<(), AnalysisError> {
     expr_depth::check_query_subquery_depth(&call.body, 1)?;
     let bind_result = match &call.variable_scope {
         // GP03 (ISO §15.2): explicit variable scope — the body sees ONLY the
         // named imports. An empty list (`CALL () { ... }`) is fully isolated.
-        // Imports are cloned so the body's `&mut call.body` borrow stays disjoint
-        // from the `call.variable_scope` read.
-        Some(imports) => {
-            let imports = imports.clone();
-            ctx.with_imported_scope(&imports, call.span, |ctx| {
-                bind_query_pipeline(ctx, &mut call.body)
-            })
-        }
+        Some(imports) => ctx.with_imported_scope(imports, call.span, |ctx| {
+            bind_query_pipeline(ctx, &call.body)
+        }),
         // GP02: implicit scope — the body inherits all outer bindings.
         None => ctx.with_child_scope(ScopeKind::Subquery, call.span, false, |ctx| {
-            bind_query_pipeline(ctx, &mut call.body)
+            bind_query_pipeline(ctx, &call.body)
         }),
     };
     if let Err(AnalysisError::MutatingProcedureInReadPipeline { span, .. }) = bind_result {
@@ -774,21 +775,23 @@ fn push_value_expr_children<'a>(expr: &'a ValueExpr, pending: &mut Vec<&'a Value
     expr.for_each_child(&mut |child| pending.push(child));
 }
 
-fn bind_limit_value(value: &LimitValue) -> Result<(), AnalysisError> {
-    match value {
-        LimitValue::Count(..) => Ok(()),
-        LimitValue::Parameter {
-            declared_type: Some(declared_type),
-            span,
-            ..
-        } if !is_limit_amount_type(declared_type) => Err(AnalysisError::TypeMismatch {
+fn bind_limit_value(ctx: &BindContext, value: &LimitValue) -> Result<(), AnalysisError> {
+    if let LimitValue::Parameter {
+        name,
+        declared_type,
+        span,
+    } = value
+        && let Some(declared_type) = ctx.expr_ids.parameter_type(name).or(declared_type.as_ref())
+        && !is_limit_amount_type(declared_type)
+    {
+        return Err(AnalysisError::TypeMismatch {
             context: TypeMismatchContext::LimitAmount,
             expected: ExpectedType::LimitAmount,
             found: declared_type.clone(),
             span: *span,
-        }),
-        LimitValue::Parameter { .. } => Ok(()),
+        });
     }
+    Ok(())
 }
 
 fn is_limit_amount_type(ty: &GqlType) -> bool {

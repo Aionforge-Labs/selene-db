@@ -112,9 +112,9 @@ pub(crate) fn expr_cell(
     analyzed: &AnalyzedStatement,
 ) -> Result<(ExprId, crate::AnalyzedType), PlannerError> {
     let expr_id = analyzed
-        .expr_ids
-        .get(expr)
-        .ok_or(PlannerError::ExpressionTypeMissing { span: expr.span() })?;
+        .expression(expr)
+        .ok_or(PlannerError::ExpressionTypeMissing { span: expr.span() })?
+        .id;
     Ok((expr_id, analyzed.expr_types.get(expr_id).clone()))
 }
 

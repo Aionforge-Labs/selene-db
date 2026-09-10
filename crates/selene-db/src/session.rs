@@ -198,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn facade_cache_hits_rebind_request_values_and_misses_on_catalog_generation() {
+    fn facade_cache_hits_rebind_values_and_survive_unrelated_catalog_changes() {
         let session = session();
         assert_eq!(session.context.plan_cache_stats(), (0, 0));
         session.execute("RETURN 1").unwrap();
@@ -225,7 +225,38 @@ mod tests {
             outcome_int(&session.execute_request(request_with_int(11))),
             11
         );
-        assert_eq!(session.context.plan_cache_stats(), (2, 3));
+        assert_eq!(session.context.plan_cache_stats(), (3, 2));
+    }
+
+    #[test]
+    fn semantic_cache_separates_data_publication_from_schema_invalidation() {
+        let session = session();
+        let database = Database {
+            inner: Arc::clone(&session.inner),
+        };
+        let writer = database
+            .session(&session.context.current_graph().path)
+            .unwrap();
+        let query = "USE /request_guard/main MATCH (n:Item) RETURN count(n)";
+        assert_eq!(
+            outcome_int(&session.execute_request(Request::new(query))),
+            0
+        );
+        assert_eq!(session.context.plan_cache_stats(), (0, 1));
+        writer.execute("INSERT (:Item {body: 'text'})").unwrap();
+        assert_eq!(
+            outcome_int(&session.execute_request(Request::new(query))),
+            1
+        );
+        assert_eq!(session.context.plan_cache_stats(), (1, 1));
+        writer
+            .execute("CALL selene.create_text_index('Item', 'body')")
+            .unwrap();
+        assert_eq!(
+            outcome_int(&session.execute_request(Request::new(query))),
+            1
+        );
+        assert_eq!(session.context.plan_cache_stats(), (1, 2));
     }
 
     #[test]

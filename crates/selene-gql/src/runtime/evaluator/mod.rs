@@ -114,7 +114,12 @@ pub fn evaluate(
             name,
             declared_type,
             span,
-        } => resolve_parameter(name.clone(), declared_type.as_ref(), *span, ctx),
+        } => resolve_parameter(
+            name.clone(),
+            ctx.expr_ids.parameter_type(name).or(declared_type.as_ref()),
+            *span,
+            ctx,
+        ),
         ValueExpr::FunctionCall {
             name,
             args,
