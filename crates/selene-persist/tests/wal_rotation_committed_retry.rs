@@ -29,7 +29,8 @@ fn meta_builder(dir: &Path, sequence: u64, bytes: &[u8]) -> SnapshotBuilder {
         sequence,
         compression: SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     builder
         .add_section(*b"CORE", *b"META", bytes.to_vec())
         .unwrap();
@@ -139,7 +140,7 @@ fn committed_pre_reset_archive_collision_is_typed_and_poisons() {
     append(&mut writer, 1);
     writer.flush().expect("wal flushes");
     meta_builder(&dir, 1, b"snapshot")
-        .finalize()
+        .finalize_with_authority(writer.authority())
         .expect("phase 1 snapshot publishes");
     fs::write(&archive_path, b"foreign archive").expect("foreign archive publishes");
     Manifest {
@@ -149,7 +150,7 @@ fn committed_pre_reset_archive_collision_is_typed_and_poisons() {
         active_wal: DEFAULT_WAL_FILE_NAME.to_owned(),
         archived_wal_seqs: vec![1],
     }
-    .write_atomic(&dir)
+    .write_atomic_with_authority(writer.authority())
     .expect("phase 3 manifest commits");
 
     let error = writer
@@ -182,7 +183,7 @@ fn rotation_retry_finishes_reset_after_committed_archive_is_pruned() {
     append(&mut writer, 1);
     writer.flush().expect("wal flushes");
     meta_builder(&dir, 1, b"snapshot")
-        .finalize()
+        .finalize_with_authority(writer.authority())
         .expect("phase 1 snapshot publishes");
     fs::copy(&wal_path, &archive_path).expect("phase 2 archive publishes");
     Manifest {
@@ -192,7 +193,7 @@ fn rotation_retry_finishes_reset_after_committed_archive_is_pruned() {
         active_wal: DEFAULT_WAL_FILE_NAME.to_owned(),
         archived_wal_seqs: vec![1],
     }
-    .write_atomic(&dir)
+    .write_atomic_with_authority(writer.authority())
     .expect("phase 3 manifest commits");
     writer
         .prune(&RetentionPolicy {

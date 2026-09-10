@@ -140,11 +140,25 @@ on `selene-core` and `selene-profile`; the facade composes the lower layers.
 `selene-testing` provides fixtures, corpus helpers, OpenRouter/local embedding
 support, and benchmark profiles for dev-dependencies.
 
+Managed persistence I/O uses retained `StoreDirectory` handles, never diagnostic
+locators. Initial path wrappers anchor once; callers may also supply an already
+open directory file. Native filesystem mode supports Linux/macOS only and
+returns typed unsupported-platform errors elsewhere. See
+[`docs/store-directory-control.md`](docs/store-directory-control.md) for file,
+lock, platform, and empty-control guarantees. The facade remains in-memory;
+empty format-2 control is not durable query/catalog support.
+
 Persistence-directory readers participate in the same epoch lock domain as
 rotation and prune. Low-level recovery and online backup-style reads hold
 `PersistenceReadGuard` from authoritative MANIFEST selection through snapshot
 and WAL use. `CheckpointOutcome` paths are not retention leases.
-`SharedGraph::recover` locks an existing `wal.log` before the shared epoch
+Writer ownership is one permanent `LOCK` domain; WAL/audit composites share its
+owned lease. Every managed publication/prune requires that StoreWriter proof;
+standalone conveniences acquire it, while online callers pass the existing
+lease. Exclusive epoch guards retain the proof; read guards remain independent.
+Empty-control reopen validates CURRENT plus its self-contained selected manifest,
+not unselected ancestor files. Parent links are provenance, not retention leases
+or authenticated rollback protection. `SharedGraph::recover` locks an existing `wal.log` before the shared epoch
 guard; a missing-WAL bootstrap verifies recovery under the guard before a
 non-blocking writer open. Recovery callbacks must not re-enter same-directory
 epoch mutation.

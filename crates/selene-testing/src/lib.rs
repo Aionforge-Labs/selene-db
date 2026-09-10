@@ -18,6 +18,7 @@ pub mod local_omlx;
 pub mod mixed_orientation;
 pub mod mock_index_catalog;
 pub mod mock_procedure_registry;
+pub mod persistence_path;
 pub mod plan_corpus;
 
 pub use algo_corpus::{
@@ -35,4 +36,5 @@ pub use executor_corpus::{
 };
 pub use mock_index_catalog::MockIndexCatalog;
 pub use mock_procedure_registry::{MockProcedureRegistry, default_corpus_registry};
+pub use persistence_path::PersistenceTestPath;
 pub use plan_corpus::{PlanCorpus, PlanCorpusCategory, PlanCorpusEntry, PlanCorpusRegistry};

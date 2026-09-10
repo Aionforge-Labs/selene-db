@@ -7,11 +7,10 @@ use selene_core::{Change, HlcTimestamp, NodeId, Origin};
 
 use super::set_before_manifest_commit_hook;
 use crate::manifest_lock::set_contention_hook;
-use crate::retention::set_before_commit_hook;
+use crate::retention::{prune_with_authority, set_before_commit_hook};
 use crate::{
     DEFAULT_WAL_FILE_NAME, Manifest, RetentionPolicy, SectionCompression, SnapshotBuilder,
-    SnapshotConfig, SnapshotReader, SyncPolicy, WalConfig, WalReader, WalWriter, prune,
-    snapshot_path,
+    SnapshotConfig, SnapshotReader, SyncPolicy, WalConfig, WalReader, WalWriter, snapshot_path,
 };
 
 fn temp_dir(name: &str) -> PathBuf {
@@ -33,7 +32,8 @@ fn builder(dir: &Path, sequence: u64, bytes: &[u8]) -> SnapshotBuilder {
         sequence,
         compression: SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     builder
         .add_section(*b"CORE", *b"META", bytes.to_vec())
         .unwrap();
@@ -100,7 +100,7 @@ fn assert_epoch_two(dir: &Path) {
 }
 
 #[test]
-fn free_prune_cannot_stale_overwrite_newer_rotation_manifest() {
+fn owned_prune_cannot_stale_overwrite_newer_rotation_manifest() {
     let dir = temp_dir("stale-manifest");
     let writer = writer_at_epoch_one(&dir);
     let policy = RetentionPolicy {
@@ -111,13 +111,13 @@ fn free_prune_cannot_stale_overwrite_newer_rotation_manifest() {
     };
     let (prune_reached_tx, prune_reached_rx) = sync_channel(0);
     let (resume_prune_tx, resume_prune_rx) = sync_channel(0);
-    let prune_dir = dir.clone();
+    let prune_authority = writer.authority().clone();
     let prune_thread = thread::spawn(move || {
         set_before_commit_hook(move || {
             prune_reached_tx.send(()).unwrap();
             resume_prune_rx.recv().unwrap();
         });
-        prune(&prune_dir, &policy)
+        prune_with_authority(&prune_authority, &policy)
     });
     wait(&prune_reached_rx, "prune plan");
 
@@ -142,9 +142,10 @@ fn free_prune_cannot_stale_overwrite_newer_rotation_manifest() {
 }
 
 #[test]
-fn free_prune_cannot_delete_inflight_rotation_artifacts() {
+fn owned_prune_cannot_delete_inflight_rotation_artifacts() {
     let dir = temp_dir("inflight-artifacts");
     let writer = writer_at_epoch_one(&dir);
+    let prune_authority = writer.authority().clone();
     let (rotation_reached_tx, rotation_reached_rx) = sync_channel(0);
     let (resume_rotation_tx, resume_rotation_rx) = sync_channel(0);
     let rotation_dir = dir.clone();
@@ -168,10 +169,9 @@ fn free_prune_cannot_delete_inflight_rotation_artifacts() {
         time_based: None,
     };
     let (prune_contended_tx, prune_contended_rx) = sync_channel(0);
-    let prune_dir = dir.clone();
     let prune_thread = thread::spawn(move || {
         set_contention_hook(move || prune_contended_tx.send(()).unwrap());
-        prune(&prune_dir, &policy)
+        prune_with_authority(&prune_authority, &policy)
     });
     wait(&prune_contended_rx, "prune lock contention");
 
@@ -209,7 +209,10 @@ fn lock_obstruction_rejects_rotation_before_flush_or_artifacts() {
         .rotate_with_manifest(builder(&dir, 1, b"snapshot-one"))
         .expect_err("lock obstruction rejects rotation");
 
-    assert!(matches!(error, crate::PersistError::Io(_)));
+    assert!(matches!(
+        error,
+        crate::PersistError::Directory(crate::DirectoryError::NotRegular(_))
+    ));
     assert_eq!(writer.entries_since_fsync(), 1);
     assert!(Manifest::read(&dir).unwrap().is_none());
     assert!(!snapshot_path(&dir, 1).exists());

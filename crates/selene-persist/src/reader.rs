@@ -13,6 +13,7 @@ use crate::{PersistError, PersistResult, WalEntryHeader};
 
 /// WAL reader for a single WAL file.
 pub struct WalReader {
+    directory: crate::StoreDirectory,
     path: PathBuf,
     snapshot_seq: u64,
 }
@@ -24,10 +25,21 @@ impl WalReader {
     ///
     /// Returns I/O or file-header validation errors.
     pub fn open(path: &Path) -> PersistResult<Self> {
-        let mut file = File::open(path)?;
+        let (dir, name) = crate::StoreDirectory::for_file(path)?;
+        Self::open_in(&dir, &name)
+    }
+
+    /// Read a WAL through a retained directory capability.
+    ///
+    /// # Errors
+    /// Returns protocol, file-open, or header validation errors.
+    pub fn open_in(dir: &crate::StoreDirectory, name: &Path) -> PersistResult<Self> {
+        dir.require_legacy()?;
+        let mut file = dir.open_read(name)?;
         let header = WalFileHeader::read_from(&mut file)?;
         Ok(Self {
-            path: path.to_path_buf(),
+            path: name.to_path_buf(),
+            directory: dir.clone(),
             snapshot_seq: header.snapshot_seq,
         })
     }
@@ -50,7 +62,7 @@ impl WalReader {
     where
         F: Fn(&WalEntryHeader) -> bool + 'static,
     {
-        let file = File::open(&self.path)?;
+        let file = self.directory.open_read(&self.path)?;
         let mut file = BufReader::with_capacity(64 * 1024, file);
         WalFileHeader::read_from(&mut file)?;
         let file_len = file.get_ref().metadata()?.len();
@@ -234,7 +246,6 @@ mod tests {
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use selene_core::{
         Change, HlcTimestamp, LabelSet, NodeId, Origin, PropertyMap, Value, db_string,
@@ -246,15 +257,8 @@ mod tests {
     use crate::payload::{checksum_lo, encode_changes};
     use crate::{WalConfig, WalWriter};
 
-    fn temp_path(name: &str) -> std::path::PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "selene-persist-reader-{name}-{}-{nanos}.wal",
-            std::process::id()
-        ))
+    fn temp_path(_name: &str) -> selene_testing::PersistenceTestPath {
+        selene_testing::PersistenceTestPath::new()
     }
 
     fn changes(id: u64) -> Vec<Change> {

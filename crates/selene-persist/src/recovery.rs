@@ -10,7 +10,7 @@ use crate::manifest::Manifest;
 use crate::wal_path::require_regular_wal_or_absent;
 use crate::{
     DEFAULT_WAL_FILE_NAME, PersistError, PersistResult, PersistenceReadGuard, ProviderRegistry,
-    SnapshotReader, WalReader, find_latest_snapshot, snapshot_path,
+    SnapshotReader, WalReader, snapshot_path,
 };
 
 /// Summary of a completed recovery pass.
@@ -125,8 +125,9 @@ pub fn recover_guarded(
     registry: &ProviderRegistry,
 ) -> PersistResult<RecoveryOutcome> {
     let started = Instant::now();
-    let dir = guard.dir();
-    require_regular_wal_or_absent(&dir.join(DEFAULT_WAL_FILE_NAME))?;
+    let dir = guard.directory();
+    dir.require_legacy()?;
+    require_regular_wal_or_absent(dir, Path::new(DEFAULT_WAL_FILE_NAME))?;
     let mut outcome = RecoveryOutcome::empty();
     let mut providers_invoked = BTreeSet::new();
     let mut snapshot_providers_invoked = BTreeSet::new();
@@ -196,7 +197,7 @@ pub fn recover_guarded(
 /// `live_snapshot_seq` of `0` means "no snapshot for this epoch" — nothing is
 /// applied and WAL replay starts from the beginning.
 fn apply_manifest_snapshot(
-    dir: &Path,
+    dir: &crate::StoreDirectory,
     manifest: &Manifest,
     registry: &ProviderRegistry,
     providers_invoked: &mut BTreeSet<[u8; 4]>,
@@ -205,8 +206,9 @@ fn apply_manifest_snapshot(
     if manifest.live_snapshot_seq == 0 {
         return Ok(0);
     }
-    let path = snapshot_path(dir, manifest.live_snapshot_seq);
+    let path = snapshot_path(Path::new(""), manifest.live_snapshot_seq);
     route_snapshot_sections(
+        dir,
         &path,
         registry,
         providers_invoked,
@@ -218,12 +220,13 @@ fn apply_manifest_snapshot(
 /// Open a snapshot, verify its body hash, and route every section to its
 /// provider. Shared by the legacy and MANIFEST snapshot-apply paths.
 fn route_snapshot_sections(
+    dir: &crate::StoreDirectory,
     path: &Path,
     registry: &ProviderRegistry,
     providers_invoked: &mut BTreeSet<[u8; 4]>,
     snapshot_providers_invoked: &mut BTreeSet<[u8; 4]>,
 ) -> PersistResult<()> {
-    let mut reader = SnapshotReader::open(path)?;
+    let mut reader = SnapshotReader::open_in(dir, path)?;
     reader.verify_body_hash()?;
     // Cheap Arc pointer-bump (not a deep Vec clone) decouples the section
     // iteration from the `&mut reader` payload reads inside the loop body.
@@ -250,15 +253,16 @@ fn route_snapshot_sections(
 }
 
 fn apply_snapshot(
-    dir: &Path,
+    dir: &crate::StoreDirectory,
     registry: &ProviderRegistry,
     providers_invoked: &mut BTreeSet<[u8; 4]>,
     snapshot_providers_invoked: &mut BTreeSet<[u8; 4]>,
 ) -> PersistResult<u64> {
-    let Some((snapshot_seq, path)) = find_latest_snapshot(dir)? else {
+    let Some((snapshot_seq, path)) = crate::find_latest_snapshot_in(dir)? else {
         return Ok(0);
     };
     route_snapshot_sections(
+        dir,
         &path,
         registry,
         providers_invoked,
@@ -268,18 +272,18 @@ fn apply_snapshot(
 }
 
 fn replay_wal(
-    dir: &Path,
+    dir: &crate::StoreDirectory,
     registry: &ProviderRegistry,
     cross_check: bool,
     outcome: &mut RecoveryOutcome,
     providers_invoked: &mut BTreeSet<[u8; 4]>,
 ) -> PersistResult<()> {
-    let wal_path = dir.join(DEFAULT_WAL_FILE_NAME);
-    if !wal_path.try_exists()? {
+    let wal_path = Path::new(DEFAULT_WAL_FILE_NAME);
+    if !dir.contains(wal_path)? {
         return Ok(());
     }
 
-    let reader = WalReader::open(&wal_path)?;
+    let reader = WalReader::open_in(dir, wal_path)?;
     // Why: the WAL/snapshot epoch cross-check is the Seam-F hard-fail. It is
     // honoured only on the legacy (MANIFEST-absent) path, where no authoritative
     // epoch exists and a WAL extending a different snapshot is genuinely

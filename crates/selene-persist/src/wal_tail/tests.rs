@@ -7,22 +7,14 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use selene_core::{Change, HlcTimestamp, LabelSet, NodeId, Origin, PropertyMap, db_string};
 
 use super::*;
 use crate::{WAL_FILE_HEADER_LEN, WalConfig, WalWriter};
 
-fn temp_path(name: &str) -> std::path::PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "selene-persist-waltail-{name}-{}-{nanos}.wal",
-        std::process::id()
-    ))
+fn temp_path(_name: &str) -> selene_testing::PersistenceTestPath {
+    selene_testing::PersistenceTestPath::new()
 }
 
 fn changes() -> Vec<Change> {

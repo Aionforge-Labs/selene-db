@@ -1,4 +1,4 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use selene_core::{Change, HlcTimestamp, NodeId, Origin};
@@ -59,7 +59,16 @@ fn active_wal_reset_atomically_replaces_handle_and_keeps_lock() {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
-    reset_active_wal_file(&mut file, &path, 9).unwrap();
+    reset_active_wal_file(
+        &ManifestEpochGuard::acquire(
+            &crate::StoreWriter::acquire(&StoreDirectory::open(&dir).unwrap()).unwrap(),
+        )
+        .unwrap(),
+        &mut file,
+        Path::new(DEFAULT_WAL_FILE_NAME),
+        9,
+    )
+    .unwrap();
 
     assert_eq!(handle_snapshot_seq(&mut file), 9);
     assert_eq!(WalReader::open(&path).unwrap().snapshot_seq(), 9);
@@ -86,7 +95,16 @@ fn active_wal_reset_failure_before_rename_preserves_old_wal() {
     let mut file = open_locked_wal(&path, 3);
     RESET_FAULT_POINT.with(|point| point.set(1));
 
-    let error = reset_active_wal_file(&mut file, &path, 9).unwrap_err();
+    let error = reset_active_wal_file(
+        &ManifestEpochGuard::acquire(
+            &crate::StoreWriter::acquire(&StoreDirectory::open(&dir).unwrap()).unwrap(),
+        )
+        .unwrap(),
+        &mut file,
+        Path::new(DEFAULT_WAL_FILE_NAME),
+        9,
+    )
+    .unwrap_err();
 
     assert!(matches!(error, PersistError::Io(_)));
     assert_eq!(handle_snapshot_seq(&mut file), 3);
@@ -109,7 +127,16 @@ fn active_wal_reset_failure_after_rename_leaves_new_header_valid() {
     let mut file = open_locked_wal(&path, 3);
     RESET_FAULT_POINT.with(|point| point.set(2));
 
-    let error = reset_active_wal_file(&mut file, &path, 9).unwrap_err();
+    let error = reset_active_wal_file(
+        &ManifestEpochGuard::acquire(
+            &crate::StoreWriter::acquire(&StoreDirectory::open(&dir).unwrap()).unwrap(),
+        )
+        .unwrap(),
+        &mut file,
+        Path::new(DEFAULT_WAL_FILE_NAME),
+        9,
+    )
+    .unwrap_err();
 
     assert!(matches!(error, PersistError::Io(_)));
     // The caller still owns the old unlinked handle, but the recovery path
@@ -142,7 +169,8 @@ fn incomplete_rotation_poisons_all_mutating_writer_apis() {
         sequence: 1,
         compression: SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     RESET_FAULT_POINT.with(|point| point.set(2));
 
     assert!(matches!(
@@ -162,7 +190,8 @@ fn incomplete_rotation_poisons_all_mutating_writer_apis() {
         sequence: 1,
         compression: SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     assert!(matches!(
         writer.rotate_with_manifest(retry),
         Err(PersistError::WalWriterPoisoned)
@@ -193,7 +222,8 @@ fn pruned_archive_reset_failure_reports_no_archive_and_poisons_writer() {
         compression: SectionCompression::None,
         fsync: true,
     })
-    .finalize()
+    .unwrap()
+    .finalize_with_authority(writer.authority())
     .unwrap();
     fs::copy(&path, &archive).unwrap();
     Manifest {
@@ -203,7 +233,7 @@ fn pruned_archive_reset_failure_reports_no_archive_and_poisons_writer() {
         active_wal: DEFAULT_WAL_FILE_NAME.to_owned(),
         archived_wal_seqs: vec![1],
     }
-    .write_atomic(&dir)
+    .write_atomic_with_authority(writer.authority())
     .unwrap();
     writer
         .prune(&RetentionPolicy {
@@ -216,12 +246,15 @@ fn pruned_archive_reset_failure_reports_no_archive_and_poisons_writer() {
     RESET_FAULT_POINT.with(|point| point.set(2));
 
     let error = writer
-        .rotate_with_manifest(SnapshotBuilder::new(SnapshotConfig {
-            dir: dir.clone(),
-            sequence: 1,
-            compression: SectionCompression::None,
-            fsync: true,
-        }))
+        .rotate_with_manifest(
+            SnapshotBuilder::new(SnapshotConfig {
+                dir: dir.clone(),
+                sequence: 1,
+                compression: SectionCompression::None,
+                fsync: true,
+            })
+            .unwrap(),
+        )
         .unwrap_err();
 
     assert!(matches!(
@@ -247,8 +280,8 @@ fn committed_archive_validation_rejects_header_only_file() {
     drop(file);
 
     assert!(matches!(
-        verify_committed_archive(&path, 7),
-        Err(PersistError::CommittedArchiveInvalid { path: observed }) if observed == path
+        verify_committed_archive(&StoreDirectory::open(&dir).unwrap(), Path::new("wal.7.archive"), 7),
+        Err(PersistError::CommittedArchiveInvalid { path: observed }) if observed == path.canonicalize().unwrap()
     ));
     fs::remove_dir_all(dir).unwrap();
 }
@@ -292,8 +325,8 @@ fn committed_archive_validation_rejects_sequence_below_header_floor() {
     fs::write(&path, bytes).unwrap();
 
     assert!(matches!(
-        verify_committed_archive(&path, 7),
-        Err(PersistError::CommittedArchiveInvalid { path: observed }) if observed == path
+        verify_committed_archive(&StoreDirectory::open(&dir).unwrap(), Path::new("wal.7.archive"), 7),
+        Err(PersistError::CommittedArchiveInvalid { path: observed }) if observed == path.canonicalize().unwrap()
     ));
     fs::remove_dir_all(dir).unwrap();
 }

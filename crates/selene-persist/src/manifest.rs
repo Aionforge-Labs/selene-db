@@ -49,7 +49,6 @@
 //! a policy here). Keeping a second copy of the policy in the MANIFEST would be
 //! the dual-source divergence the "single writer per concern" lesson rules out.
 
-use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 
@@ -217,47 +216,64 @@ impl Manifest {
     ///
     /// # Errors
     ///
-    /// Returns I/O errors from opening/acquiring the epoch lock or from the tmp
+    /// Returns writer contention, I/O errors opening/acquiring the epoch lock, or tmp
     /// write, fsync, rename, or directory fsync. Targets whose filesystems do
     /// not support file locking return that underlying I/O error. A best-effort
     /// tmp cleanup runs on any pre-rename failure.
     pub fn write_atomic(&self, dir: &Path) -> PersistResult<()> {
-        let mut guard = ManifestEpochGuard::acquire(dir)?;
+        self.write_atomic_in(&crate::StoreDirectory::open(dir)?)
+    }
+
+    /// Acquire standalone writer ownership and publish through a retained directory.
+    ///
+    /// # Errors
+    /// Returns directory, protocol, encoding, locking, or publication errors.
+    pub fn write_atomic_in(&self, dir: &crate::StoreDirectory) -> PersistResult<()> {
+        let authority = crate::StoreWriter::acquire(dir)?;
+        self.write_atomic_with_authority(&authority)
+    }
+
+    /// Publish using an existing store writer lease, without reacquiring `LOCK`.
+    ///
+    /// # Errors
+    /// Returns protocol, encoding, epoch-lock, or publication errors.
+    pub fn write_atomic_with_authority(&self, authority: &crate::StoreWriter) -> PersistResult<()> {
+        authority.directory().require_legacy()?;
+        let mut guard = ManifestEpochGuard::acquire(authority)?;
         self.write_atomic_locked(&mut guard)
     }
 
     /// Publish while the caller holds the directory epoch lock.
     pub(crate) fn write_atomic_locked(&self, guard: &mut ManifestEpochGuard) -> PersistResult<()> {
-        let dir = guard.dir();
+        let dir = guard.directory();
+        dir.require_legacy()?;
+        crate::store_directory::validate_name(Path::new(&self.active_wal))?;
         let bytes = self.encode()?;
-        let tmp_path = dir.join(MANIFEST_TMP_FILE_NAME);
-        let final_path = dir.join(MANIFEST_FILE_NAME);
+        let tmp_path = Path::new(MANIFEST_TMP_FILE_NAME);
+        let final_path = Path::new(MANIFEST_FILE_NAME);
 
         let result = (|| -> PersistResult<()> {
             // create + truncate: the tmp is transient, overwriting a stale tmp
             // from a crashed prior rotation is correct.
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp_path)?;
+            let mut file = dir.open_or_create(tmp_path)?;
+            file.set_len(0)?;
             file.write_all(&bytes)?;
             // sync_all (data + metadata): the new file's size must be durable
             // before rename publishes its name.
             file.sync_all()?;
             drop(file);
-            std::fs::rename(&tmp_path, &final_path)?;
+            dir.rename(tmp_path, final_path)?;
             Ok(())
         })();
 
         if result.is_err() {
-            let _ = std::fs::remove_file(&tmp_path);
+            let _ = dir.remove(tmp_path);
             return result;
         }
         // Parent-dir fsync AFTER the rename makes the new directory entry
         // durable. Per the MANIFEST commit-point invariant this must follow,
         // never precede, the rename.
-        sync_dir(dir)
+        dir.sync()
     }
 
     /// Read the committed manifest from `dir`, if present.
@@ -277,11 +293,26 @@ impl Manifest {
     /// ([`Self::decode`]) — a committed MANIFEST is never torn, so corruption
     /// is fatal rather than silently ignored.
     pub fn read(dir: &Path) -> PersistResult<Option<Self>> {
-        let path = dir.join(MANIFEST_FILE_NAME);
-        match std::fs::read(&path) {
-            Ok(bytes) => Ok(Some(Self::decode(&bytes)?)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(PersistError::Io(error)),
+        Self::read_in(&crate::StoreDirectory::open(dir)?)
+    }
+
+    /// Read legacy MANIFEST through a retained capability (not an artifact lease).
+    ///
+    /// # Errors
+    /// Returns protocol, managed-file, I/O, or decoding errors.
+    pub fn read_in(dir: &crate::StoreDirectory) -> PersistResult<Option<Self>> {
+        use std::io::Read;
+        dir.require_legacy()?;
+        match dir.open_read(MANIFEST_FILE_NAME) {
+            Ok(mut file) => {
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                Ok(Some(Self::decode(&bytes)?))
+            }
+            Err(PersistError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(None)
+            }
+            Err(error) => Err(error),
         }
     }
 }
@@ -389,8 +420,7 @@ fn body_hash(body: &[u8]) -> [u8; MANIFEST_BODY_HASH_LEN] {
 ///
 /// Returns I/O errors from opening or syncing the directory.
 pub fn sync_dir(dir: &Path) -> PersistResult<()> {
-    std::fs::File::open(dir)?.sync_all()?;
-    Ok(())
+    crate::StoreDirectory::open(dir)?.sync()
 }
 
 #[cfg(test)]

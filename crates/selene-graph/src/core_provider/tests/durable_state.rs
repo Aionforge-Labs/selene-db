@@ -157,11 +157,13 @@ fn append_audit_event_without_log_returns_false() {
 fn append_audit_event_with_log_round_trips_kind_payload_timestamp() {
     // With an audit log attached, append returns true and the record (kind +
     // payload + a non-zero wall-clock stamp) round-trips through AuditLog.
-    let dir = temp_wal_path("audit-some").parent().unwrap().to_path_buf();
+    let wal_path = temp_wal_path("audit-some");
+    let dir = wal_path.parent().unwrap().to_path_buf();
     let audit_path = dir.join("audit.log");
     let before = now_unix_nanos();
-    let durable =
-        durable_state("audit-some-wal").with_audit_log(AuditLog::open(&audit_path).unwrap());
+    let writer = WalWriter::open(&wal_path, WalConfig::default()).unwrap();
+    let audit = AuditLog::open_with_authority(writer.authority(), Path::new("audit.log")).unwrap();
+    let durable = DurableState::new(writer).with_audit_log(audit).unwrap();
 
     let payload = vec![0xDE_u8, 0xAD, 0xBE, 0xEF];
     assert!(

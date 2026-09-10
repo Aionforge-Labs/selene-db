@@ -11,13 +11,13 @@ use selene_core::HlcTimestamp;
 use crate::compression::ZstdCompressor;
 use crate::file_header::{WAL_FILE_HEADER_LEN, WalFileHeader};
 use crate::manifest::Manifest;
-use crate::manifest_lock::{ManifestEpochGuard, canonical_directory_path};
+use crate::manifest_lock::ManifestEpochGuard;
 use crate::payload::WalCompression;
 use crate::retention::{PruneOutcome, RetentionPolicy};
 use crate::snapshot_writer::SnapshotBuilder;
 use crate::wal_path::open_locked_wal;
 use crate::writer_rotation::{RotationInputs, WalRotationOutcome, rotate_with_manifest};
-use crate::{PersistError, PersistResult};
+use crate::{PersistError, PersistResult, StoreDirectory, StoreWriter};
 
 /// Conventional v1.0 single-file WAL name used by embedders.
 pub const DEFAULT_WAL_FILE_NAME: &str = "wal.log";
@@ -114,8 +114,9 @@ impl WalConfig {
 /// Holds an exclusive OS-level file lock on the WAL file for the writer's
 /// lifetime, so a second `WalWriter::open` call on the same path
 /// (in-process or cross-process) fails fast with
-/// [`PersistError::WriterLockHeld`] rather than corrupting the log. The parent
-/// directory is canonicalized once at open; a final symlink or non-file entry
+/// [`PersistError::WriterLockHeld`] rather than corrupting the log. A store-wide
+/// lease also excludes writers using other names in the same directory. The
+/// parent directory is retained as a capability; a final symlink or non-file entry
 /// is rejected with [`PersistError::WalPathNotRegular`]. A new WAL is written
 /// and synced under a unique sibling name before a fail-on-existing hard-link
 /// publishes its complete header at the final path, so concurrent readers never
@@ -123,6 +124,7 @@ impl WalConfig {
 pub struct WalWriter {
     file: File,
     path: PathBuf,
+    authority: StoreWriter,
     record: Vec<u8>,
     last_sequence: u64,
     snapshot_seq: u64,
@@ -188,10 +190,51 @@ impl WalWriter {
         config: WalConfig,
         compression: WalCompression,
     ) -> PersistResult<Self> {
+        // Anchor once, reject unsafe final components, and retain directory and
+        // writer authority for every later managed artifact operation.
+        let (file, stable_path, authority) = open_locked_wal(path, config.snapshot_seq)?;
+        Self::from_locked_file(file, stable_path, authority, config, compression)
+    }
+
+    /// Open a WAL through an already-retained directory, acquiring writer ownership.
+    ///
+    /// # Errors
+    /// Returns the same validation, locking, and I/O errors as [`Self::open`].
+    pub fn open_in(dir: &StoreDirectory, name: &Path, config: WalConfig) -> PersistResult<Self> {
+        crate::store_directory::validate_data_name(name)?;
+        let authority = StoreWriter::acquire(dir)?;
+        Self::open_with_authority(&authority, name, config)
+    }
+
+    /// Compose a WAL with an explicitly owned writer lease (for example audit).
+    /// The WAL inode also receives its own nonblocking lifetime lock.
+    ///
+    /// # Errors
+    /// Returns the same validation, locking, and I/O errors as [`Self::open`].
+    pub fn open_with_authority(
+        authority: &StoreWriter,
+        name: &Path,
+        config: WalConfig,
+    ) -> PersistResult<Self> {
+        let dir = authority.directory();
+        let file = crate::wal_path::open_locked_wal_in(authority, name, config.snapshot_seq)?;
+        Self::from_locked_file(
+            file,
+            dir.locate(name),
+            authority.clone(),
+            config,
+            WalCompression::default(),
+        )
+    }
+
+    fn from_locked_file(
+        mut file: File,
+        stable_path: PathBuf,
+        authority: StoreWriter,
+        config: WalConfig,
+        compression: WalCompression,
+    ) -> PersistResult<Self> {
         let sync_policy = config.sync_policy.normalized();
-        // Resolve the parent once, reject a symlink/non-file final component,
-        // and retain only the anchored path for every later managed artifact.
-        let (mut file, stable_path) = open_locked_wal(path, config.snapshot_seq)?;
         file.seek(SeekFrom::Start(0))?;
         let header_snapshot_seq = WalFileHeader::read_from(&mut file)?.snapshot_seq;
 
@@ -218,6 +261,7 @@ impl WalWriter {
         Ok(Self {
             file,
             path: stable_path,
+            authority,
             record: Vec::new(),
             last_sequence,
             snapshot_seq: header_snapshot_seq,
@@ -254,12 +298,24 @@ impl WalWriter {
     /// Return the path of the active WAL file owned by this writer.
     ///
     /// Relative caller paths and parent symlink aliases are resolved at
-    /// [`Self::open`] time. The returned path uses the canonical parent and
-    /// remains the authority for graph-layer checkpoint orchestration even if
-    /// the original alias or process working directory later changes.
+    /// [`Self::open`] time. This diagnostic locator may no longer name the
+    /// opened store after a rename. Use [`Self::directory`] for checkpoint,
+    /// recovery, and other managed I/O; never reopen this locator internally.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Retained filesystem authority. [`Self::path`] is only a diagnostic locator.
+    #[must_use]
+    pub fn directory(&self) -> &StoreDirectory {
+        self.authority.directory()
+    }
+
+    /// Share this writer lease with a deliberately composed audit component.
+    #[must_use]
+    pub fn authority(&self) -> &StoreWriter {
+        &self.authority
     }
 
     /// Report the torn tail discarded when this WAL was opened, if any.
@@ -323,7 +379,7 @@ impl WalWriter {
     /// [`WalRotationOutcome::AlreadyCurrent`] instead of re-archiving the
     /// header-only active WAL. Rotation holds
     /// [`crate::MANIFEST_LOCK_FILE_NAME`] from its authoritative MANIFEST read
-    /// through active-WAL reset, so free prune cannot interleave.
+    /// through active-WAL reset, so owned maintenance cannot interleave.
     ///
     /// A second mutable borrow cannot overlap the rotation:
     ///
@@ -355,10 +411,10 @@ impl WalWriter {
         builder: SnapshotBuilder,
     ) -> PersistResult<WalRotationOutcome> {
         self.ensure_usable()?;
-        let dir = self.validate_rotation_inputs(&builder)?;
+        self.validate_rotation_inputs(&builder)?;
         #[cfg(test)]
         crate::wal_path::run_after_rotation_preflight_hook();
-        let mut epoch_guard = ManifestEpochGuard::acquire(&dir)?;
+        let mut epoch_guard = ManifestEpochGuard::acquire(&self.authority)?;
         let prior_manifest = self.read_prior_manifest(&epoch_guard, builder.sequence())?;
         let target_already_committed = prior_manifest
             .as_ref()
@@ -409,7 +465,7 @@ impl WalWriter {
                 .ok_or(PersistError::WalSequenceExhausted {
                     last_sequence: self.last_sequence,
                 })?;
-        let dir = self.validate_rotation_layout(&builder)?;
+        self.validate_rotation_layout(&builder)?;
         if builder.sequence() != expected_sequence {
             return Err(PersistError::WalCheckpointSequenceMismatch {
                 snapshot_seq: builder.sequence(),
@@ -418,7 +474,7 @@ impl WalWriter {
         }
         #[cfg(test)]
         crate::wal_path::run_after_rotation_preflight_hook();
-        let mut epoch_guard = ManifestEpochGuard::acquire(&dir)?;
+        let mut epoch_guard = ManifestEpochGuard::acquire(&self.authority)?;
         let prior_manifest = self.read_prior_manifest(&epoch_guard, self.last_sequence)?;
         if let Err(error) = self.append_checkpoint_watermark_record(hlc) {
             self.poisoned = true;
@@ -432,7 +488,7 @@ impl WalWriter {
         epoch_guard: &ManifestEpochGuard,
         maximum_sequence: u64,
     ) -> PersistResult<Option<Manifest>> {
-        let prior_manifest = match Manifest::read(epoch_guard.dir()) {
+        let prior_manifest = match Manifest::read_in(epoch_guard.directory()) {
             Ok(manifest) => manifest,
             Err(error) => {
                 self.poisoned = true;
@@ -497,7 +553,7 @@ impl WalWriter {
         Ok(outcome)
     }
 
-    fn validate_rotation_inputs(&self, builder: &SnapshotBuilder) -> PersistResult<PathBuf> {
+    fn validate_rotation_inputs(&self, builder: &SnapshotBuilder) -> PersistResult<()> {
         if builder.sequence() == 0 || self.last_sequence == 0 {
             return Err(PersistError::WalRotationZeroSequence);
         }
@@ -510,7 +566,7 @@ impl WalWriter {
         self.validate_rotation_layout(builder)
     }
 
-    fn validate_rotation_layout(&self, builder: &SnapshotBuilder) -> PersistResult<PathBuf> {
+    fn validate_rotation_layout(&self, builder: &SnapshotBuilder) -> PersistResult<()> {
         let observed_name = self
             .path
             .file_name()
@@ -522,19 +578,15 @@ impl WalWriter {
                 expected: DEFAULT_WAL_FILE_NAME,
             });
         }
-        let wal_dir = self
-            .path
-            .parent()
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        let wal_dir = self.directory().locator().to_path_buf();
         let snapshot_dir = builder.dir().to_path_buf();
-        let canonical_snapshot_dir = canonical_directory_path(&snapshot_dir)?;
-        if canonical_snapshot_dir != wal_dir {
+        if !builder.directory().same_directory(self.directory())? {
             return Err(PersistError::WalRotationDirectoryMismatch {
                 snapshot_dir,
                 wal_dir,
             });
         }
-        Ok(wal_dir)
+        Ok(())
     }
 
     /// Prune superseded snapshots + WAL archives in this writer's directory per
@@ -544,7 +596,8 @@ impl WalWriter {
     /// writer's directory. It acquires [`crate::MANIFEST_LOCK_FILE_NAME`] before
     /// flushing pending appends and holds it through post-commit deletion. The
     /// `&mut self` receiver serializes this handle while the directory lock
-    /// serializes free prune and rotation across handles/processes. Prune never
+    /// serializes maintenance sharing this writer proof. Independent standalone
+    /// mutations fail on `LOCK` instead of reacquiring ownership. Prune never
     /// touches the active WAL; it reclaims only superseded snapshot/archive
     /// files.
     ///
@@ -557,11 +610,7 @@ impl WalWriter {
     /// never fails the prune.
     pub fn prune(&mut self, policy: &RetentionPolicy) -> PersistResult<PruneOutcome> {
         self.ensure_usable()?;
-        let dir = self
-            .path
-            .parent()
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-        let mut epoch_guard = ManifestEpochGuard::acquire(&dir)?;
+        let mut epoch_guard = ManifestEpochGuard::acquire(&self.authority)?;
         self.flush()?;
         crate::retention::prune_locked(&mut epoch_guard, policy)
     }

@@ -18,6 +18,13 @@ selene-persist = { package = "selene-db-persist", path = "..", version = "2.0.0-
 xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
 
 [[bin]]
+name = "decode_control"
+path = "fuzz_targets/decode_control.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "decode_manifest"
 path = "fuzz_targets/decode_manifest.rs"
 test = false

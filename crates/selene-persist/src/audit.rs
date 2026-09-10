@@ -65,12 +65,11 @@
 //! log is an events surface with its own retention, so the recovery path for a
 //! v1 file is to archive or discard it, not to migrate it.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::manifest::sync_dir;
 use crate::{PersistArtifact, PersistError, PersistResult};
 
 /// Audit-log file magic.
@@ -174,9 +173,17 @@ pub struct AuditPruneOutcome {
 pub struct AuditLog {
     file: File,
     path: PathBuf,
+    authority: crate::StoreWriter,
+    fenced: bool,
 }
 
 impl AuditLog {
+    /// Existing writer lease for deliberate composition with a WAL.
+    #[must_use]
+    pub fn authority(&self) -> &crate::StoreWriter {
+        &self.authority
+    }
+
     /// Open (creating if absent) the audit log at `path`, repairing a torn
     /// final record and positioning for append.
     ///
@@ -190,20 +197,32 @@ impl AuditLog {
     /// surviving records and the evidence needed to recover them by other means
     /// are still there on the next open.
     pub fn open(path: &Path) -> PersistResult<Self> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
+        let (dir, name) = crate::StoreDirectory::for_file(path)?;
+        crate::store_directory::validate_data_name(&name)?;
+        let authority = crate::StoreWriter::acquire(&dir)?;
+        Self::open_with_authority(&authority, &name)
+    }
+
+    /// Attach audit to an explicitly shared store-writer lease (for example a WAL's).
+    ///
+    /// # Errors
+    /// Returns protocol, managed-name/file, contention, I/O, or decoding errors.
+    pub fn open_with_authority(authority: &crate::StoreWriter, name: &Path) -> PersistResult<Self> {
+        crate::store_directory::validate_data_name(name)?;
+        let dir = authority.directory();
+        dir.require_legacy()?;
+        let mut file = dir.open_or_create(name)?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => return Err(PersistError::WriterLockHeld),
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
 
         let file_len = file.metadata()?.len();
         if file_len == 0 {
             write_file_header(&mut file)?;
             file.sync_all()?;
-            if let Some(parent) = path.parent() {
-                sync_dir(parent)?;
-            }
+            dir.sync()?;
         } else {
             verify_file_header(&mut file)?;
             let durable_end = scan_durable_end(&mut file, file_len)?;
@@ -218,7 +237,9 @@ impl AuditLog {
         file.seek(SeekFrom::End(0))?;
         Ok(Self {
             file,
-            path: path.to_path_buf(),
+            path: name.to_path_buf(),
+            authority: authority.clone(),
+            fenced: false,
         })
     }
 
@@ -234,6 +255,7 @@ impl AuditLog {
     /// Returns [`PersistError::PayloadTooLarge`] if the payload exceeds
     /// [`MAX_AUDIT_PAYLOAD_BYTES`], or I/O errors from the write / fsync.
     pub fn append(&mut self, record: &AuditRecord) -> PersistResult<()> {
+        self.ensure_usable()?;
         let bytes = encode_record(record)?;
         self.file.write_all(&bytes)?;
         self.file.sync_data()?;
@@ -254,15 +276,30 @@ impl AuditLog {
     /// must not quietly return the prefix before the damage — that is the
     /// shape that made the truncation on open look successful.
     pub fn read_all(path: &Path) -> PersistResult<Vec<AuditRecord>> {
+        let (dir, name) = crate::StoreDirectory::for_file(path)?;
+        Self::read_all_in(&dir, &name)
+    }
+
+    /// Read audit through retained directory authority without writer ownership.
+    ///
+    /// # Errors
+    /// Returns managed-file, I/O, or audit validation errors.
+    pub fn read_all_in(
+        dir: &crate::StoreDirectory,
+        name: &Path,
+    ) -> PersistResult<Vec<AuditRecord>> {
+        dir.require_legacy()?;
         // Streams record-by-record over the file handle rather than slurping the
         // whole log into memory first: a long-lived log under unbounded retention
         // can be large, and peak memory should stay at the decoded records plus a
         // single payload (the slice twin [`Self::decode_all`] is for fuzzing the
         // decoder on an already-in-memory buffer, not for reading real files).
-        let mut file = match OpenOptions::new().read(true).open(path) {
+        let mut file = match dir.open_read(name) {
             Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(PersistError::Io(error)),
+            Err(PersistError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(error),
         };
         let file_len = file.metadata()?.len();
         if file_len == 0 {
@@ -312,8 +349,11 @@ impl AuditLog {
         policy: &AuditRetentionPolicy,
         now_unix_nanos: u64,
     ) -> PersistResult<AuditPruneOutcome> {
+        self.ensure_usable()?;
+        let epoch = crate::manifest_lock::ManifestEpochGuard::acquire(&self.authority)?;
         self.file.sync_data()?;
-        let all = Self::read_all(&self.path)?;
+        let dir = self.authority.directory();
+        let all = Self::read_all_in(dir, &self.path)?;
         let total = all.len() as u64;
         let retained = select_retained(all, policy, now_unix_nanos);
         let retained_len = retained.len() as u64;
@@ -326,10 +366,18 @@ impl AuditLog {
         }
 
         let size_before = self.file.metadata()?.len();
-        rewrite_atomic(&self.path, &retained)?;
-
-        // Re-open the now-rewritten file for continued appends.
-        let mut file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+        let mut file = match rewrite_atomic(&epoch, &self.path, &retained) {
+            Ok(file) => file,
+            Err(error) => {
+                if matches!(
+                    error,
+                    PersistError::Directory(crate::DirectoryError::PublicationUncertain { .. })
+                ) {
+                    self.fenced = true;
+                }
+                return Err(error);
+            }
+        };
         file.seek(SeekFrom::End(0))?;
         let size_after = file.metadata()?.len();
         self.file = file;
@@ -338,6 +386,13 @@ impl AuditLog {
             removed: total - retained_len,
             bytes_reclaimed: size_before.saturating_sub(size_after),
         })
+    }
+
+    fn ensure_usable(&self) -> PersistResult<()> {
+        if self.fenced {
+            return Err(crate::DirectoryError::RequiresReopen.into());
+        }
+        Ok(())
     }
 }
 
@@ -436,8 +491,12 @@ fn encode_record(record: &AuditRecord) -> PersistResult<Vec<u8>> {
 
 /// Atomically rewrite `path` to hold exactly `records` (file header + each
 /// record), via write-tmp → fsync → rename → dir fsync.
-fn rewrite_atomic(path: &Path, records: &[AuditRecord]) -> PersistResult<()> {
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+fn rewrite_atomic(
+    guard: &crate::manifest_lock::ManifestEpochGuard,
+    path: &Path,
+    records: &[AuditRecord],
+) -> PersistResult<File> {
+    let dir = guard.directory();
     // Append `.tmp` to the *full* file name (matching the snapshot/manifest tmp
     // convention) rather than replacing the extension — `with_extension("log.tmp")`
     // would turn `events.dat` into `events.log.tmp`, dropping the real extension.
@@ -445,33 +504,46 @@ fn rewrite_atomic(path: &Path, records: &[AuditRecord]) -> PersistResult<()> {
         Some(name) => {
             let mut tmp_name = name.to_os_string();
             tmp_name.push(".tmp");
-            dir.join(tmp_name)
+            PathBuf::from(tmp_name)
         }
-        None => dir.join("audit.log.tmp"),
+        None => return Err(crate::DirectoryError::InvalidName(path.into()).into()),
     };
 
-    let result = (|| -> PersistResult<()> {
-        let mut tmp = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp_path)?;
+    let mut published = false;
+    let result = (|| -> PersistResult<File> {
+        let mut tmp = dir.open_or_create(&tmp_path)?;
+        match tmp.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => return Err(PersistError::WriterLockHeld),
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
+        tmp.set_len(0)?;
         write_file_header(&mut tmp)?;
         tmp.seek(SeekFrom::End(0))?;
         for record in records {
             tmp.write_all(&encode_record(record)?)?;
         }
         tmp.sync_all()?;
-        drop(tmp);
-        std::fs::rename(&tmp_path, path)?;
-        Ok(())
+        published = true;
+        dir.rename(&tmp_path, path)?;
+        dir.check_fault("audit.after_replace")?;
+        dir.sync()?;
+        Ok(tmp)
     })();
 
     if result.is_err() {
-        let _ = std::fs::remove_file(&tmp_path);
-        return result;
+        let _ = dir.remove(&tmp_path);
     }
-    sync_dir(dir)
+    result.map_err(|error| {
+        if published {
+            crate::DirectoryError::PublicationUncertain {
+                source: Box::new(error),
+            }
+            .into()
+        } else {
+            error
+        }
+    })
 }
 
 mod scan;

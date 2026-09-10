@@ -146,7 +146,8 @@ fn finalize_snapshot(dir: &Path, seq: u64, meta: &[u8]) {
         sequence: seq,
         compression: SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     builder
         .add_section(*b"CORE", *b"META", meta.to_vec())
         .unwrap();
@@ -160,7 +161,8 @@ fn meta_builder(dir: &Path, seq: u64, meta: &[u8]) -> SnapshotBuilder {
         sequence: seq,
         compression: SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     builder
         .add_section(*b"CORE", *b"META", meta.to_vec())
         .unwrap();
@@ -531,7 +533,9 @@ fn rotate_with_manifest_is_idempotent_after_partial_crash() {
     // Simulate Phase 1 + Phase 2 having already run before the crash:
     // snapshot.2.snap published and wal.2.archive published. Re-invoking the
     // orchestrator must verify and accept both byte-identical artifacts.
-    finalize_snapshot(&dir, 2, b"snap2");
+    meta_builder(&dir, 2, b"snap2")
+        .finalize_with_authority(writer.authority())
+        .unwrap();
     fs::copy(dir.join(DEFAULT_WAL_FILE_NAME), dir.join("wal.2.archive")).unwrap();
 
     // Re-invoke the full rotate: Phase 1 and Phase 2 compare the existing files

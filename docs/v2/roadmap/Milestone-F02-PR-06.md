@@ -32,6 +32,14 @@ Paths are navigation, not a closed edit inventory. New modules are implementatio
 4. Make pruning operate from the selected authoritative lineage plus active leases. Staged or orphan files are not proof of a newer commit; cleanup cannot delete a segment required by the previous recoverable control state.
 5. Fail and fence safely on rotation/control-publication errors. Surface reportable cleanup debt rather than converting it into a successful but unrecoverable checkpoint.
 
+Carry forward F02-PR01's unified writer proof: every publication and prune owns
+StoreWriter plus the exclusive epoch; readers remain independent. Online
+maintenance passes the existing proof rather than reacquiring `LOCK`. CURRENT
+selects a self-contained manifest: parent generation/digest links are provenance,
+not permanent ancestor-file retention. Retain selected data dependencies and
+active reader leases, but do not reintroduce full control-ancestry replay or an
+epoch-reset protocol merely to make old unselected manifests prunable.
+
 ## Acceptance and concrete regression cases
 
 - [ ] Interrupt every transition around sync, seal, rename and CURRENT replacement; reopening selects a complete valid lineage.

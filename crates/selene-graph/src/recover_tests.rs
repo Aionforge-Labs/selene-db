@@ -446,7 +446,8 @@ fn recover_returns_persist_error_for_unknown_provider_in_section_table() {
         sequence: 1,
         compression: SectionCompression::None,
         fsync: false,
-    });
+    })
+    .unwrap();
     builder
         .add_section(*b"MISS", *b"BODY", vec![1_u8, 2, 3])
         .unwrap();

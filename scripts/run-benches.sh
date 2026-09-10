@@ -90,6 +90,7 @@ selene-db-graph|graph_mixed_workload|0
 selene-db-graph|text_search_bm25|0
 selene-db-persist|wal|0
 selene-db-persist|snapshot|0
+selene-db-persist|store_control|0
 selene-db-gql|parse|1
 selene-db-gql|analyze|1
 selene-db-gql|plan_optimize|1

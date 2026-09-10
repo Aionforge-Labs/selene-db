@@ -1,6 +1,5 @@
 //! Exact identity checks for immutable persistence artifacts.
 
-use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
@@ -15,26 +14,25 @@ const COMPARE_BUFFER_BYTES: usize = 64 * 1024;
 /// checksums proves the complete file identity, including headers and trailing
 /// bytes that an envelope-level checksum might not cover.
 pub(crate) fn require_identical_regular_files(
+    dir: &crate::StoreDirectory,
     expected: &Path,
     existing: &Path,
 ) -> PersistResult<()> {
-    let expected_metadata = std::fs::symlink_metadata(expected)?;
-    let existing_metadata = match std::fs::symlink_metadata(existing) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(identity_mismatch(existing));
+    let expected_file = dir.open_read(expected)?;
+    let existing_file = dir.open_read(existing).map_err(|error| match error {
+        PersistError::Directory(_) => identity_mismatch(&dir.locate(existing)),
+        PersistError::Io(ref e) if e.kind() == std::io::ErrorKind::NotFound => {
+            identity_mismatch(&dir.locate(existing))
         }
-        Err(error) => return Err(error.into()),
-    };
-    if !expected_metadata.file_type().is_file()
-        || !existing_metadata.file_type().is_file()
-        || expected_metadata.len() != existing_metadata.len()
-    {
-        return Err(identity_mismatch(existing));
+        error => error,
+    })?;
+    let expected_metadata = expected_file.metadata()?;
+    if expected_metadata.len() != existing_file.metadata()?.len() {
+        return Err(identity_mismatch(&dir.locate(existing)));
     }
 
-    let mut expected_reader = BufReader::with_capacity(COMPARE_BUFFER_BYTES, File::open(expected)?);
-    let mut existing_reader = BufReader::with_capacity(COMPARE_BUFFER_BYTES, File::open(existing)?);
+    let mut expected_reader = BufReader::with_capacity(COMPARE_BUFFER_BYTES, expected_file);
+    let mut existing_reader = BufReader::with_capacity(COMPARE_BUFFER_BYTES, existing_file);
     let mut expected_bytes = [0_u8; COMPARE_BUFFER_BYTES];
     let mut existing_bytes = [0_u8; COMPARE_BUFFER_BYTES];
     let mut remaining = expected_metadata.len();
@@ -44,24 +42,23 @@ pub(crate) fn require_identical_regular_files(
         expected_reader.read_exact(&mut expected_bytes[..chunk])?;
         existing_reader.read_exact(&mut existing_bytes[..chunk])?;
         if expected_bytes[..chunk] != existing_bytes[..chunk] {
-            return Err(identity_mismatch(existing));
+            return Err(identity_mismatch(&dir.locate(existing)));
         }
         remaining -= chunk as u64;
     }
     let mut trailing = [0_u8; 1];
     if expected_reader.read(&mut trailing)? != 0 || existing_reader.read(&mut trailing)? != 0 {
-        return Err(identity_mismatch(existing));
+        return Err(identity_mismatch(&dir.locate(existing)));
     }
     Ok(())
 }
 
 /// Require `path` itself (not a symlink target) to be a regular file.
-pub(crate) fn require_regular_file(path: &Path) -> PersistResult<()> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_file() => Ok(()),
-        Ok(_) => Err(identity_mismatch(path)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(identity_mismatch(path)),
-        Err(error) => Err(error.into()),
+pub(crate) fn require_regular_file(dir: &crate::StoreDirectory, path: &Path) -> PersistResult<()> {
+    match dir.regular_metadata(path) {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) | Err(PersistError::Directory(_)) => Err(identity_mismatch(&dir.locate(path))),
+        Err(error) => Err(error),
     }
 }
 
@@ -100,14 +97,16 @@ mod tests {
             .collect::<Vec<_>>();
         std::fs::write(&expected, &bytes).unwrap();
         std::fs::write(&existing, &bytes).unwrap();
-        require_identical_regular_files(&expected, &existing).unwrap();
+        let cap = crate::StoreDirectory::open(&dir).unwrap();
+        require_identical_regular_files(&cap, Path::new("expected"), Path::new("existing"))
+            .unwrap();
 
         let mut different = bytes;
         *different.last_mut().unwrap() ^= 1;
         std::fs::write(&existing, different).unwrap();
         assert!(matches!(
-            require_identical_regular_files(&expected, &existing),
-            Err(PersistError::ArtifactIdentityMismatch { path }) if path == existing
+            require_identical_regular_files(&cap, Path::new("expected"), Path::new("existing")),
+            Err(PersistError::ArtifactIdentityMismatch { path }) if path == cap.locator().join("existing")
         ));
         std::fs::remove_dir_all(dir).unwrap();
     }

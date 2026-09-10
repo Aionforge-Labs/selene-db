@@ -1,18 +1,11 @@
-//! Anchored, regular-file-only active WAL opening.
-//!
-//! The portable `std` checks assume a cooperating persistence directory whose
-//! resolved ancestors and final entry are not replaced during open. They reject
-//! stable symlinks/non-files but are not hostile rename-resistant `openat` or
-//! no-follow capability semantics.
+//! Handle-relative active WAL opening and atomic initialization.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::file_header::WalFileHeader;
-use crate::manifest::sync_dir;
-use crate::manifest_lock::canonical_directory_path;
-use crate::{PersistError, PersistResult};
+use crate::{DirectoryError, PersistError, PersistResult, StoreDirectory, StoreWriter};
 
 const OPEN_RACE_RETRIES: usize = 8;
 const INIT_TEMP_RETRIES: usize = 32;
@@ -29,32 +22,39 @@ static WAL_INIT_NONCE: AtomicU64 = AtomicU64::new(0);
 pub(crate) fn open_locked_wal(
     path: &Path,
     initial_snapshot_seq: u64,
-) -> PersistResult<(File, PathBuf)> {
-    let file_name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "WAL path must name a file",
-        )
-    })?;
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let dir = canonical_directory_path(parent)?;
+) -> PersistResult<(File, PathBuf, StoreWriter)> {
+    let (dir, name) = StoreDirectory::for_file(path)?;
+    crate::store_directory::validate_data_name(&name)?;
     #[cfg(test)]
     run_after_parent_anchor_hook();
-    let path = dir.join(file_name);
+    let authority = StoreWriter::acquire(&dir)?;
+    let file = open_locked_wal_in(&authority, &name, initial_snapshot_seq)?;
+    Ok((file, dir.locate(&name), authority))
+}
+
+pub(crate) fn open_locked_wal_in(
+    authority: &StoreWriter,
+    name: &Path,
+    initial_snapshot_seq: u64,
+) -> PersistResult<File> {
+    let dir = authority.directory();
+    crate::store_directory::validate_data_name(name)?;
+    dir.require_legacy()?;
+    let path = dir.locate(name);
 
     for _ in 0..OPEN_RACE_RETRIES {
-        let file = match std::fs::symlink_metadata(&path) {
-            Ok(metadata) => {
-                require_regular_metadata(&path, &metadata)?;
-                OpenOptions::new().read(true).write(true).open(&path)?
+        let file = match dir.open_write(name) {
+            Ok(file) => file,
+            Err(PersistError::Directory(DirectoryError::NotRegular(_))) => {
+                return Err(PersistError::WalPathNotRegular { path });
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match create_initialized_wal(&dir, &path, file_name, initial_snapshot_seq)? {
-                    Some(file) => return Ok((file, path)),
+            Err(PersistError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                match create_initialized_wal(dir, name, initial_snapshot_seq)? {
+                    Some(file) => return Ok(file),
                     None => continue,
                 }
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error),
         };
         if !file.metadata()?.is_file() {
             return Err(PersistError::WalPathNotRegular { path });
@@ -66,8 +66,7 @@ pub(crate) fn open_locked_wal(
             }
             Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
         }
-        require_regular_wal(&path)?;
-        return Ok((file, path));
+        return Ok(file);
     }
 
     Err(std::io::Error::new(
@@ -78,14 +77,13 @@ pub(crate) fn open_locked_wal(
 }
 
 fn create_initialized_wal(
-    dir: &Path,
-    final_path: &Path,
-    file_name: &std::ffi::OsStr,
+    dir: &StoreDirectory,
+    name: &Path,
     snapshot_seq: u64,
 ) -> PersistResult<Option<File>> {
-    let (mut file, temp_path) = create_init_temp(dir, file_name)?;
+    let (mut file, temp_path) = create_init_temp(dir, name.as_os_str())?;
     if let Err(error) = file.try_lock() {
-        cleanup_init_temp(file, &temp_path);
+        cleanup_init_temp(dir, file, &temp_path);
         return match error {
             std::fs::TryLockError::WouldBlock => Err(PersistError::WriterLockHeld),
             std::fs::TryLockError::Error(error) => Err(error.into()),
@@ -96,47 +94,47 @@ fn create_initialized_wal(
         file.sync_all()?;
         Ok(())
     })() {
-        cleanup_init_temp(file, &temp_path);
+        cleanup_init_temp(dir, file, &temp_path);
         return Err(error);
     }
 
     #[cfg(test)]
     run_before_wal_publish_hook();
-    match std::fs::hard_link(&temp_path, final_path) {
+    match dir.hard_link(&temp_path, name) {
         Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            cleanup_init_temp(file, &temp_path);
+        Err(PersistError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            cleanup_init_temp(dir, file, &temp_path);
             return Ok(None);
         }
         Err(error) => {
-            cleanup_init_temp(file, &temp_path);
-            return Err(error.into());
+            cleanup_init_temp(dir, file, &temp_path);
+            return Err(error);
         }
     }
-    if let Err(error) = std::fs::remove_file(&temp_path) {
+    if let Err(error) = dir.remove(&temp_path) {
         drop(file);
-        let _ = std::fs::remove_file(&temp_path);
-        return Err(error.into());
+        let _ = dir.remove(&temp_path);
+        return Err(error);
     }
-    sync_dir(dir)?;
+    dir.sync()?;
     Ok(Some(file))
 }
 
-fn create_init_temp(dir: &Path, file_name: &std::ffi::OsStr) -> PersistResult<(File, PathBuf)> {
+fn create_init_temp(
+    dir: &StoreDirectory,
+    file_name: &std::ffi::OsStr,
+) -> PersistResult<(File, PathBuf)> {
     for _ in 0..INIT_TEMP_RETRIES {
         let nonce = WAL_INIT_NONCE.fetch_add(1, Ordering::Relaxed);
         let mut temp_name = file_name.to_os_string();
         temp_name.push(format!(".init.{}.{nonce}.tmp", std::process::id()));
-        let temp_path = dir.join(temp_name);
-        match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
+        let temp_path = PathBuf::from(temp_name);
+        match dir.create_new(&temp_path) {
             Ok(file) => return Ok((file, temp_path)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
+            Err(PersistError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                continue;
+            }
+            Err(error) => return Err(error),
         }
     }
     Err(std::io::Error::new(
@@ -146,34 +144,26 @@ fn create_init_temp(dir: &Path, file_name: &std::ffi::OsStr) -> PersistResult<(F
     .into())
 }
 
-fn cleanup_init_temp(file: File, temp_path: &Path) {
+fn cleanup_init_temp(dir: &StoreDirectory, file: File, temp_path: &Path) {
     drop(file);
-    if let Err(error) = std::fs::remove_file(temp_path) {
+    if let Err(error) = dir.remove(temp_path) {
         tracing::warn!(path = %temp_path.display(), %error, "could not remove WAL initialization temporary");
     }
 }
 
 /// Reject a present WAL path unless its directory entry is a regular file.
-pub(crate) fn require_regular_wal_or_absent(path: &Path) -> PersistResult<()> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) => require_regular_metadata(path, &metadata),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn require_regular_wal(path: &Path) -> PersistResult<()> {
-    let metadata = std::fs::symlink_metadata(path)?;
-    require_regular_metadata(path, &metadata)
-}
-
-fn require_regular_metadata(path: &Path, metadata: &std::fs::Metadata) -> PersistResult<()> {
-    if metadata.file_type().is_file() {
-        Ok(())
-    } else {
-        Err(PersistError::WalPathNotRegular {
-            path: path.to_path_buf(),
-        })
+pub(crate) fn require_regular_wal_or_absent(
+    dir: &StoreDirectory,
+    name: &Path,
+) -> PersistResult<()> {
+    match dir.regular_metadata(name) {
+        Ok(_) => Ok(()),
+        Err(PersistError::Directory(DirectoryError::NotRegular(_))) => {
+            Err(PersistError::WalPathNotRegular {
+                path: dir.locate(name),
+            })
+        }
+        Err(error) => Err(error),
     }
 }
 

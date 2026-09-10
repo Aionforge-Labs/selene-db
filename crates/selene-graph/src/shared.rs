@@ -254,8 +254,9 @@ impl SharedGraph {
             .map(DurableState::new)
             .map(|durable| match audit_log {
                 Some(audit) => durable.with_audit_log(audit),
-                None => durable,
-            });
+                None => Ok(durable),
+            })
+            .transpose()?;
         let core = CoreProvider::new_for_live_with_wal(Arc::clone(&snapshot), durable);
         let mut all_providers = Vec::with_capacity(providers.len() + 1);
         all_providers.push(Arc::clone(&core) as Arc<dyn IndexProvider>);

@@ -55,6 +55,57 @@ fn config(dir: &Path, sequence: u64) -> SnapshotConfig {
     }
 }
 
+struct RenameExportProvider(std::sync::Mutex<Option<(PathBuf, PathBuf)>>);
+
+impl IndexProvider for RenameExportProvider {
+    fn provider_tag(&self) -> ProviderTag {
+        ProviderTag(*b"RNAM")
+    }
+    fn read_section(&self, _: SubTag, _: &[u8]) -> Result<(), ProviderError> {
+        Ok(())
+    }
+    fn write_section(&self, _: SubTag) -> Result<Vec<u8>, ProviderError> {
+        if let Some((original, retained)) = self.0.lock().unwrap().take() {
+            assert!(matches!(
+                WalWriter::open(&original.join(DEFAULT_WAL_FILE_NAME), WalConfig::default()),
+                Err(selene_persist::PersistError::WriterLockHeld)
+            ));
+            std::fs::rename(&original, retained).unwrap();
+            std::fs::create_dir(original).unwrap();
+        }
+        Ok(b"renamed".to_vec())
+    }
+    fn on_change(&self, _: &Change) -> Result<(), ProviderError> {
+        Ok(())
+    }
+    fn declared_sub_tags(&self) -> &[SubTag] {
+        const TAGS: &[SubTag] = &[SubTag(*b"BODY")];
+        TAGS
+    }
+}
+
+#[test]
+fn standalone_export_keeps_its_capability_when_parent_is_replaced_mid_encode() {
+    let fixture = selene_testing::PersistenceTestPath::new();
+    let original = fixture.parent().unwrap().join("export");
+    let retained = original.with_file_name("retained");
+    std::fs::create_dir(&original).unwrap();
+    let shared = SharedGraph::builder(GraphId::new(82_110))
+        .with_provider(Arc::new(RenameExportProvider(std::sync::Mutex::new(Some(
+            (original.clone(), retained.clone()),
+        )))))
+        .build()
+        .unwrap();
+    commit_node(&shared, "export.anchor");
+    let mut config = config(&original, 1);
+    config.fsync = true;
+    shared.write_snapshot(config).unwrap();
+    assert_eq!(std::fs::read_dir(original).unwrap().count(), 0);
+    let mut reader = selene_persist::SnapshotReader::open(&snapshot_path(&retained, 1)).unwrap();
+    reader.verify_body_hash().unwrap();
+    assert_eq!(reader.read_section(*b"RNAM", *b"BODY").unwrap(), b"renamed");
+}
+
 fn commit_node(shared: &SharedGraph, label: &str) {
     let mut txn = shared.begin_write();
     {

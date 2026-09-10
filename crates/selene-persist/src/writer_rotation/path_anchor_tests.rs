@@ -34,7 +34,8 @@ fn builder(dir: &Path, sequence: u64, bytes: &[u8]) -> SnapshotBuilder {
         sequence,
         compression: SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     builder
         .add_section(*b"CORE", *b"META", bytes.to_vec())
         .unwrap();
@@ -164,7 +165,7 @@ fn post_validation_alias_retarget_cannot_redirect_rotation() {
 }
 
 #[test]
-fn builder_alias_retargeted_before_preflight_fails_without_mutation() {
+fn builder_alias_retargeted_before_preflight_keeps_its_opened_directory() {
     let root = temp_root("preflight-mismatch");
     let first_dir = root.join("first");
     let second_dir = root.join("second");
@@ -184,24 +185,16 @@ fn builder_alias_retargeted_before_preflight_fails_without_mutation() {
     let stale_builder = builder(&alias, 1, b"stale-alias");
     retarget(&alias, &second_dir);
 
-    let error = writer.rotate_with_manifest(stale_builder).unwrap_err();
-
-    assert!(matches!(
-        error,
-        PersistError::WalRotationDirectoryMismatch {
-            snapshot_dir,
-            wal_dir,
-        } if snapshot_dir == alias && wal_dir == first_dir
-    ));
-    assert_eq!(writer.entries_since_fsync(), 1);
-    assert!(!first_dir.join(MANIFEST_FILE_NAME).exists());
-    assert!(!snapshot_path(&first_dir, 1).exists());
-    assert!(!first_dir.join("wal.1.archive").exists());
+    writer.rotate_with_manifest(stale_builder).unwrap();
+    assert_eq!(writer.entries_since_fsync(), 0);
+    assert!(first_dir.join(MANIFEST_FILE_NAME).exists());
+    assert!(snapshot_path(&first_dir, 1).exists());
+    assert!(first_dir.join("wal.1.archive").exists());
     assert!(!second_dir.join(MANIFEST_FILE_NAME).exists());
     assert!(!snapshot_path(&second_dir, 1).exists());
 
     writer
-        .rotate_with_manifest(builder(&first_dir, 1, b"anchored-retry"))
+        .rotate_with_manifest(builder(&first_dir, 1, b"stale-alias"))
         .unwrap();
     assert_eq!(
         Manifest::read(&first_dir)

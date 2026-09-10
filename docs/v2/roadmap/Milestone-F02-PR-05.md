@@ -32,12 +32,20 @@ Paths are navigation, not a closed edit inventory. New modules are implementatio
 4. Load the selected snapshot into isolated state, replay its WAL suffix and publish once after validation. Rebuild derived indexes needed by currently active constraints before admitting writes.
 5. Add a consumer-shaped restart fixture using named schemas/graphs and selected properties, plus explicit transaction commit and rollback. Document exactly which recovery cases are completed here and which F02-PR07 still owns.
 
+F02-PR01 supplies only persistence-layer empty control (`StoreDirectory`, durable
+StoreId/epoch, CURRENT and immutable manifests). It deliberately leaves the
+production facade in-memory. This PR owns the first real durable facade
+create/open path and must not reuse an ephemeral Database as a persistence
+preview. Reopen preserves the store's durable identity while allocating a fresh
+process-local DatabaseId and binding newly issued handles to that live instance.
+
 ## Acceptance and concrete regression cases
 
 - [ ] Create multiple graphs, commit data, checkpoint, append more transactions and reopen with identical catalog, graph contents and diagnostic behavior.
 - [ ] A checkpoint concurrent with a writer represents one valid publication boundary, not a mixture of old catalog and new graph data.
 - [ ] Rolled-back writes remain absent after reopen and deleted published IDs are not accidentally reissued.
 - [ ] Mixed edges, selected value types and graph-type restrictions survive restart with fresh process-local handle validation.
+- [ ] Durable facade reopen preserves StoreId/epoch but rejects old or foreign process-local handles, without changing infallible in-memory construction.
 - [ ] An incomplete staged snapshot is never selected as authoritative; corrupt required sections fail rather than becoming empty graphs.
 - [ ] Required derived constraint state is complete before writes; optional accelerator rebuild status is explicit.
 

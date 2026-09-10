@@ -109,7 +109,8 @@ fn meta_builder(dir: &Path, seq: u64, meta: &[u8]) -> SnapshotBuilder {
         sequence: seq,
         compression: SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     builder
         .add_section(*b"CORE", *b"META", meta.to_vec())
         .unwrap();

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -46,13 +47,14 @@ fn wait_for_child_exit(child: &mut std::process::Child, phase: &str) -> std::pro
 #[test]
 fn same_directory_guards_serialize_and_lock_file_persists() {
     let dir = temp_dir("same-dir");
-    let first = ManifestEpochGuard::acquire(&dir).unwrap();
+    let owner = StoreWriter::acquire(&StoreDirectory::open(&dir).unwrap()).unwrap();
+    let first = ManifestEpochGuard::acquire(&owner).unwrap();
     let (contended_tx, contended_rx) = sync_channel(0);
     let (acquired_tx, acquired_rx) = sync_channel(0);
-    let worker_dir = dir.clone();
+    let worker_owner = owner.clone();
     let worker = thread::spawn(move || {
         set_contention_hook(move || contended_tx.send(()).unwrap());
-        let _second = ManifestEpochGuard::acquire(&worker_dir).unwrap();
+        let _second = ManifestEpochGuard::acquire(&worker_owner).unwrap();
         acquired_tx.send(()).unwrap();
     });
 
@@ -94,7 +96,8 @@ fn shared_read_guards_coexist_and_block_epoch_mutation() {
     let writer_dir = dir.clone();
     let writer = thread::spawn(move || {
         set_contention_hook(move || contended_tx.send(()).unwrap());
-        let _exclusive = ManifestEpochGuard::acquire(&writer_dir).unwrap();
+        let owner = StoreWriter::acquire(&StoreDirectory::open(&writer_dir).unwrap()).unwrap();
+        let _exclusive = ManifestEpochGuard::acquire(&owner).unwrap();
         writer_acquired_tx.send(()).unwrap();
     });
     contended_rx
@@ -124,7 +127,8 @@ fn shared_read_guards_coexist_and_block_epoch_mutation() {
 #[test]
 fn exclusive_epoch_mutation_blocks_shared_reader() {
     let dir = temp_dir("exclusive-blocks-reader");
-    let exclusive = ManifestEpochGuard::acquire(&dir).unwrap();
+    let owner = StoreWriter::acquire(&StoreDirectory::open(&dir).unwrap()).unwrap();
+    let exclusive = ManifestEpochGuard::acquire(&owner).unwrap();
     let (contended_tx, contended_rx) = sync_channel(0);
     let (acquired_tx, acquired_rx) = sync_channel(0);
     let worker_dir = dir.clone();
@@ -154,12 +158,14 @@ fn exclusive_epoch_mutation_blocks_shared_reader() {
 fn different_directories_do_not_contend() {
     let first_dir = temp_dir("first-dir");
     let second_dir = temp_dir("second-dir");
-    let first = ManifestEpochGuard::acquire(&first_dir).unwrap();
+    let owner = StoreWriter::acquire(&StoreDirectory::open(&first_dir).unwrap()).unwrap();
+    let first = ManifestEpochGuard::acquire(&owner).unwrap();
 
     let (acquired_tx, acquired_rx) = sync_channel(0);
     let worker_dir = second_dir.clone();
     let worker = thread::spawn(move || {
-        let _second = ManifestEpochGuard::acquire(&worker_dir).unwrap();
+        let owner = StoreWriter::acquire(&StoreDirectory::open(&worker_dir).unwrap()).unwrap();
+        let _second = ManifestEpochGuard::acquire(&owner).unwrap();
         acquired_tx.send(()).unwrap();
     });
     acquired_rx
@@ -173,9 +179,10 @@ fn different_directories_do_not_contend() {
 }
 
 #[test]
-fn separate_process_contends_on_the_same_lock_file() {
+fn separate_process_reader_contends_with_exclusive_epoch() {
     let dir = temp_dir("separate-process");
-    let first = ManifestEpochGuard::acquire(&dir).unwrap();
+    let owner = StoreWriter::acquire(&StoreDirectory::open(&dir).unwrap()).unwrap();
+    let first = ManifestEpochGuard::acquire(&owner).unwrap();
     let contended = dir.join("child-contended");
     let acquired = dir.join("child-acquired");
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
@@ -186,6 +193,7 @@ fn separate_process_contends_on_the_same_lock_file() {
             "--nocapture",
         ])
         .env(CHILD_DIR_ENV, &dir)
+        .env("SELENE_MANIFEST_LOCK_CHILD_READ", "1")
         .spawn()
         .unwrap();
 
@@ -225,7 +233,7 @@ fn separate_process_epoch_mutation_contends_with_shared_reader() {
 }
 
 #[test]
-#[ignore = "helper invoked by separate_process_contends_on_the_same_lock_file"]
+#[ignore = "helper invoked by the separate-process epoch tests"]
 fn manifest_lock_child_helper() {
     let Some(dir) = std::env::var_os(CHILD_DIR_ENV).map(PathBuf::from) else {
         return;
@@ -233,14 +241,21 @@ fn manifest_lock_child_helper() {
     let contended = dir.join("child-contended");
     let acquired = dir.join("child-acquired");
     set_contention_hook(move || std::fs::write(contended, []).unwrap());
-    let _guard = ManifestEpochGuard::acquire(&dir).unwrap();
-    std::fs::write(acquired, []).unwrap();
+    if std::env::var_os("SELENE_MANIFEST_LOCK_CHILD_READ").is_some() {
+        let _guard = PersistenceReadGuard::acquire(&dir).unwrap();
+        std::fs::write(acquired, []).unwrap();
+    } else {
+        let owner = StoreWriter::acquire(&StoreDirectory::open(&dir).unwrap()).unwrap();
+        let _guard = ManifestEpochGuard::acquire(&owner).unwrap();
+        std::fs::write(acquired, []).unwrap();
+    }
 }
 
 #[test]
 fn direct_manifest_publication_uses_the_epoch_lock() {
     let dir = temp_dir("manifest-write");
-    let first = ManifestEpochGuard::acquire(&dir).unwrap();
+    let owner = StoreWriter::acquire(&StoreDirectory::open(&dir).unwrap()).unwrap();
+    let first = ManifestEpochGuard::acquire(&owner).unwrap();
     let (contended_tx, contended_rx) = sync_channel(0);
     let manifest = Manifest {
         live_snapshot_seq: 7,
@@ -249,11 +264,11 @@ fn direct_manifest_publication_uses_the_epoch_lock() {
         active_wal: DEFAULT_WAL_FILE_NAME.to_owned(),
         archived_wal_seqs: vec![7],
     };
-    let worker_dir = dir.clone();
+    let worker_owner = owner.clone();
     let expected = manifest.clone();
     let worker = thread::spawn(move || {
         set_contention_hook(move || contended_tx.send(()).unwrap());
-        manifest.write_atomic(&worker_dir).unwrap();
+        manifest.write_atomic_with_authority(&worker_owner).unwrap();
     });
 
     contended_rx
@@ -279,7 +294,8 @@ fn guard_keeps_publication_on_the_resolved_directory_after_alias_retarget() {
     std::fs::create_dir(&first_dir).unwrap();
     std::fs::create_dir(&second_dir).unwrap();
     symlink(&first_dir, &alias).unwrap();
-    let mut guard = ManifestEpochGuard::acquire(&alias).unwrap();
+    let owner = StoreWriter::acquire(&StoreDirectory::open(&alias).unwrap()).unwrap();
+    let mut guard = ManifestEpochGuard::acquire(&owner).unwrap();
     assert_eq!(guard.dir(), first_dir);
 
     std::fs::remove_file(&alias).unwrap();

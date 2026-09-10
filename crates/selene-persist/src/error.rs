@@ -41,6 +41,12 @@ impl std::fmt::Display for PersistArtifact {
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[non_exhaustive]
 pub enum PersistError {
+    /// Retained directory authority or platform contract failure.
+    #[error(transparent)]
+    Directory(#[from] crate::DirectoryError),
+    /// Empty-store control identity, encoding, or publication failure.
+    #[error(transparent)]
+    Control(#[from] crate::ControlError),
     /// I/O failure on a persistence file.
     #[error("persistence io: {0}")]
     #[diagnostic(code(SLENE_P_001))]
@@ -521,7 +527,9 @@ impl PersistError {
             | Self::SectionTooLarge { .. } => "5GQL1",
             Self::DuplicateSection { .. } | Self::DuplicateProviderTag { .. } => "22G03",
             Self::UnsupportedVersion { .. } => "08000",
-            Self::Io(_)
+            Self::Control(_)
+            | Self::Directory(_)
+            | Self::Io(_)
             | Self::HeaderCodec(_)
             | Self::PayloadCodec(_)
             | Self::Compression(_)

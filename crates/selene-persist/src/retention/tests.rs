@@ -125,7 +125,8 @@ fn prune_without_manifest_is_noop() {
     // Nothing deleted without an authoritative epoch to protect.
     assert!(snap_exists(&dir, 1));
     assert!(arch_exists(&dir, 1));
-    assert!(!dir.join(crate::MANIFEST_LOCK_FILE_NAME).exists());
+    assert!(dir.join(crate::STORE_LOCK_FILE_NAME).is_file());
+    assert!(dir.join(crate::MANIFEST_LOCK_FILE_NAME).is_file());
     let _ = fs::remove_dir_all(dir);
 }
 

@@ -2365,8 +2365,102 @@ commit still coalesces, and the 32-thread group-commit win got slightly better.
 
 ## §4 selene-persist — WAL & snapshot
 
-Bench bins: `wal`, `snapshot`, plus `graph_snapshot_roundtrip` (lives in the
+Bench bins: `wal`, `snapshot`, `store_control`, plus `graph_snapshot_roundtrip` (lives in the
 `selene-graph` crate but exercises the persist/D14 path end to end).
+
+### Empty-store directory/control overhead (F02-PR01)
+
+The `store_control` binary measures four `persist_store_control` rows over one
+empty store (no graph nodes, transactions, or format-2 data WAL):
+
+| Row | Inside the clock | Outside the clock |
+|---|---|---|
+| `anchor` | Ambient directory open, initial diagnostic canonicalization, metadata validation, handle drop | Empty directory creation/removal |
+| `open_empty` | Writer/epoch lock acquisition, bounded CURRENT/manifest validation, handle drop | Initial generation-1 creation and retained directory anchoring |
+| `create_empty` | Identity construction, locks, staging, encoding, file syncs, exclusive immutable/CURRENT publication and both directory barriers | Directory creation/anchoring and output/fixture destruction |
+| `publish_empty` | Generation-1 validation, locks, generation-2 publication with both file syncs and directory barriers | Generation-1 creation, directory anchoring and output/fixture destruction |
+
+Create/publication use Criterion `BatchSize::PerIteration`; returned handles and
+fixtures are destroyed outside the timed interval. No sync is suppressed. Open
+uses a warm generation-1 store; publication starts fresh at generation 1 for
+every iteration, so these rows do not claim deep-history open performance.
+
+The companion `persist_store_control_history` group measures successful reopen
+at selected generations **1, 32 and 256**, first with every manifest retained,
+then with all unselected manifests removed. Each history is created with real
+file/directory syncs before measurement. Offline fixture removal holds writer
+ownership, occurs with no readers, and syncs the directory; this setup and final
+fixture destruction are outside the clock. Reopen includes writer/shared-epoch
+acquisition, directory scan/stat validation, the two selected payload reads,
+decode/checksum/identity validation and handle destruction. All rows are warm
+filesystem-cache measurements; no transaction data or queries are involved.
+
+```bash
+scripts/run-benches.sh --bench store_control --compile-only
+scripts/run-benches.sh --profile quick --bench store_control --sample-size 20 --measurement-time 1
+```
+
+#### Pre-pivot measurements (historical)
+
+The following earlier numbers precede the owner-directed unified-writer and
+selected-state-only pivot; they are not current-contract performance evidence.
+Measured 2026-09-09 on Apple M5 (10 cores, 16 GiB), macOS 27.0 build 26A5425a,
+internal APFS Data volume, rustc 1.97.1, mimalloc, optimized bench profile with
+thin LTO. Candidate worktree base: `d0aaf40b`. Each row used 20 samples, a 100 ms
+warm-up and a 1 s requested measurement window; setup is excluded as above.
+
+| Row | Criterion time estimate [95% interval] | Sample median | Sample p95 |
+|---|---:|---:|---:|
+| `anchor` | 15.477 µs [15.374, 15.577] | 0.015 ms | 0.016 ms |
+| `open_empty` | 67.734 µs [66.919, 68.770] | 0.069 ms | 0.073 ms |
+| `create_empty` | 14.997 ms [14.854, 15.141] | 14.983 ms | 15.451 ms |
+| `publish_empty` | 15.335 ms [15.069, 15.572] | 15.468 ms | 15.989 ms |
+
+Sample medians/p95 were obtained with `scripts/criterion-summary.sh
+persist_store_control/anchor persist_store_control/open_empty
+persist_store_control/create_empty persist_store_control/publish_empty`.
+An earlier run estimated 15.600 µs, 79.482 µs, 14.157 ms and 14.423 ms respectively;
+its open row had four high-severe outliers. The final repeat reported create and
+publication approximately 5.93% and 6.32% slower than that run, while open was
+faster. This was not an isolated optimization A/B, so no cause or speedup is
+claimed. These are startup/control costs, not a regression threshold; neither
+run measures queries, cold-cache startup, long manifest history, or power loss.
+
+#### Unified writer proof and selected-state-only reopen
+
+Re-run with the commands above on the same native M5/APFS host and Rust 1.97.1,
+after the owner-directed pivot. The optimized/mimalloc configuration, 20 samples,
+100 ms warm-up and requested 1 s measurement window are unchanged.
+
+| Row | Criterion time estimate [95% interval] | Sample median | Sample p95 |
+|---|---:|---:|---:|
+| `anchor` | 16.567 µs [16.480, 16.636] | 0.017 ms | 0.017 ms |
+| `open_empty` | 76.368 µs [73.965, 79.226] | 0.073 ms | 0.085 ms |
+| `create_empty` | 13.129 ms [12.933, 13.321] | 13.201 ms | 13.626 ms |
+| `publish_empty` | 14.951 ms [14.272, 15.727] | 14.923 ms | 18.085 ms |
+
+| History row | Criterion time estimate [95% interval] | Sample median | Sample p95 |
+|---|---:|---:|---:|
+| `retained/1` | 74.696 µs [73.941, 75.346] | 0.074 ms | 0.076 ms |
+| `pruned/1` | 75.785 µs [74.970, 76.490] | 0.076 ms | 0.077 ms |
+| `retained/32` | 120.55 µs [115.52, 125.55] | 0.115 ms | 0.130 ms |
+| `pruned/32` | 77.301 µs [75.104, 80.164] | 0.078 ms | 0.084 ms |
+| `retained/256` | 371.02 µs [365.51, 378.01] | 0.373 ms | 0.396 ms |
+| `pruned/256` | 74.341 µs [72.850, 75.769] | 0.073 ms | 0.077 ms |
+
+Per-capability unit instrumentation proves exactly two control payload opens at
+these generations, including after history removal and for ordinary publication
+base validation. **Overall reopen is not constant-time**: retained-history
+directory enumeration/stat work and its entry-name vector remain O(entries),
+as the retained rows demonstrate. Removing history leaves the same selected
+state and avoids those extra entry scans; no production history-prune API or
+epoch-reset protocol is introduced here.
+
+Criterion compared cached earlier results and reported anchor/open estimates
+about 6.51%/9.55% higher, create about 12.46% lower, and no significant publication
+change. These runs are not an isolated optimization A/B and no causal speedup
+is claimed. Publication had three high outliers. No sync barrier was removed to
+obtain these numbers. Native process/fault evidence is not power-loss proof.
 
 ### §4a WAL
 

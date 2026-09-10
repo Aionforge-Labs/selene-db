@@ -37,6 +37,17 @@ impl SharedGraph {
     /// declares a closed binding; or graph errors when the recovered state
     /// cannot be materialized.
     pub fn recover(dir: &Path, graph_id: GraphId) -> GraphResult<Self> {
+        Self::recover_in(&selene_persist::StoreDirectory::open(dir)?, graph_id)
+    }
+
+    /// Recover an open graph through a retained directory capability.
+    ///
+    /// # Errors
+    /// Returns the same locking, replay, and graph-validation errors as [`Self::recover`].
+    pub fn recover_in(
+        dir: &selene_persist::StoreDirectory,
+        graph_id: GraphId,
+    ) -> GraphResult<Self> {
         Self::recover_inner(dir, graph_id, None, Vec::new())
     }
 
@@ -56,7 +67,12 @@ impl SharedGraph {
         graph_id: GraphId,
         providers: Vec<Arc<dyn IndexProvider>>,
     ) -> GraphResult<Self> {
-        Self::recover_inner(dir, graph_id, None, providers)
+        Self::recover_inner(
+            &selene_persist::StoreDirectory::open(dir)?,
+            graph_id,
+            None,
+            providers,
+        )
     }
 
     /// Recover a closed (GG02) shared graph bound to `bound_type`.
@@ -87,7 +103,12 @@ impl SharedGraph {
         graph_id: GraphId,
         bound_type: GraphTypeDef,
     ) -> GraphResult<Self> {
-        Self::recover_inner(dir, graph_id, Some(Arc::new(bound_type)), Vec::new())
+        Self::recover_inner(
+            &selene_persist::StoreDirectory::open(dir)?,
+            graph_id,
+            Some(Arc::new(bound_type)),
+            Vec::new(),
+        )
     }
 
     /// Recover a closed (GG02) shared graph with extension index providers.
@@ -110,18 +131,22 @@ impl SharedGraph {
         bound_type: GraphTypeDef,
         providers: Vec<Arc<dyn IndexProvider>>,
     ) -> GraphResult<Self> {
-        Self::recover_inner(dir, graph_id, Some(Arc::new(bound_type)), providers)
+        Self::recover_inner(
+            &selene_persist::StoreDirectory::open(dir)?,
+            graph_id,
+            Some(Arc::new(bound_type)),
+            providers,
+        )
     }
 
     fn recover_inner(
-        dir: &Path,
+        dir: &selene_persist::StoreDirectory,
         graph_id: GraphId,
         expected_bound_type: Option<Arc<GraphTypeDef>>,
         providers: Vec<Arc<dyn IndexProvider>>,
     ) -> GraphResult<Self> {
         // Bind recovery, live WAL reopen, and audit reopen to one physical
         // directory so a caller alias cannot retarget between those phases.
-        let dir = std::fs::canonicalize(dir).map_err(selene_persist::PersistError::from)?;
         let core = CoreProvider::new_for_recovery();
         validate_recovery_provider_tags(&core, &providers)?;
         let mut attachments = RecoveryAttachmentGuard::reserve(&providers)?;
@@ -135,19 +160,18 @@ impl SharedGraph {
         // exists, verify recovery under the shared guard before publishing a
         // seeded WAL; WalWriter acquisition is non-blocking, so a racing writer
         // fails this takeover without creating a lock-order cycle.
-        let wal_path = dir.join(DEFAULT_WAL_FILE_NAME);
-        let wal_existed = wal_path.try_exists().map_err(PersistError::from)?;
+        let wal_existed = dir.contains(DEFAULT_WAL_FILE_NAME)?;
         let (writer, read_guard, outcome) = if wal_existed {
-            let writer = open_recovery_writer(&wal_path, 0)?;
-            let read_guard = PersistenceReadGuard::acquire(&dir)?;
+            let writer = open_recovery_writer(dir, 0)?;
+            let read_guard = PersistenceReadGuard::acquire_in(dir)?;
             let outcome = recover_guarded(&read_guard, &registry)?;
             (writer, read_guard, outcome)
         } else {
-            let read_guard = PersistenceReadGuard::acquire(&dir)?;
+            let read_guard = PersistenceReadGuard::acquire_in(dir)?;
             let outcome = recover_guarded(&read_guard, &registry)?;
             #[cfg(test)]
             run_before_missing_wal_open_hook();
-            let writer = open_recovery_writer(&wal_path, outcome.applied_snapshot_seq)?;
+            let writer = open_recovery_writer(dir, outcome.applied_snapshot_seq)?;
             (writer, read_guard, outcome)
         };
 
@@ -196,9 +220,11 @@ impl SharedGraph {
         // keep being mirrored. The historical events already persist in the file
         // — recovery never re-derives them, and the WAL replay above does not
         // re-mirror (write_commit is live-only). Absent file → no audit.
-        let audit_path = dir.join(DEFAULT_AUDIT_FILE_NAME);
-        let audit_log = if audit_path.exists() {
-            Some(AuditLog::open(&audit_path)?)
+        let audit_log = if dir.contains(DEFAULT_AUDIT_FILE_NAME)? {
+            Some(AuditLog::open_with_authority(
+                writer.authority(),
+                Path::new(DEFAULT_AUDIT_FILE_NAME),
+            )?)
         } else {
             None
         };
@@ -333,9 +359,13 @@ fn bounded_provider_panic(payload: &Box<dyn std::any::Any + Send>) -> String {
     detail
 }
 
-fn open_recovery_writer(path: &Path, snapshot_seq: u64) -> GraphResult<WalWriter> {
-    Ok(WalWriter::open(
-        path,
+fn open_recovery_writer(
+    dir: &selene_persist::StoreDirectory,
+    snapshot_seq: u64,
+) -> GraphResult<WalWriter> {
+    Ok(WalWriter::open_in(
+        dir,
+        Path::new(DEFAULT_WAL_FILE_NAME),
         WalConfig {
             sync_policy: SyncPolicy::OnFlushOnly,
             snapshot_seq,

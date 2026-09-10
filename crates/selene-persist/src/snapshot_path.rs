@@ -52,16 +52,30 @@ pub fn parse_snapshot_filename(name: &OsStr) -> Option<u64> {
 ///
 /// Returns I/O errors from directory scanning.
 pub fn find_latest_snapshot(dir: &Path) -> PersistResult<Option<(u64, PathBuf)>> {
+    let cap = crate::StoreDirectory::open(dir)?;
+    Ok(find_latest_snapshot_in(&cap)?.map(|(seq, name)| (seq, dir.join(name))))
+}
+
+/// Find the highest legacy snapshot through retained authority, returning its child name.
+///
+/// # Errors
+/// Returns protocol, directory-scan, or entry metadata errors.
+pub fn find_latest_snapshot_in(
+    dir: &crate::StoreDirectory,
+) -> PersistResult<Option<(u64, PathBuf)>> {
+    dir.require_legacy()?;
     let mut latest: Option<(u64, PathBuf)> = None;
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let Some(sequence) = parse_snapshot_filename(&entry.file_name()) else {
+    for name in dir.entries()? {
+        let Some(sequence) = parse_snapshot_filename(&name) else {
             continue;
         };
-        if !entry.file_type()?.is_file() {
+        if !dir
+            .metadata(Path::new(&name))?
+            .is_some_and(|m| m.regular && m.single_link)
+        {
             continue;
         }
-        let path = entry.path();
+        let path = PathBuf::from(name);
         match &latest {
             Some((current, _)) if *current >= sequence => {}
             _ => latest = Some((sequence, path)),

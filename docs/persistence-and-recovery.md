@@ -1,13 +1,14 @@
 # Persistence and recovery
 
-This document describes how `selene-db` durably persists its in-memory property
-graph and how the engine reconstructs that state after a restart. It is aimed
-at engineers operating `selene-db` in production: configuring durability,
-sizing recovery windows, and taking backups.
+This document describes the advanced `selene-graph` / `selene-persist` data
+lifecycle, recovery windows, and backups. The production `selene-db` facade
+builder and sessions remain in-memory; do not infer durable facade support from
+these lower-layer APIs.
 
-This is the current `c5c0a985` format and behavior reference. It does not
-describe format 2 as implemented. [D-019 and M09](v2/README.md) own the future
-2.0-only format, anchored directory authority, and cutover.
+The legacy data encodings below remain until F02-PR08 cutover. Filesystem
+authority is now retained [StoreDirectory](store-directory-control.md), with a
+separate persistence-layer **empty** format-2 control API. F02-PR03 onward owns
+the logical data format/commit protocol; F02-PR05 owns durable facade reopen.
 
 The persistence subsystem lives entirely inside the
 [`selene-persist`](../crates/selene-persist) crate. It owns two on-disk
@@ -106,9 +107,9 @@ entry carries:
   zstd-compressed body when the encoded payload crosses the compression
   threshold.
 
-Append is single-threaded. The `WalWriter` holds an exclusive OS-level
-advisory lock on the WAL file for its entire lifetime; a second
-`WalWriter::open` on the same path returns
+Append is single-threaded. The `WalWriter` holds store-wide `LOCK` ownership and
+an exclusive OS-level advisory lock on the WAL file for its entire lifetime;
+a second independent writer through the same physical directory returns
 [`PersistError::WriterLockHeld`](../crates/selene-persist/src/error.rs).
 
 ### `SyncPolicy`
@@ -290,7 +291,7 @@ let mut builder = SnapshotBuilder::new(SnapshotConfig {
     sequence: snapshot_seq,
     compression: SectionCompression::PerSection { level: 1 },
     fsync: true,
-});
+})?;
 builder.add_section(*b"CORE", *b"META", core_meta_bytes)?;
 builder.add_section(*b"CORE", *b"NODE", core_node_bytes)?;
 builder.add_section(*b"CORE", *b"EDGE", core_edge_bytes)?;
@@ -405,14 +406,14 @@ converting a visible operator error into silent data loss. Likewise,
 live graph hosts should not collect a `SnapshotBuilder` and try to reproduce the
 graph committer's ordering protocol. Direct callers are still constrained to a
 nonzero sequence, the conventional `wal.log` filename, and a builder directory
-that resolves to the WAL directory. The checkpoint-specific writer operation
+whose retained identity matches the WAL directory. The checkpoint-specific writer operation
 instead requires its builder to target exactly `last_sequence + 1` and accepts
-sequence zero only as the pre-marker base. `WalWriter::open` canonicalizes the
-parent once, rejects a final WAL symlink or other non-file entry, and reports
-that anchored path through `WalWriter::path` and rotation outcomes. After
-validating the builder directory, rotation publishes the snapshot through the
-anchor rather than the caller spelling, so retargeting a parent alias cannot
-split artifacts across directories. Before the MANIFEST advances, an existing
+sequence zero only as the pre-marker base. `WalWriter::open` retains an opened
+directory, rejects final WAL symlinks/non-files, and reports diagnostic locators
+through `WalWriter::path` and rotation outcomes. Snapshot builders anchor at
+construction (`new` is fallible), or accept retained authority through `new_in`.
+Rotation uses only these handles, so alias retargeting or real ancestor/root
+replacement cannot split artifacts across directories. Before the MANIFEST advances, an existing
 snapshot or archive is accepted only after exact comparison with the newly
 written temporary; a valid but different same-sequence artifact fails closed.
 An incomplete post-MANIFEST rotation, an ahead MANIFEST, or a conflict with an
@@ -422,8 +423,12 @@ Every managed MANIFEST epoch operation uses the persistent per-directory
 `MANIFEST.lock`. `WalWriter::rotate_with_manifest` holds its exclusive side from
 the authoritative MANIFEST read through active-WAL reset; free
 `selene_persist::prune` and `WalWriter::prune` hold it through their post-commit
-artifact deletions. Direct `Manifest::write_atomic` publication also takes the
-exclusive lock to protect the shared temporary name, but remains a blind
+artifact deletions. Standalone mutation entry points first acquire StoreWriter
+ownership; online callers pass the existing lease through
+`write_atomic_with_authority`, `finalize_with_authority`, or
+`retention::prune_with_authority` instead of reacquiring `LOCK`. Exclusive epoch
+guards retain that writer proof. Direct `Manifest::write_atomic` publication
+also takes the exclusive lock to protect the shared temporary name, but remains a blind
 publication rather than a semantic compare-and-swap. Recovery and online backup
 readers take the shared side through MANIFEST selection plus snapshot/WAL use.
 Multiple readers can coexist, while epoch mutation waits for every reader to
@@ -433,25 +438,19 @@ live directory.
 
 The epoch lock is advisory coordination among cooperating handles and processes
 on a filesystem that supports Rust file locking. The fixed writer order is the
-lifetime `wal.log` lock, then shared or exclusive `MANIFEST.lock`, then any
+store `LOCK`, lifetime `wal.log` lock, then shared or exclusive `MANIFEST.lock`, then any
 replacement-WAL temporary lock. Do not upgrade a shared guard or invoke
 same-directory checkpoint, rotation, prune, or MANIFEST publication while
 holding one. Missing-WAL graph recovery is the narrow exception: it verifies
 the snapshot under a shared guard, then uses a non-blocking WAL open, so it
 cannot wait in the reverse order. The OS releases a held lock when its file
-handle is dropped or its process exits, while the named file remains. Each
-epoch-lock operation also
-canonicalizes its directory before opening the lock. A live writer no longer
-uses its original parent alias, so that alias may retarget without redirecting
-the writer; keep the resolved directory, its real ancestors, and its `wal.log`
-entry stable while the writer is live. Renaming or replacing those entries
-requires quiescence. Hard-link aliases of mutable persistence files are
-unsupported because rotation replaces only the anchored directory entry.
-The same stable-topology requirement applies while opening or recovering: the
-portable regular-file checks reject stable symlinks and non-files but are not a
-security boundary against a process concurrently replacing resolved ancestors
-or `wal.log` between path-based checks. Hostile-directory resistance would
-require no-follow, directory-handle-relative operations beyond this contract.
+handle is dropped or its process exits, while the named file remains. Every
+epoch-lock operation uses the same retained directory authority. Real ancestors
+may be renamed/replaced without redirecting managed operations. Non-cooperating
+writers replacing entries *inside* the store, removing coordination files, or
+adding external hard links remain unsupported. Child opens use atomic no-follow
+flags, not check-then-follow pathname operations. See the complete
+[directory capability and platform contract](store-directory-control.md).
 
 The coordinated facade requires an owned WAL at the standard `wal.log` path. A
 graph without a WAL or with a custom WAL filename is rejected without poisoning
@@ -828,15 +827,16 @@ the persistence lock domain and select its epoch only after acquiring the
 shared guard:
 
 1. Optionally call `SharedGraph::checkpoint` to bound the active WAL. Then
-   acquire `PersistenceReadGuard::acquire(data_dir)`.
+   acquire `PersistenceReadGuard::acquire_in(&store_directory)` using retained
+   authority. The path wrapper anchors a new authority only at its entry.
 2. Re-read the authoritative MANIFEST with `guard.read_manifest()`. If an exact
-   checkpoint outcome is required, first verify that the canonical parent of
-   `outcome.snapshot_path` equals `guard.dir()`, then compare its
+   checkpoint outcome is required, use the directory capability retained with
+   that operation (not a re-resolved locator), then compare its
    `snapshot_sequence` with the guarded `live_snapshot_seq`; retry or select the
    newer live epoch on a mismatch. Equal sequence numbers from different data
    directories do not establish identity. Never copy outcome paths blindly.
-3. While the guard remains alive, open and copy the named live snapshot and
-   `wal.log`. Capture the WAL source length once and copy exactly that prefix;
+3. While the guard remains alive, use `guard.directory().open_read(child_name)`
+   to open and copy the named live snapshot and `wal.log`. Capture the WAL source length once and copy exactly that prefix;
    ordinary commits may append beyond it, and a partial final frame within the
    prefix is a recoverable torn tail. Rotation and prune wait.
 4. For a complete source MANIFEST bundle, also copy every archive named by that
@@ -844,7 +844,7 @@ shared guard:
    two-file backup may instead omit MANIFEST and all archives; the destination
    must contain no stale MANIFEST, and legacy recovery will cross-check the
    snapshot/WAL pair.
-5. Drop the guard after source files are closed. Do not copy `MANIFEST.lock`,
+5. Drop the guard after source files are closed. Do not copy `LOCK`, `MANIFEST.lock`,
    `MANIFEST.tmp`, `wal.log.init.*.tmp`, reset/snapshot temporaries, or
    crash-orphan artifacts.
 
@@ -862,9 +862,9 @@ replay forward from any retained epoch. `rotate_with_manifest` creates the WAL
 archives, and `RetentionPolicy` prunes superseded snapshots and archives; the
 embedder still owns checkpoint and retention cadence. Copy tracked history
 under the same read guard so prune cannot remove an archive midway through the
-copy. `audit.log` has an independent append/prune lifecycle and is not protected
-by `PersistenceReadGuard`; preserving audit history requires separate
-audit-prune quiescence.
+copy. Audit pruning now participates in the same epoch domain; ordinary audit
+appends may continue. Copy a bounded audit-file prefix through the retained
+capability while holding the read guard when preserving audit history.
 
 ## What can go wrong
 

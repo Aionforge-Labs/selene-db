@@ -1,16 +1,16 @@
 //! WAL rotation helpers, including the crash-safe multi-phase rotate
 //! orchestrator whose MANIFEST commit is the rotation linearization point.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use crate::file_header::{WAL_FILE_HEADER_LEN, WalFileHeader};
-use crate::manifest::{Manifest, sync_dir};
+use crate::manifest::Manifest;
 use crate::manifest_lock::ManifestEpochGuard;
 use crate::snapshot_path::snapshot_path;
 use crate::snapshot_writer::SnapshotBuilder;
-use crate::{DEFAULT_WAL_FILE_NAME, PersistError, PersistResult, SnapshotReader};
+use crate::{DEFAULT_WAL_FILE_NAME, PersistError, PersistResult, SnapshotReader, StoreDirectory};
 
 /// Result of a successful WAL checkpoint operation.
 ///
@@ -105,11 +105,13 @@ pub fn parse_wal_archive_filename(name: &std::ffi::OsStr) -> Option<u64> {
 }
 
 pub(crate) fn archive_current_wal(
+    guard: &ManifestEpochGuard,
     file: &mut File,
     archived_path: &Path,
     committed_offset: u64,
 ) -> PersistResult<()> {
-    let (tmp_path, mut archive) = create_archive_tmp(archived_path)?;
+    let dir = guard.directory();
+    let (tmp_path, mut archive) = create_archive_tmp(dir, archived_path)?;
     let result = (|| -> PersistResult<()> {
         file.seek(SeekFrom::Start(0))?;
         let copied = {
@@ -121,29 +123,29 @@ pub(crate) fn archive_current_wal(
         }
         archive.sync_data()?;
         drop(archive);
-        publish_archive_tmp(&tmp_path, archived_path)
+        publish_archive_tmp(dir, &tmp_path, archived_path)
     })();
     let restored = file.seek(SeekFrom::Start(committed_offset));
     if result.is_err() {
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = dir.remove(&tmp_path);
     }
     restored?;
     result
 }
 
-fn create_archive_tmp(archived_path: &Path) -> PersistResult<(PathBuf, File)> {
+fn create_archive_tmp(
+    dir: &StoreDirectory,
+    archived_path: &Path,
+) -> PersistResult<(PathBuf, File)> {
     for attempt in 0..128_u8 {
         let tmp_path =
             archived_path.with_extension(format!("archive.tmp.{}.{}", std::process::id(), attempt));
-        match OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .truncate(false)
-            .open(&tmp_path)
-        {
+        match dir.create_new(&tmp_path) {
             Ok(file) => return Ok((tmp_path, file)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
+            Err(PersistError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                continue;
+            }
+            Err(error) => return Err(error),
         }
     }
     Err(std::io::Error::new(
@@ -153,40 +155,45 @@ fn create_archive_tmp(archived_path: &Path) -> PersistResult<(PathBuf, File)> {
     .into())
 }
 
-fn publish_archive_tmp(tmp_path: &Path, archived_path: &Path) -> PersistResult<()> {
-    let published = match std::fs::hard_link(tmp_path, archived_path) {
+fn publish_archive_tmp(
+    dir: &StoreDirectory,
+    tmp_path: &Path,
+    archived_path: &Path,
+) -> PersistResult<()> {
+    let published = match dir.hard_link(tmp_path, archived_path) {
         Ok(()) => true,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            crate::artifact_identity::require_identical_regular_files(tmp_path, archived_path)?;
+        Err(PersistError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            crate::artifact_identity::require_identical_regular_files(
+                dir,
+                tmp_path,
+                archived_path,
+            )?;
             false
         }
-        Err(error) => return Err(PersistError::Io(error)),
+        Err(error) => return Err(error),
     };
     // The existing inode may have been linked by an attempt that crashed before
     // its directory barrier. Sync it again before accepting exact identity.
     if !published {
-        OpenOptions::new()
-            .write(true)
-            .open(archived_path)?
-            .sync_all()?;
+        dir.open_write(archived_path)?.sync_all()?;
     }
-    let _ = std::fs::remove_file(tmp_path);
+    let _ = dir.remove(tmp_path);
     // Parent-dir fsync AFTER the hard_link publish so the new archive directory
     // entry is durable. It is repeated for an identical existing archive in
     // case the earlier attempt crashed between link publication and this
     // barrier.
-    if let Some(parent) = archived_path.parent() {
-        sync_dir(parent)?;
-    }
+    dir.sync()?;
     Ok(())
 }
 
 pub(crate) fn reset_active_wal_file(
+    guard: &ManifestEpochGuard,
     file: &mut File,
     wal_path: &Path,
     snapshot_seq: u64,
 ) -> PersistResult<()> {
-    let (tmp_path, mut replacement) = create_reset_tmp(wal_path)?;
+    let dir = guard.directory();
+    let (tmp_path, mut replacement) = create_reset_tmp(dir, wal_path)?;
     let mut renamed = false;
     let result = (|| -> PersistResult<()> {
         match replacement.try_lock() {
@@ -209,23 +216,21 @@ pub(crate) fn reset_active_wal_file(
         // Before it, recovery sees the intact old WAL; after it, recovery sees
         // a fully written and synced new header. A crash before the following
         // directory fsync may retain either entry, and both are valid.
-        std::fs::rename(&tmp_path, wal_path)?;
+        dir.rename(&tmp_path, wal_path)?;
         renamed = true;
         #[cfg(test)]
         fail_reset_at(2)?;
-        if let Some(parent) = wal_path.parent() {
-            sync_dir(parent)?;
-        }
+        dir.sync()?;
         *file = replacement;
         Ok(())
     })();
     if result.is_err() && !renamed {
-        let _ = std::fs::remove_file(tmp_path);
+        let _ = dir.remove(&tmp_path);
     }
     result
 }
 
-fn create_reset_tmp(wal_path: &Path) -> PersistResult<(PathBuf, File)> {
+fn create_reset_tmp(dir: &StoreDirectory, wal_path: &Path) -> PersistResult<(PathBuf, File)> {
     for attempt in 0..128_u8 {
         let mut name = wal_path
             .file_name()
@@ -233,15 +238,12 @@ fn create_reset_tmp(wal_path: &Path) -> PersistResult<(PathBuf, File)> {
             .to_os_string();
         name.push(format!(".reset.tmp.{}.{attempt}", std::process::id()));
         let path = wal_path.with_file_name(name);
-        match OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(&path)
-        {
+        match dir.create_new(&path) {
             Ok(file) => return Ok((path, file)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
+            Err(PersistError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                continue;
+            }
+            Err(error) => return Err(error),
         }
     }
     Err(std::io::Error::new(
@@ -354,8 +356,8 @@ pub(crate) fn rotate_with_manifest(
     builder: SnapshotBuilder,
     epoch_guard: &mut ManifestEpochGuard,
 ) -> PersistResult<(WalRotationOutcome, RotationCommitState)> {
-    let dir = epoch_guard.dir().to_path_buf();
-    let dir = dir.as_path();
+    let cap = epoch_guard.directory().clone();
+    let dir = &cap;
     let RotationInputs {
         file,
         wal_path,
@@ -364,7 +366,7 @@ pub(crate) fn rotate_with_manifest(
         snapshot_seq: prior_snapshot_seq,
         prior_manifest,
     } = inputs;
-    debug_assert_eq!(wal_path.parent(), Some(dir));
+    let wal_name = Path::new(DEFAULT_WAL_FILE_NAME);
 
     let snapshot_seq = builder.sequence();
     if snapshot_seq == 0 || last_sequence == 0 {
@@ -403,15 +405,12 @@ pub(crate) fn rotate_with_manifest(
     // verifies; never commit a MANIFEST that would name a missing/corrupt file.
     if prior_manifest.is_none() {
         if prior_snapshot_seq != 0 {
-            let prior_snapshot = snapshot_path(dir, prior_snapshot_seq);
-            verify_committed_snapshot(&prior_snapshot)?;
+            let prior_snapshot = snapshot_path(Path::new(""), prior_snapshot_seq);
+            verify_committed_snapshot(dir, &prior_snapshot)?;
             // Make the baseline snapshot and its directory entry durable before
             // the baseline MANIFEST makes that epoch authoritative.
-            OpenOptions::new()
-                .write(true)
-                .open(prior_snapshot)?
-                .sync_all()?;
-            sync_dir(dir)?;
+            dir.open_write(&prior_snapshot)?.sync_all()?;
+            dir.sync()?;
         }
         Manifest {
             live_snapshot_seq: prior_snapshot_seq,
@@ -427,11 +426,11 @@ pub(crate) fn rotate_with_manifest(
     // path only after comparing it byte-for-byte with the newly encoded temp.
     // Once the MANIFEST already commits this target, absence is corruption and
     // must never be repaired from caller-supplied bytes.
-    let snapshot_file = snapshot_path(dir, snapshot_seq);
+    let snapshot_file = snapshot_path(Path::new(""), snapshot_seq);
     if target_already_committed {
-        verify_committed_snapshot(&snapshot_file)?;
+        verify_committed_snapshot(dir, &snapshot_file)?;
     }
-    match builder.finalize_for_rotation(dir, target_already_committed) {
+    match builder.finalize_for_rotation(epoch_guard, target_already_committed) {
         Err(PersistError::ArtifactIdentityMismatch { path }) if target_already_committed => {
             return Err(PersistError::CommittedSnapshotIdentityMismatch { path });
         }
@@ -448,13 +447,11 @@ pub(crate) fn rotate_with_manifest(
     // Re-opening the published file and `sync_all`ing flushes its inode
     // regardless of which handle wrote it, and is idempotent on the verified
     // existing-artifact branch. The directory-entry fsync follows the file fsync.
-    OpenOptions::new()
-        .write(true)
-        .open(&snapshot_file)?
-        .sync_all()?;
-    sync_dir(dir)?;
+    dir.open_write(&snapshot_file)?.sync_all()?;
+    dir.sync()?;
 
-    let archived_path = wal_archive_path(wal_path, last_sequence);
+    let archived_name = wal_archive_path(wal_name, last_sequence);
+    let archived_path = dir.locate(&archived_name);
 
     // A completed same-sequence retry has no new WAL bytes to archive: the
     // active file is a header-only continuation of this snapshot, while the
@@ -466,7 +463,7 @@ pub(crate) fn rotate_with_manifest(
         && committed_offset == WAL_FILE_HEADER_LEN as u64
     {
         if prior_archived_seqs.contains(&snapshot_seq) {
-            verify_committed_archive(&archived_path, snapshot_seq)?;
+            verify_committed_archive(dir, &archived_name, snapshot_seq)?;
         }
         return Ok((
             WalRotationOutcome::AlreadyCurrent {
@@ -484,7 +481,7 @@ pub(crate) fn rotate_with_manifest(
     // Phase 2 — archive the current WAL. A pre-commit or pre-reset collision is
     // accepted only when the existing archive exactly matches the copied temp.
     if manifest_committed_target && !prior_archived_seqs.contains(&snapshot_seq) {
-        if reset_active_wal_file(file, wal_path, snapshot_seq).is_err() {
+        if reset_active_wal_file(epoch_guard, file, wal_name, snapshot_seq).is_err() {
             return Err(PersistError::WalRotationIncomplete {
                 archived_path: None,
                 new_path: wal_path.to_path_buf(),
@@ -502,7 +499,7 @@ pub(crate) fn rotate_with_manifest(
             },
         ));
     }
-    match archive_current_wal(file, &archived_path, committed_offset) {
+    match archive_current_wal(epoch_guard, file, &archived_name, committed_offset) {
         Err(PersistError::ArtifactIdentityMismatch { .. }) if manifest_committed_target => {
             return Err(PersistError::CommittedArchiveInvalid {
                 path: archived_path,
@@ -533,7 +530,7 @@ pub(crate) fn rotate_with_manifest(
     }
 
     // Phase 4 — safe-after-commit atomic WAL replacement.
-    if reset_active_wal_file(file, wal_path, snapshot_seq).is_err() {
+    if reset_active_wal_file(epoch_guard, file, wal_name, snapshot_seq).is_err() {
         return Err(PersistError::WalRotationIncomplete {
             archived_path: Some(archived_path),
             new_path: wal_path.to_path_buf(),
@@ -576,10 +573,14 @@ fn run_before_manifest_commit_hook() {
     });
 }
 
-fn verify_committed_archive(path: &Path, expected_last_sequence: u64) -> PersistResult<()> {
+fn verify_committed_archive(
+    dir: &StoreDirectory,
+    path: &Path,
+    expected_last_sequence: u64,
+) -> PersistResult<()> {
     let valid = (|| -> PersistResult<()> {
-        crate::artifact_identity::require_regular_file(path)?;
-        let reader = crate::WalReader::open(path)?;
+        crate::artifact_identity::require_regular_file(dir, path)?;
+        let reader = crate::WalReader::open_in(dir, path)?;
         if reader.snapshot_seq() >= expected_last_sequence {
             return Err(crate::artifact_identity::identity_mismatch(path));
         }
@@ -601,28 +602,22 @@ fn verify_committed_archive(path: &Path, expected_last_sequence: u64) -> Persist
     })();
     if valid.is_err() {
         return Err(PersistError::CommittedArchiveInvalid {
-            path: path.to_path_buf(),
+            path: dir.locate(path),
         });
     }
     Ok(())
 }
 
-fn verify_committed_snapshot(path: &Path) -> PersistResult<()> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(PersistError::CommittedSnapshotUnavailable {
-                path: path.to_path_buf(),
-            });
-        }
-        Err(error) => return Err(error.into()),
-    };
-    if !metadata.file_type().is_file() {
+fn verify_committed_snapshot(dir: &StoreDirectory, path: &Path) -> PersistResult<()> {
+    if !dir
+        .metadata(path)?
+        .is_some_and(|m| m.regular && m.single_link)
+    {
         return Err(PersistError::CommittedSnapshotUnavailable {
-            path: path.to_path_buf(),
+            path: dir.locate(path),
         });
     }
-    let mut reader = SnapshotReader::open(path)?;
+    let mut reader = SnapshotReader::open_in(dir, path)?;
     reader.verify_body_hash()
 }
 

@@ -101,7 +101,8 @@ fn tracing_spans_emit_for_write_and_call() {
             compression: SectionCompression::None,
             fsync: false,
         })
-        .finalize()
+        .expect("snapshot directory opens")
+        .finalize_with_authority(writer.authority())
         .expect("snapshot finalizes");
     }
 
