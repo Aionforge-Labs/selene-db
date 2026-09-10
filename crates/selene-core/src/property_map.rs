@@ -52,6 +52,9 @@ impl PropertyMap {
         let mut entries = pairs
             .into_iter()
             .collect::<SmallVec<[(DbString, Value); 6]>>();
+        for (_, value) in &entries {
+            crate::StoredValue::validate(value)?;
+        }
         if entries.len() <= 1 {
             return Ok(Self::Standard(entries));
         }
@@ -92,6 +95,9 @@ impl PropertyMap {
     ) -> CoreResult<Self> {
         let keys: SmallVec<[DbString; 6]> = keys.into_iter().collect();
         let values: SmallVec<[Option<Value>; 6]> = values.into_iter().collect();
+        for value in values.iter().flatten() {
+            crate::StoredValue::validate(value)?;
+        }
         if keys.len() != values.len() {
             return Err(CoreError::CompactKeyValueLengthMismatch {
                 keys: keys.len(),
@@ -160,6 +166,7 @@ impl PropertyMap {
     /// Returns [`CoreError::ConstructedValueTooLarge`] if inserting a distinct
     /// key would exceed the implementation-defined cardinality cap.
     pub fn set(&mut self, key: DbString, value: Value) -> CoreResult<()> {
+        crate::StoredValue::validate(&value)?;
         match self {
             Self::Standard(entries) => set_standard(entries, key, value),
             Self::Compact { keys, values } => match keys.binary_search(&key) {
@@ -240,6 +247,24 @@ impl PropertyMap {
     #[must_use]
     pub fn contains_key(&self, key: &DbString) -> bool {
         self.get(key).is_some()
+    }
+
+    /// Validate all payloads, including direct construction of public legacy
+    /// variants, before entering a mutation or publication funnel.
+    pub fn validate_stored_values(&self) -> CoreResult<()> {
+        match self {
+            Self::Standard(entries) => {
+                for (_, value) in entries {
+                    crate::StoredValue::validate(value)?;
+                }
+            }
+            Self::Compact { values, .. } => {
+                for value in values.iter().flatten() {
+                    crate::StoredValue::validate(value)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -342,6 +367,8 @@ impl Serialize for PropertyMap {
     where
         S: Serializer,
     {
+        self.validate_stored_values()
+            .map_err(serde::ser::Error::custom)?;
         // Canonicalize on serialize. Construction through `set_standard` /
         // `compact` / `from_pairs` already keeps keys in lexicographic `DbString`
         // order, so this sort is a no-op (byte-identical) for those values. But
@@ -404,6 +431,9 @@ impl<'de> Deserialize<'de> for PropertyMap {
         let wire = PropertyMapWire::deserialize(deserializer)?;
         match wire {
             PropertyMapWire::Standard(entries) => {
+                for (_, value) in &entries {
+                    crate::StoredValue::validate(value).map_err(serde::de::Error::custom)?;
+                }
                 for window in entries.windows(2) {
                     if window[0].0 >= window[1].0 {
                         return Err(serde::de::Error::custom(
@@ -414,6 +444,9 @@ impl<'de> Deserialize<'de> for PropertyMap {
                 Ok(Self::Standard(entries))
             }
             PropertyMapWire::Compact { keys, values } => {
+                for value in values.iter().flatten() {
+                    crate::StoredValue::validate(value).map_err(serde::de::Error::custom)?;
+                }
                 if keys.len() != values.len() {
                     return Err(serde::de::Error::custom(format!(
                         "PropertyMap::Compact key/value length mismatch: {} keys, {} values",

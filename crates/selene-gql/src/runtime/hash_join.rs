@@ -8,7 +8,7 @@ use crate::{
     runtime::{Binding, ExecutorError, value_key::RuntimeEqKey},
 };
 
-use super::pattern;
+use super::{join_domain::JoinDomain, pattern};
 
 /// Execute a binary pattern hash join.
 ///
@@ -38,9 +38,11 @@ fn execute_ordered(
 ) -> Result<Vec<Binding>, ExecutorError> {
     let key_indexes = pattern::resolve_key(env.schema, key)?;
     let build_rows = pattern::walk_join_tree(build_tree, env)?;
+    let mut domains = JoinDomain::default();
     let mut build_entries = FxHashMap::default();
     for row in build_rows {
         if let Some(key_values) = pattern::key_values_at(&row, &key_indexes) {
+            domains.observe(&key_values)?;
             insert_build_row(&mut build_entries, key_values, row);
         }
     }
@@ -51,6 +53,12 @@ fn execute_ordered(
         let Some(probe_key) = pattern::key_values_at(&probe, &key_indexes) else {
             continue;
         };
+        let mut probe_domain = JoinDomain::default();
+        probe_domain.observe(&probe_key)?;
+        domains.compare(&probe_domain)?;
+        if !pattern::key_values_equal(&probe_key, &probe_key)? {
+            continue;
+        }
         if let Some(matching_builds) = matching_builds(&build_entries, probe_key) {
             for build in matching_builds {
                 let row = if build_is_left {
@@ -107,5 +115,37 @@ mod tests {
 
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].values(), &[Value::Int(10)]);
+    }
+
+    #[test]
+    fn join_domain_rejects_incomparable_keys_and_predicates_skip_unknown() {
+        let mut domain = crate::runtime::comparison_domain::ComparisonDomain::default();
+        domain
+            .observe(
+                &[Value::Int(1)],
+                selene_core::ComparisonMode::PredicateEquality,
+            )
+            .unwrap();
+        assert!(
+            domain
+                .observe(
+                    &[Value::String(selene_core::db_string("1").unwrap())],
+                    selene_core::ComparisonMode::PredicateEquality
+                )
+                .is_err()
+        );
+        for value in [Value::Float(f64::NAN), Value::List(vec![Value::Null])] {
+            assert!(
+                !crate::runtime::pattern::key_values_equal(
+                    std::slice::from_ref(&value),
+                    std::slice::from_ref(&value)
+                )
+                .unwrap()
+            );
+        }
+        assert!(
+            crate::runtime::pattern::key_values_equal(&[Value::Int(1)], &[Value::Float(1.0)])
+                .unwrap()
+        );
     }
 }

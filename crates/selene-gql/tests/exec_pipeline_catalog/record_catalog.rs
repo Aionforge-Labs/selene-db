@@ -378,17 +378,18 @@ fn record_default_rejects_null_not_null_field() {
 #[test]
 fn record_default_rejects_duplicate_field() {
     let graph = empty_closed_graph(3725);
-    let plan = planned(
-        "CREATE NODE TYPE :Host (config :: RECORD{host :: STRING} \
-         DEFAULT RECORD{host: 'h', host: 'again'})",
-    );
-
-    let err = run_write(&graph, &plan).expect_err("duplicate RECORD default field rejected");
-
-    assert_eq!(err.gqlstatus().as_str(), "22G0X");
+    let error = selene_gql::Session::new(&graph).execute_source(
+        "CREATE NODE TYPE :Host (config :: RECORD{host :: STRING} DEFAULT RECORD{host: 'h', host: 'again'})",
+        &selene_gql::EmptyProcedureRegistry,
+    ).unwrap_err();
+    assert_eq!(error.gqlstatus().as_str(), "22G0X");
     assert!(matches!(
-        err,
-        ExecutorError::DataException { message, .. }
-            if message.contains("duplicate RECORD DEFAULT field: host")
+        error,
+        ExecutorError::Analysis {
+            source: selene_gql::AnalysisError::StructuralType {
+                source: selene_core::StructuralTypeError::DuplicateField(_),
+                ..
+            }
+        }
     ));
 }

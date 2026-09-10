@@ -357,6 +357,9 @@ pub struct ProcedureResult {
 #[derive(Clone, Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProcedureError {
+    /// An operation accessed a deleted graph referent, distinct from copying it.
+    #[error("procedure accessed a deleted graph reference")]
+    InvalidReferenceValue,
     /// The procedure handle was unknown to the registry.
     #[error("unknown procedure")]
     UnknownProcedure {
@@ -413,6 +416,7 @@ impl ProcedureError {
     #[must_use]
     pub const fn gqlstatus(&self) -> GqlStatus {
         match self {
+            Self::InvalidReferenceValue => GqlStatus::INVALID_REFERENCE_VALUE,
             Self::UnknownProcedure { .. } => GqlStatus::UNKNOWN_PROCEDURE,
             Self::InvalidArgument { .. } => GqlStatus::INVALID_PROCEDURE_ARGUMENT,
             Self::TierMismatch { .. } | Self::Internal { .. } => {

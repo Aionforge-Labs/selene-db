@@ -1,8 +1,8 @@
 //! ISO working scopes and retained single-graph transaction authority.
 
 use selene_db::{
-    CreatePolicy, Database, ExecutionOutcome, GeneralParameter, GqlType, ObjectPath, Request,
-    RequestParams, SchemaPath, Session, Value,
+    CreatePolicy, Database, ExecutionOutcome, GeneralParameter, ObjectPath, Request, RequestParams,
+    SchemaPath, Session, Type, Value,
 };
 
 fn fixture() -> (Database, Session) {
@@ -47,14 +47,14 @@ fn request_local_graph_selection_uses_selected_data_and_does_not_set_session() {
     session
         .set_parameter(
             "x",
-            GeneralParameter::new(GqlType::Integer, Value::Int(11)).unwrap(),
+            GeneralParameter::new(Type::INT64, Value::Int(11)).unwrap(),
         )
         .unwrap();
     let mut params = RequestParams::new();
     params
         .insert(
             "x",
-            GeneralParameter::new(GqlType::Integer, Value::Int(22)).unwrap(),
+            GeneralParameter::new(Type::INT64, Value::Int(22)).unwrap(),
         )
         .unwrap();
     let result = session
@@ -70,6 +70,79 @@ fn request_local_graph_selection_uses_selected_data_and_does_not_set_session() {
         values(session.execute("MATCH (n:Item) RETURN n.x").unwrap()),
         [Value::Int(11)]
     );
+}
+
+#[test]
+fn result_references_use_selected_graph_for_cached_reads_and_write_returns() {
+    let (database, session) = fixture();
+    let initial = session.context().current_graph();
+    let blue_path = ObjectPath::regular("selene", "blue", "g").unwrap();
+    let blue = database.session(&blue_path).unwrap();
+    let expected = Value::NodeRef(blue.node_reference(selene_db::NodeId::new(1)).unwrap());
+    for _ in 0..2 {
+        let output = session
+            .execute("USE /blue/g MATCH (n:Item) RETURN {ref: [n]} AS nested")
+            .unwrap();
+        let Value::Record(record) = &values(output)[0] else {
+            panic!("record");
+        };
+        let selene_db::Record::Open(fields) = record.as_ref() else {
+            panic!("named record");
+        };
+        assert_eq!(fields[0].1, Value::List(vec![expected.clone()]));
+    }
+    blue.execute("INSERT (:Unrelated) FINISH").unwrap();
+    let mut params = RequestParams::new();
+    params
+        .insert("n", GeneralParameter::new(Type::NODE, expected).unwrap())
+        .unwrap();
+    assert_eq!(
+        values(
+            session
+                .execute_request(Request::with_params(
+                    "USE /blue/g RETURN $n.x",
+                    params.clone()
+                ))
+                .into_result()
+                .unwrap()
+        ),
+        [Value::Int(22)]
+    );
+    assert_eq!(
+        session
+            .execute_request(Request::with_params("RETURN $n.x", params))
+            .into_result()
+            .unwrap_err()
+            .gqlstatus()
+            .unwrap()
+            .as_str(),
+        "42002"
+    );
+    assert_eq!(
+        session
+            .execute("USE /blue/g INSERT (n:Added) RETURN [n] AS nested")
+            .unwrap_err()
+            .gqlstatus()
+            .unwrap()
+            .as_str(),
+        "42N01"
+    );
+    let ExecutionOutcome::Written {
+        result: Some(result),
+        ..
+    } = blue
+        .execute("INSERT (n:Added) RETURN [n] AS nested")
+        .unwrap()
+    else {
+        panic!("write rows");
+    };
+    assert_eq!(
+        result.rows()[0].values(),
+        &[Value::List(vec![Value::NodeRef(
+            blue.node_reference(selene_db::NodeId::new(3)).unwrap()
+        )])]
+    );
+    assert_eq!(session.context().current_graph(), initial);
 }
 
 #[test]
@@ -150,7 +223,7 @@ fn binding_precedence_is_distinct_from_parameters_and_forced_catalog_references(
     session
         .set_parameter(
             "g",
-            GeneralParameter::new(GqlType::Integer, Value::Int(9)).unwrap(),
+            GeneralParameter::new(Type::INT64, Value::Int(9)).unwrap(),
         )
         .unwrap();
     assert_eq!(

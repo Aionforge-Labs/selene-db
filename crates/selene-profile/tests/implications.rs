@@ -31,8 +31,8 @@ const IMPORTED: &[(&str, &str)] = &[
     ("G080", "Let value variable statement"),
     ("G081", "Let value variable statement: value expression"),
     ("G082", "Let value variable statement: initializer"),
-    ("GA04", "Binding table function value expressions"),
-    ("GA09", "Binding table function WHERE clause"),
+    ("GA04", "Universal comparison"),
+    ("GA09", "Comparison of paths"),
     ("GD03", "Insert and replace statements"),
     ("GD04", "Insert statement"),
     ("GG03", "Graph type inline specification"),
@@ -43,9 +43,9 @@ const IMPORTED: &[(&str, &str)] = &[
     ("GP17", "Return statement"),
     ("GQ01", "USE graph clause"),
     ("GV65", "Dynamic union types"),
-    ("GV70", "Path type"),
-    ("GV71", "Open path types"),
-    ("GV72", "Closed path types"),
+    ("GV70", "Immaterial value types"),
+    ("GV71", "Immaterial value types: null type support"),
+    ("GV72", "Immaterial value types: empty type support"),
 ];
 
 const TABLE_10: &[(&str, &str, u16)] = &[

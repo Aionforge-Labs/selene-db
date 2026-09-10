@@ -514,14 +514,17 @@ fn pagerank_personalization_rejects_seed_outside_projection() {
     let mut session = Session::new(&graph);
 
     session
+        .execute_source("INSERT (:Outside)", &registry)
+        .unwrap();
+    session
         .execute_source(
-            "CALL algo.projection_build('p', NULL, NULL, NULL)",
+            "CALL algo.projection_build('p', ['N'], NULL, NULL)",
             &registry,
         )
         .expect("projection_build executes");
     session.bind_parameter(
         db_string("seeds"),
-        Value::List(vec![personalization_seed(NodeId::new(999), 1.0)]),
+        Value::List(vec![personalization_seed(NodeId::new(3), 1.0)]),
     );
 
     let err = session
@@ -532,7 +535,7 @@ fn pagerank_personalization_rejects_seed_outside_projection() {
         .expect_err("out-of-projection seed rejected");
     let rendered = format!("{err:?}");
     assert!(
-        rendered.contains("not in projection") && rendered.contains("999"),
+        rendered.contains("not in projection") && rendered.contains("3"),
         "error should mention out-of-projection seed, got: {rendered}"
     );
 }

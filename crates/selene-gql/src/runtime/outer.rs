@@ -38,7 +38,7 @@ pub(crate) fn execute(
             )? {
                 continue;
             }
-            if !pattern::rows_match_on_resolved_key(&left_row, &right_row, &key_indexes) {
+            if !pattern::rows_match_on_resolved_key(&left_row, &right_row, &key_indexes)? {
                 continue;
             }
             output.push(pattern::merge_rows(&left_row, &right_row, env.schema));

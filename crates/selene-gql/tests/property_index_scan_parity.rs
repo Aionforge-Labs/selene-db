@@ -196,11 +196,8 @@ fn repairing_the_drifted_row_re_enables_the_index() {
 /// A graph whose indexed column drifted to a value of *another comparability
 /// family*: an `I64` index over a column that later took a `STRING`.
 ///
-/// The suite above drifts within the numeric family, where the omitted row can
-/// genuinely be matched by an index-keyed predicate. This is the other case —
-/// ISO/IEC 39075:2024 §4.16.5.2 makes numbers the only family that compares
-/// across variants, so no `I64`-keyed *equality* probe could ever have matched
-/// this row.
+/// Cross-family values must raise 22G04 when compared without GA04. An
+/// index must retain this failure even when the row cannot match its key.
 fn cross_family_drifted_graph(id: u64, indexed: bool) -> SharedGraph {
     let graph = SharedGraph::new(GraphId::new(id));
     {
@@ -239,27 +236,15 @@ fn equality_over_cross_family_drift_agrees_with_a_scan() {
     let unindexed = cross_family_drifted_graph(90_121, false);
 
     let query = "MATCH (n:Reading) WHERE n.level = 3 RETURN n";
-    let indexed_rows = count(&mut Session::new(&indexed), query);
-
-    assert_eq!(indexed_rows, count(&mut Session::new(&unindexed), query));
-    assert_eq!(
-        indexed_rows, 1,
-        "`'high' = 3` is a definite false, so only the Int row matches"
-    );
+    assert_eq!(status(&indexed, query), "22G04");
+    assert_eq!(status(&unindexed, query), "22G04");
 }
 
 /// The reason index-drift classification stays an over-approximation instead of
 /// narrowing to the numeric family.
 ///
-/// Equality above shows the tempting half: the drifted row cannot be matched by
-/// an `I64`-keyed probe, so letting the index keep answering would return the
-/// same rows. Ordering is the half that forbids it. A non-comparable pair is a
-/// `22G04` data exception, not a false, so the drifted row is not merely
-/// invisible to a range predicate — it makes the whole statement fail. An index
-/// that survived the drift would let `range_index_scan` fire, and its declined
-/// range probe falls back to `linear_rows_filtered_by_resolved_bounds`, which
-/// treats an incomparable row as a plain non-match. The statement would stop
-/// raising and start succeeding.
+/// Both equality and ordering reject non-comparable pairs. A drifted index
+/// must therefore decline so a scan can expose the same 22G04 failure.
 ///
 /// See `selene_graph::property_index`'s `counts_as_drift` for the full finding.
 #[test]

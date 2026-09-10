@@ -537,3 +537,6 @@ fn drop_nonexistent_node_type_returns_data_exception() {
             if message.contains("node type Missing does not exist")
     ));
 }
+
+#[path = "exec_pipeline_catalog/structural_unique.rs"]
+mod structural_unique;

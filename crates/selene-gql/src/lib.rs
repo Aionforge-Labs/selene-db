@@ -16,6 +16,9 @@ pub mod plan;
 pub mod procedure_registry;
 pub mod runtime;
 mod temporal_parse;
+mod type_adapter;
+
+pub use type_adapter::{lower_value_type, normalize_value_type};
 
 pub use crate::analyze::{
     AnalysisError, AnalyzedStatement, AnalyzedType, BindingDecl, BindingDeclKind, BindingId,

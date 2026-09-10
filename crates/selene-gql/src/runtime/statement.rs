@@ -174,16 +174,26 @@ pub fn execute_statement(
         }
     }
     record_statement_metrics(plan, started);
-    finish_execution_frame(&mut execution_frame, &request_runtime, result)
+    finish_execution_frame(&mut execution_frame, &request_runtime, plan, result)
 }
 
 fn finish_execution_frame(
     frame: &mut ExecutionFrame<'_>,
     runtime: &RequestRuntime,
+    plan: &ExecutionPlan,
     result: Result<StatementOutput, ExecutorError>,
 ) -> Result<StatementOutput, ExecutorError> {
     match result {
-        Ok(output) => {
+        Ok(mut output) => {
+            match &mut output {
+                StatementOutput::Rows(table) => table.declare_result_order(plan),
+                StatementOutput::Written(write) => {
+                    if let Some(table) = &mut write.rows {
+                        table.declare_result_order(plan);
+                    }
+                }
+                StatementOutput::Empty => {}
+            }
             let table = match &output {
                 StatementOutput::Rows(table) => Some(table),
                 StatementOutput::Written(write) => write.rows.as_ref(),

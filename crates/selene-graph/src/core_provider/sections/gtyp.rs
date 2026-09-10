@@ -54,6 +54,11 @@ pub(in crate::core_provider) fn decode_graph_types(
     }
     let rows: Vec<(u32, GraphTypeDef)> = decode_rkyv(rest, "CORE/GTYP")?;
     validate_sorted_unique(&rows, "CORE/GTYP")?;
+    for (_, descriptor) in &rows {
+        descriptor.validate_ref().map_err(|error| {
+            crate::core_provider::invalid_payload(format!("CORE/GTYP invalid graph type: {error}"))
+        })?;
+    }
     Ok(rows)
 }
 

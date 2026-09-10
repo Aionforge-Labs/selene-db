@@ -57,7 +57,7 @@ pub fn analyze(
     registry: &dyn ProcedureRegistry,
     schema: Option<&GraphTypeDef>,
 ) -> Result<AnalyzedStatement, AnalysisError> {
-    let analyzed = bind::bind_statement(stmt.into(), registry, None)?;
+    let analyzed = bind::bind_statement(stmt.into(), registry, None, &Default::default())?;
     if let Some(graph_type) = schema {
         self::schema::validate(&analyzed, graph_type)?;
     }
@@ -75,5 +75,21 @@ pub fn analyze_catalog(
     registry: &dyn ProcedureRegistry,
     environment: catalog::CatalogEnvironment,
 ) -> Result<AnalyzedStatement, AnalysisError> {
-    bind::bind_statement(stmt.into(), registry, Some(environment))
+    bind::bind_statement(
+        stmt.into(),
+        registry,
+        Some(environment),
+        &Default::default(),
+    )
+}
+
+/// Analyze immutable source with explicit request-parameter structural types.
+/// Inline source declarations remain separate and are validated at preflight.
+pub fn analyze_with_parameters(
+    stmt: impl Into<std::sync::Arc<Statement>>,
+    registry: &dyn ProcedureRegistry,
+    environment: Option<catalog::CatalogEnvironment>,
+    parameters: &std::collections::BTreeMap<selene_core::DbString, selene_core::StructuralType>,
+) -> Result<AnalyzedStatement, AnalysisError> {
+    bind::bind_statement(stmt.into(), registry, environment, parameters)
 }

@@ -20,6 +20,7 @@ use crate::{
 };
 
 mod diff;
+mod stored;
 
 pub use diff::{LabelDiff, PropertyDiff};
 

@@ -137,7 +137,7 @@ mod tests {
     use proptest::prelude::*;
     use selene_core::{
         Change, DbString, EdgeId, GraphId, LabelDiff, LabelSet, NodeId, PropertyDiff, PropertyMap,
-        Record, RecordTypeId, RecordTyped, SchemaChange, Value, db_string,
+        Record, SchemaChange, Value, db_string,
     };
 
     use super::*;
@@ -165,8 +165,8 @@ mod tests {
     /// Full-fidelity `Value` generator covering every leaf variant the WAL frame
     /// must round-trip inside a `PropertyMap` (the ledger's coverage-followup #1
     /// surface): all numeric widths, `Decimal`, both string variants, `Bytes`,
-    /// temporals, `Bool`, `Null`, `Uuid`, plus the nested `List` / `Record` /
-    /// `RecordTyped` containers. `prop_recursive` bounds the nesting depth so the
+    /// temporals, `Bool`, `Null`, `Uuid`, plus the nested named `List` / `Record`
+    /// containers. `prop_recursive` bounds the nesting depth so the
     /// generator terminates.
     fn value_strategy() -> impl Strategy<Value = Value> {
         let leaf = prop_oneof![
@@ -191,19 +191,13 @@ mod tests {
         leaf.prop_recursive(3, 16, 4, |inner| {
             prop_oneof![
                 proptest::collection::vec(inner.clone(), 0..4).prop_map(Value::List),
-                proptest::collection::vec(("[a-z]{1,6}", inner.clone()), 0..3).prop_map(|fields| {
+                proptest::collection::btree_map("[a-z]{1,6}", inner, 0..3).prop_map(|fields| {
                     Value::Record(Box::new(Record::Open(
                         fields
                             .into_iter()
                             .map(|(k, v)| (db_string(&format!("payload.f.{k}")).unwrap(), v))
                             .collect(),
                     )))
-                }),
-                proptest::collection::vec(proptest::option::of(inner), 0..3).prop_map(|values| {
-                    Value::RecordTyped(Box::new(RecordTyped {
-                        type_id: RecordTypeId::new(1),
-                        values: values.into_iter().collect(),
-                    }))
                 }),
             ]
         })

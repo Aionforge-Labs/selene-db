@@ -322,11 +322,17 @@ fn gql_type_to_scalar_property_value_type(
         GqlType::DurationYearToMonth => PropertyValueType::DurationYearToMonth,
         GqlType::DurationDayToSecond => PropertyValueType::DurationDayToSecond,
         GqlType::Vector => PropertyValueType::Vector,
-        GqlType::Path => PropertyValueType::Path,
-        GqlType::GraphRef => PropertyValueType::GraphRef,
-        GqlType::NodeRef => PropertyValueType::NodeRef,
-        GqlType::EdgeRef => PropertyValueType::EdgeRef,
-        GqlType::TableRef(_) => PropertyValueType::TableRef,
+        GqlType::Path
+        | GqlType::GraphRef
+        | GqlType::NodeRef
+        | GqlType::EdgeRef
+        | GqlType::TableRef(_) => {
+            return Err(ExecutorError::data_exception(
+                crate::DataExceptionSubclass::InvalidValueType,
+                "references and paths are query-only, not property types (IV011)",
+                crate::SourceSpan::default(),
+            ));
+        }
         GqlType::Null => PropertyValueType::Null,
         GqlType::Any
         | GqlType::AnyProperty

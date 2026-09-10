@@ -10,8 +10,8 @@ use crate::{
 
 use super::{
     duration::{duration_add_sub, duration_mul_div, temporal_duration_add_sub},
-    ensure_same_comparable_family, expect_boolean, expect_comparable, expect_concat_operand,
-    expect_numeric, expect_string, is_byte_string, is_character_string,
+    expect_boolean, expect_concat_operand, expect_numeric, expect_string, is_byte_string,
+    is_character_string,
     list::list_concat_type,
     meet_gql_types,
     numeric::numeric_promotion,
@@ -48,7 +48,7 @@ pub(crate) fn binary(
             AnalyzedType::Dynamic => AnalyzedType::Dynamic,
             AnalyzedType::Resolved(_) => AnalyzedType::Resolved(GqlType::Float),
         }),
-        BinaryOp::Eq | BinaryOp::Ne => Ok(AnalyzedType::Resolved(GqlType::Boolean)),
+        BinaryOp::Eq | BinaryOp::Ne => comparison(op, lhs, lhs_span, rhs, rhs_span),
         BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
             comparison(op, lhs, lhs_span, rhs, rhs_span)
         }
@@ -101,31 +101,43 @@ fn comparison(
     rhs: &AnalyzedType,
     rhs_span: SourceSpan,
 ) -> Result<AnalyzedType, AnalysisError> {
-    expect_comparable(
-        lhs,
-        lhs_span,
-        TypeMismatchContext::BinaryComparison {
-            op,
-            side: Side::Lhs,
-        },
-    )?;
-    expect_comparable(
-        rhs,
-        rhs_span,
-        TypeMismatchContext::BinaryComparison {
-            op,
-            side: Side::Rhs,
-        },
-    )?;
-    ensure_same_comparable_family(
-        lhs,
-        rhs,
-        rhs_span,
-        TypeMismatchContext::BinaryComparison {
-            op,
-            side: Side::Rhs,
-        },
-    )?;
+    let mode = if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+        selene_core::ComparisonMode::PredicateEquality
+    } else {
+        selene_core::ComparisonMode::Ordering
+    };
+    for (ty, span, side) in [(lhs, lhs_span, Side::Lhs), (rhs, rhs_span, Side::Rhs)] {
+        if let AnalyzedType::Resolved(found) = ty
+            && !crate::normalize_value_type(found).is_ok_and(|ty| ty.comparable_with(&ty, mode))
+        {
+            return Err(type_mismatch(
+                TypeMismatchContext::BinaryComparison { op, side },
+                ExpectedType::Comparable,
+                found.clone(),
+                span,
+            ));
+        }
+    }
+    if let (AnalyzedType::Resolved(lt), AnalyzedType::Resolved(rt)) = (lhs, rhs)
+        && let (Ok(lt), Ok(rt)) = (
+            crate::normalize_value_type(lt),
+            crate::normalize_value_type(rt),
+        )
+        && !lt.comparable_with(&rt, mode)
+    {
+        let AnalyzedType::Resolved(found) = rhs else {
+            unreachable!()
+        };
+        return Err(type_mismatch(
+            TypeMismatchContext::BinaryComparison {
+                op,
+                side: Side::Rhs,
+            },
+            ExpectedType::Comparable,
+            found.clone(),
+            rhs_span,
+        ));
+    }
     Ok(AnalyzedType::Resolved(GqlType::Boolean))
 }
 

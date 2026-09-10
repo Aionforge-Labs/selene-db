@@ -38,18 +38,7 @@ pub struct PropertyDefaultRecordField {
 }
 
 /// Persistable default-value descriptor for closed graph property declarations.
-#[derive(
-    Clone,
-    Debug,
-    Deserialize,
-    Eq,
-    Hash,
-    PartialEq,
-    rkyv::Archive,
-    rkyv::Deserialize,
-    rkyv::Serialize,
-    Serialize,
-)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
 #[rkyv(
     bytecheck(bounds(__C: rkyv::validation::ArchiveContext)),
     deserialize_bounds(__D::Error: rkyv::rancor::Source),
@@ -112,6 +101,28 @@ impl PropertyDefaultValue {
     /// finite, or if a persisted decimal/UUID/JSON/temporal default no longer
     /// parses as a valid value.
     pub fn to_value(&self) -> GraphResult<Value> {
+        let mut pending = vec![(self, 1)];
+        while let Some((value, depth)) = pending.pop() {
+            if depth > selene_core::MAX_STORED_VALUE_DEPTH {
+                return Err(selene_core::CoreError::from(
+                    selene_core::StoredValueError::DepthLimit,
+                )
+                .into());
+            }
+            match value {
+                Self::List(values) => {
+                    pending.extend(values.iter().map(|value| (value.as_ref(), depth + 1)))
+                }
+                Self::Record(fields) => {
+                    pending.extend(fields.iter().map(|field| (field.value.as_ref(), depth + 1)))
+                }
+                _ => {}
+            }
+        }
+        self.materialize()
+    }
+
+    fn materialize(&self) -> GraphResult<Value> {
         Ok(match self {
             Self::Null => Value::Null,
             Self::Boolean(value) => Value::Bool(*value),
@@ -182,7 +193,7 @@ impl PropertyDefaultValue {
             Self::List(values) => Value::List(
                 values
                     .iter()
-                    .map(|value| value.to_value())
+                    .map(|value| value.materialize())
                     .collect::<GraphResult<Vec<_>>>()?,
             ),
             Self::Record(fields) => {
@@ -197,7 +208,7 @@ impl PropertyDefaultValue {
                             ),
                         });
                     }
-                    values.push((field.name.clone(), field.value.to_value()?));
+                    values.push((field.name.clone(), field.value.materialize()?));
                 }
                 Value::Record(Box::new(Record::Open(values)))
             }
@@ -232,6 +243,11 @@ impl PropertyDefaultValue {
     /// Convert a runtime value into a persistable default descriptor.
     #[must_use]
     pub fn from_value(value: &Value) -> Option<Self> {
+        selene_core::StoredValue::validate(value).ok()?;
+        Self::from_validated_value(value)
+    }
+
+    fn from_validated_value(value: &Value) -> Option<Self> {
         match value {
             Value::Null => Some(Self::Null),
             Value::Bool(value) => Some(Self::Boolean(*value)),
@@ -262,7 +278,7 @@ impl PropertyDefaultValue {
             Value::Bytes(value) => Some(Self::Bytes(value.to_vec())),
             Value::List(values) => values
                 .iter()
-                .map(Self::from_value)
+                .map(Self::from_validated_value)
                 .map(|value| value.map(Box::new))
                 .collect::<Option<Vec<_>>>()
                 .map(Self::List),
@@ -277,7 +293,7 @@ impl PropertyDefaultValue {
                             }
                             Some(PropertyDefaultRecordField {
                                 name: name.clone(),
-                                value: Box::new(Self::from_value(value)?),
+                                value: Box::new(Self::from_validated_value(value)?),
                             })
                         })
                         .collect::<Option<Vec<_>>>()

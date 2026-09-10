@@ -23,6 +23,75 @@ use selene_core::Value;
 
 use super::{compare_non_null, equal_non_null, gql_equal_non_null};
 
+#[test]
+fn structural_list_predicate_equality_propagates_unknown() {
+    let nulls = Value::List(vec![Value::Null]);
+    assert_eq!(gql_equal_non_null(&nulls, &nulls), None);
+    assert!(equal_non_null(&nulls, &nulls));
+    let nested = Value::List(vec![Value::List(vec![Value::Float(f64::NAN)])]);
+    assert_eq!(gql_equal_non_null(&nested, &nested), None);
+    assert_eq!(
+        gql_equal_non_null(
+            &Value::List(vec![Value::Null, Value::Int(1)]),
+            &Value::List(vec![Value::Null, Value::Int(2)]),
+        ),
+        Some(false),
+    );
+}
+
+#[test]
+fn structural_numeric_order_compares_values_not_lossy_casts() {
+    use std::cmp::Ordering::{Greater, Less};
+    // Independently exact values: integer successors of binary powers, the
+    // smallest positive subnormal, and decimal values bracketing binary 0.1.
+    let cases = [
+        (
+            Value::Int(9_007_199_254_740_993),
+            Value::Float(9_007_199_254_740_992.0),
+            Greater,
+        ),
+        (
+            Value::Int128(i128::MAX),
+            Value::Float(2_f64.powi(127)),
+            Less,
+        ),
+        (
+            Value::Uint128(u128::MAX),
+            Value::Float(2_f64.powi(128)),
+            Less,
+        ),
+        (
+            Value::Decimal(rust_decimal::Decimal::ZERO),
+            Value::Float(f64::from_bits(1)),
+            Less,
+        ),
+        (
+            Value::Decimal("0.1".parse().unwrap()),
+            Value::Float(0.1),
+            Less,
+        ),
+        (
+            Value::Decimal("0.1000000000000000055511151231".parse().unwrap()),
+            Value::Float(0.1),
+            Less,
+        ),
+        (
+            Value::Decimal("0.1000000000000000055511151232".parse().unwrap()),
+            Value::Float(0.1),
+            Greater,
+        ),
+    ];
+    for (lhs, rhs, expected) in cases {
+        assert_eq!(
+            compare_non_null(&lhs, &rhs),
+            Some(expected),
+            "{lhs:?} vs {rhs:?}"
+        );
+        assert_eq!(compare_non_null(&rhs, &lhs), Some(expected.reverse()));
+        assert!(!equal_non_null(&lhs, &rhs));
+    }
+}
+
 /// Every ordered pair of *distinct* variants from the census, minus NULL.
 ///
 /// NULL is excluded because the functions under test are the non-null halves

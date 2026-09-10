@@ -7,7 +7,8 @@
 use std::sync::{Arc, atomic::Ordering, mpsc};
 use std::time::Duration;
 
-use selene_core::{NodeId, Value};
+use crate::Value;
+use selene_core::NodeId;
 
 use super::{fixture, ids};
 use crate::{
@@ -105,7 +106,8 @@ fn catalog_publication_during_implicit_write_rolls_back_before_one_fresh_attempt
         assert!(session.context().current_request().is_none());
 
         // Assert the intermediate rollback before allowing any fresh write: no
-        // partial graph publication, ID consumption or lost winning catalog state.
+        // partial graph publication or lost winning catalog state. The detached
+        // write's allocated node identity remains consumed after rollback.
         let after = inner.state.load_full();
         assert!(Arc::ptr_eq(&winner, &after));
         assert_eq!(after.high_water, winner.high_water);
@@ -146,7 +148,14 @@ fn catalog_publication_during_implicit_write_rolls_back_before_one_fresh_attempt
                 .load(Ordering::Relaxed),
             constructions + 1
         );
-        assert_both_effects_once(&database, &graph_path, &created_path, &session, &before);
+        assert_both_effects_once(
+            &database,
+            &graph_path,
+            &created_path,
+            &session,
+            &before,
+            NodeId::new(2),
+        );
     });
 }
 
@@ -190,7 +199,14 @@ fn non_overlapping_writers(catalog_first: bool) {
         catalog.snapshot().resolve_schema(&created_path).unwrap(),
         created
     );
-    assert_both_effects_once(&database, &graph_path, &created_path, &session, &before);
+    assert_both_effects_once(
+        &database,
+        &graph_path,
+        &created_path,
+        &session,
+        &before,
+        NodeId::new(1),
+    );
 }
 
 fn assert_empty_graph(state: &DatabaseState, graph_id: selene_catalog::GraphId) {
@@ -209,6 +225,7 @@ fn assert_both_effects_once(
     created_path: &SchemaPath,
     session: &Session,
     before: &DatabaseState,
+    expected_node: NodeId,
 ) {
     let (_, graph_id) = ids(database, graph_path);
     let catalog = database.catalog();
@@ -235,9 +252,12 @@ fn assert_both_effects_once(
     assert_eq!(graph.node_count(), 1);
     assert_eq!(graph.edge_count(), 0);
     assert_eq!(graph.meta.generation, 1);
-    assert_eq!(graph.meta.next_node_id, 2);
+    assert_eq!(graph.meta.next_node_id, expected_node.get() + 1);
     assert_eq!(graph.meta.next_edge_id, 1);
-    assert!(graph.is_node_alive(NodeId::new(1)));
+    assert!(graph.is_node_alive(expected_node));
+    if expected_node.get() > 1 {
+        assert!(!graph.is_node_alive(NodeId::new(1)));
+    }
     assert_eq!(
         session.context().transaction_slot(),
         TransactionSlotState::Committed
@@ -259,7 +279,10 @@ fn assert_both_effects_once(
     assert_eq!(result.rows().len(), 1);
     assert_eq!(
         result.rows()[0].values(),
-        &[Value::NodeRef(NodeId::new(1)), Value::Int(7)]
+        &[
+            Value::NodeRef(session.node_reference(expected_node).unwrap()),
+            Value::Int(7)
+        ]
     );
     assert!(Arc::ptr_eq(&state, &catalog.inner.state.load_full()));
 }

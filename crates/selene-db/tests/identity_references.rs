@@ -44,6 +44,10 @@ fn assert_public_handle<T: Copy + Eq + Hash>(value: T) -> T {
     value
 }
 
+fn assert_deleted_reference(error: Error) {
+    assert_eq!(error.gqlstatus().unwrap().as_str(), "22G11");
+}
+
 #[test]
 fn identities_are_instance_scoped_and_references_ignore_generation() {
     let database = database_with_graphs("identity_live", &["main"]);
@@ -137,19 +141,10 @@ fn deleted_dropped_and_recreated_references_never_retarget() {
     session
         .execute("MATCH ()-[e:LINK]->() DELETE e FINISH")
         .unwrap();
-    assert_invalid_reference(
-        session.resolve_edge_reference(edge).unwrap_err(),
-        "no longer alive",
-    );
+    assert_deleted_reference(session.resolve_edge_reference(edge).unwrap_err());
     session.execute("MATCH (n) DELETE n FINISH").unwrap();
-    assert_invalid_reference(
-        session.resolve_node_reference(node).unwrap_err(),
-        "no longer alive",
-    );
-    assert_invalid_reference(
-        session.node_reference(NodeId::new(999)).unwrap_err(),
-        "absent",
-    );
+    assert_deleted_reference(session.resolve_node_reference(node).unwrap_err());
+    assert_deleted_reference(session.node_reference(NodeId::new(999)).unwrap_err());
 
     database
         .catalog()
@@ -182,26 +177,20 @@ fn deleted_dropped_and_recreated_references_never_retarget() {
 }
 
 #[test]
-fn legacy_value_references_require_explicit_validated_facade_issuance() {
+fn value_references_carry_validated_facade_ownership() {
     let database = database_with_graphs("identity_bridge", &["main"]);
     let session = database
         .session(&graph_path("identity_bridge", "main"))
         .unwrap();
     session.execute("INSERT (:Bridge) FINISH").unwrap();
 
-    let lower = Value::NodeRef(NodeId::new(1));
-    let Value::NodeRef(stable_id) = lower else {
+    let value = Value::NodeRef(session.node_reference(NodeId::new(1)).unwrap());
+    let Value::NodeRef(facade) = value else {
         unreachable!()
     };
-    let facade = session.node_reference(stable_id).unwrap();
-    assert_eq!(facade.node_id(), stable_id);
+    assert_eq!(facade.node_id(), NodeId::new(1));
     assert_eq!(facade.database_id(), database.id());
-
-    let stale_lower = Value::NodeRef(NodeId::new(99));
-    let Value::NodeRef(stale_id) = stale_lower else {
-        unreachable!()
-    };
-    assert_invalid_reference(session.node_reference(stale_id).unwrap_err(), "absent");
+    assert_deleted_reference(session.node_reference(NodeId::new(99)).unwrap_err());
 }
 
 #[test]

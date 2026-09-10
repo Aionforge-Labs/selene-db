@@ -585,6 +585,88 @@ also registers the Rayon rows when WGPU adapter discovery fails, so local Metal
 availability issues do not hide the CPU-parallel baseline. It is not a
 production accelerator API.
 
+### Exact numeric grouping keys
+
+`value_clone` also registers `core_numeric_keys/{construct,lookup,compare_mixed}`
+at 1 and 1,024 values. The larger fixture cycles through all seven numeric
+representations; peers express the same independently known integer through a
+different representation. Setup checks equality before measurement. Construction
+discards inline keys; lookup copies retained keys; comparison includes construction
+of both operands. These are numeric-key rows, not structural descriptor or
+runtime-to-stored conversion measurements.
+
+Native aarch64 macOS, Rust 1.97.1, optimized bench profile, mimalloc, quick
+Criterion configuration (10 samples, 100 ms warmup, 500 ms measurement),
+2026-09-10:
+
+```bash
+scripts/run-benches.sh --profile quick --bench value_clone --filter core_numeric_keys
+scripts/run-benches.sh --profile quick --bench expression_eval --filter predicate/range
+```
+
+| Row | Reported timing interval |
+|---|---:|
+| `core_numeric_keys/construct/1` | 1.9473–2.0504 ns |
+| `core_numeric_keys/lookup/1` | 0.78745–0.81654 ns |
+| `core_numeric_keys/compare_mixed/1` | 5.4853–5.6161 ns |
+| `core_numeric_keys/construct/1024` | 2.1153–2.5707 µs |
+| `core_numeric_keys/lookup/1024` | 284.06–298.54 ns |
+| `core_numeric_keys/compare_mixed/1024` | 6.2225–6.4993 µs |
+
+The benchmark reports `Value = 32 B`, `NumericKey = 32 B`, and retained key
+vector capacity of 32/32,768 B. This is layout/capacity measurement, not an
+allocator event count or RSS measurement. Numeric keys own no heap storage;
+the vectors are fixture setup outside the timed operation.
+
+The unchanged timed scalar range fixture measured 441.18–445.17 ns before
+the numeric-kernel change and 434.35–453.30 ns afterward. The latter run adds
+an untimed `true` result guard. Criterion reported no significant change
+(`p = 0.31`); no speedup is claimed. A competing workspace Cargo invocation
+was observed between runs and had exited before the latter run. These short
+local observations are not an exclusive-host performance qualification.
+
+### F03-PR02 owned structural descriptors
+
+`expression_eval` registers `gql_structural_types/{normalize,lower}/{1,32}`
+for closed records whose fields are non-null integer lists, plus
+`gql_structural_types/borrowed_lookup` for an already analyzed expression.
+Conversion includes output allocation and destruction; borrowed lookup excludes
+parsing, analysis and construction. No global descriptor pool is used.
+
+Native aarch64 macOS, Rust 1.97.1, optimized bench profile, mimalloc, quick
+Criterion configuration (10 samples, 100 ms warmup, 500 ms measurement),
+2026-09-10:
+
+```bash
+scripts/run-benches.sh --bench expression_eval --compile-only
+scripts/run-benches.sh --profile quick --bench expression_eval --filter 'gql_structural_types|predicate/range'
+scripts/run-benches.sh --profile quick --bench expression_eval --filter 'predicate/range'
+```
+
+| Row | Reported timing interval |
+|---|---:|
+| `gql_structural_types/normalize/1` | 70.875–73.205 ns |
+| `gql_structural_types/lower/1` | 21.197–21.827 ns |
+| `gql_structural_types/normalize/32` | 1.4606–1.4988 µs |
+| `gql_structural_types/lower/32` | 404.23–408.89 ns |
+| `gql_structural_types/borrowed_lookup` | 404.42–418.43 ps |
+| `gql_expression_eval/predicate/range` | 471.44–494.43 ns |
+
+Retained descriptor payload lower bounds are 136 B for one field and 3,112 B for
+32 fields. They include the root, named-field slice and boxed list elements,
+excluding name storage, Arc headers, allocator metadata and source/planner
+carriers. These are structural layout measurements, not allocator event counts
+or RSS. The sub-nanosecond lookup measures a warm borrowed slot only.
+
+The final scalar range row includes runtime comparability validation shared with
+UNIQUE checks. Criterion found no significant change from the preceding
+same-PR sample (487.13–510.47 ns): estimated −2.00%, interval −4.49–+0.51%,
+`p = 0.16`. The preceding sample measured a 10.99% regression against the
+retained earlier same-host baseline (interval 7.81–14.29%, `p < 0.05`), so
+comparison overhead remains a known correctness cost. These are local quick
+runs without exclusive-host qualification. No build ran concurrently with the
+measurements.
+
 | Bench | Median | Notes |
 |---|---:|---|
 | `core_value_clone/vec_mixed_1024` | 4.41 µs | Clone a 1024-element mixed-variant `Vec<Value>`. Quick local A/B after `DbString` moved to shared storage: 4.63 µs → 4.41 µs. |

@@ -1,8 +1,10 @@
 //! Unique property validation helpers.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use selene_core::{Change, DbString, EdgeId, NodeId, PropertyMap, Value};
+use selene_core::{
+    Change, ComparisonMode, DbString, EdgeId, NodeId, PropertyMap, Value, ValueComparisonDomain,
+};
 
 use super::{EntityId, TypeViolation, validate_edge_state, validate_node_state};
 use crate::graph::SeleneGraph;
@@ -37,8 +39,8 @@ pub(crate) fn validate_unique_property_changes(
     if candidates.is_empty() {
         return Ok(());
     }
-    let (candidate_by_key, impacted_domains) = index_unique_candidates(&candidates)?;
-    validate_candidate_conflicts(graph, type_def, &candidate_by_key, &impacted_domains)
+    let (candidate_by_key, mut impacted_domains) = index_unique_candidates(&candidates)?;
+    validate_candidate_conflicts(graph, type_def, &candidate_by_key, &mut impacted_domains)
 }
 
 pub(crate) fn validate_unique_property_state(
@@ -50,6 +52,7 @@ pub(crate) fn validate_unique_property_state(
     }
 
     let mut seen = HashMap::new();
+    let mut domains = HashMap::new();
     let nodes = graph
         .live_node_candidates()
         .expect("alive nodes have consistent typed stable-ID mappings");
@@ -65,6 +68,7 @@ pub(crate) fn validate_unique_property_state(
             &node_type.properties,
             properties,
             &mut seen,
+            &mut domains,
         )?;
     }
     let edges = graph
@@ -81,16 +85,17 @@ pub(crate) fn validate_unique_property_state(
             &edge_type.properties,
             properties,
             &mut seen,
+            &mut domains,
         )?;
     }
     Ok(())
 }
 
-fn collect_changed_unique_candidates(
+fn collect_changed_unique_candidates<'g>(
     changes: &[Change],
-    graph: &SeleneGraph,
+    graph: &'g SeleneGraph,
     type_def: &GraphTypeDef,
-) -> Result<Vec<UniqueCandidate>, TypeViolation> {
+) -> Result<Vec<UniqueCandidate<'g>>, TypeViolation> {
     if !graph_type_has_unique_properties(type_def) {
         return Ok(Vec::new());
     }
@@ -154,20 +159,21 @@ fn collect_changed_unique_candidates(
     Ok(candidates)
 }
 
-fn collect_node_candidates(
+fn collect_node_candidates<'g>(
     id: NodeId,
-    graph: &SeleneGraph,
+    graph: &'g SeleneGraph,
     type_def: &GraphTypeDef,
     selection: UniqueSelection<'_>,
-    candidates: &mut Vec<UniqueCandidate>,
+    candidates: &mut Vec<UniqueCandidate<'g>>,
 ) -> Result<(), TypeViolation> {
     if !graph.is_node_alive(id) {
         return Ok(());
     }
     let (node_type_index, _) = validate_node_state(id, graph, type_def)?;
     let node_type = &type_def.node_types[node_type_index as usize];
-    let empty_props = PropertyMap::new();
-    let properties = graph.node_properties(id).unwrap_or(&empty_props);
+    let Some(properties) = graph.node_properties(id) else {
+        return Ok(());
+    };
     collect_entity_candidates(
         EntityId::Node(id),
         UniqueEntityKind::Node,
@@ -180,19 +186,20 @@ fn collect_node_candidates(
     Ok(())
 }
 
-fn collect_edge_candidates(
+fn collect_edge_candidates<'g>(
     id: EdgeId,
-    graph: &SeleneGraph,
+    graph: &'g SeleneGraph,
     type_def: &GraphTypeDef,
     selection: UniqueSelection<'_>,
-    candidates: &mut Vec<UniqueCandidate>,
+    candidates: &mut Vec<UniqueCandidate<'g>>,
 ) -> Result<(), TypeViolation> {
     if !graph.is_edge_alive(id) {
         return Ok(());
     }
     let (edge_type, _) = validate_edge_state(id, graph, type_def)?;
-    let empty_props = PropertyMap::new();
-    let properties = graph.edge_properties(id).unwrap_or(&empty_props);
+    let Some(properties) = graph.edge_properties(id) else {
+        return Ok(());
+    };
     collect_entity_candidates(
         EntityId::Edge(id),
         UniqueEntityKind::Edge,
@@ -205,14 +212,14 @@ fn collect_edge_candidates(
     Ok(())
 }
 
-fn collect_entity_candidates(
+fn collect_entity_candidates<'g>(
     entity_id: EntityId,
     entity_kind: UniqueEntityKind,
     declared_in: DbString,
     declarations: &[PropertyTypeDef],
-    properties: &PropertyMap,
+    properties: &'g PropertyMap,
     selection: UniqueSelection<'_>,
-    candidates: &mut Vec<UniqueCandidate>,
+    candidates: &mut Vec<UniqueCandidate<'g>>,
 ) {
     for declaration in declarations
         .iter()
@@ -226,6 +233,7 @@ fn collect_entity_candidates(
         }
         candidates.push(UniqueCandidate {
             entity_id,
+            value,
             key: UniquePropertyKey {
                 entity_kind,
                 declared_in: declared_in.clone(),
@@ -236,19 +244,24 @@ fn collect_entity_candidates(
     }
 }
 
+type IndexedUniqueCandidates = (
+    HashMap<UniquePropertyKey, EntityId>,
+    HashMap<UniquePropertyDomain, ValueComparisonDomain>,
+);
+
 fn index_unique_candidates(
-    candidates: &[UniqueCandidate],
-) -> Result<
-    (
-        HashMap<UniquePropertyKey, EntityId>,
-        HashSet<UniquePropertyDomain>,
-    ),
-    TypeViolation,
-> {
+    candidates: &[UniqueCandidate<'_>],
+) -> Result<IndexedUniqueCandidates, TypeViolation> {
     let mut candidate_by_key = HashMap::with_capacity(candidates.len());
-    let mut impacted_domains = HashSet::new();
+    let mut impacted_domains = HashMap::new();
     for candidate in candidates {
-        impacted_domains.insert(candidate.key.domain());
+        observe_unique_value(
+            impacted_domains.entry(candidate.key.domain()).or_default(),
+            candidate.entity_id,
+            &candidate.key.property,
+            &candidate.key.declared_in,
+            candidate.value,
+        )?;
         if let Some(conflicting_entity_id) =
             candidate_by_key.insert(candidate.key.clone(), candidate.entity_id)
         {
@@ -270,7 +283,7 @@ fn validate_candidate_conflicts(
     graph: &SeleneGraph,
     type_def: &GraphTypeDef,
     candidate_by_key: &HashMap<UniquePropertyKey, EntityId>,
-    impacted_domains: &HashSet<UniquePropertyDomain>,
+    impacted_domains: &mut HashMap<UniquePropertyDomain, ValueComparisonDomain>,
 ) -> Result<(), TypeViolation> {
     let nodes = graph
         .live_node_candidates()
@@ -317,7 +330,7 @@ fn validate_entity_candidate_conflicts(
     declarations: &[PropertyTypeDef],
     properties: &PropertyMap,
     candidate_by_key: &HashMap<UniquePropertyKey, EntityId>,
-    impacted_domains: &HashSet<UniquePropertyDomain>,
+    impacted_domains: &mut HashMap<UniquePropertyDomain, ValueComparisonDomain>,
 ) -> Result<(), TypeViolation> {
     for declaration in declarations.iter().filter(|property| property.unique) {
         let domain = UniquePropertyDomain {
@@ -325,15 +338,22 @@ fn validate_entity_candidate_conflicts(
             declared_in: declared_in.clone(),
             property: declaration.name.clone(),
         };
-        if !impacted_domains.contains(&domain) {
+        let Some(observed) = impacted_domains.get_mut(&domain) else {
             continue;
-        }
+        };
         let Some(value) = properties.get(&declaration.name) else {
             continue;
         };
         if matches!(value, Value::Null) {
             continue;
         }
+        observe_unique_value(
+            observed,
+            entity_id,
+            &domain.property,
+            &domain.declared_in,
+            value,
+        )?;
         let key = UniquePropertyKey {
             value: UniqueValueKey::new(value),
             entity_kind: domain.entity_kind,
@@ -354,10 +374,11 @@ fn validate_entity_candidate_conflicts(
     Ok(())
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct UniqueCandidate {
+#[derive(Clone, Debug)]
+struct UniqueCandidate<'g> {
     entity_id: EntityId,
     key: UniquePropertyKey,
+    value: &'g Value,
 }
 
 #[derive(Clone, Copy)]
@@ -427,6 +448,7 @@ fn record_unique_properties(
     declarations: &[PropertyTypeDef],
     properties: &PropertyMap,
     seen: &mut HashMap<UniquePropertyKey, EntityId>,
+    domains: &mut HashMap<UniquePropertyDomain, ValueComparisonDomain>,
 ) -> Result<(), TypeViolation> {
     for declaration in declarations.iter().filter(|property| property.unique) {
         let Some(value) = properties.get(&declaration.name) else {
@@ -441,6 +463,13 @@ fn record_unique_properties(
             property: declaration.name.clone(),
             value: UniqueValueKey::new(value),
         };
+        observe_unique_value(
+            domains.entry(key.domain()).or_default(),
+            entity_id,
+            &key.property,
+            &key.declared_in,
+            value,
+        )?;
         if let Some(conflicting_entity_id) = seen.get(&key).copied() {
             return Err(TypeViolation::UniquePropertyDuplicate {
                 entity_id,
@@ -454,38 +483,49 @@ fn record_unique_properties(
     Ok(())
 }
 
+fn observe_unique_value(
+    domain: &mut ValueComparisonDomain,
+    entity_id: EntityId,
+    property: &DbString,
+    declared_in: &DbString,
+    value: &Value,
+) -> Result<(), TypeViolation> {
+    domain
+        .observe(value, ComparisonMode::Distinctness)
+        .map_err(|source| TypeViolation::UniquePropertyComparison {
+            entity_id,
+            property: property.clone(),
+            declared_in: declared_in.clone(),
+            source,
+        })
+}
+
 fn write_value_key(value: &Value, out: &mut Vec<u8>) {
+    if let Some(number) = selene_core::NumericKey::of(value) {
+        out.push(2);
+        number.append_grouping_key(out);
+        return;
+    }
     match value {
+        Value::ZonedDateTime(instant) | Value::ZonedTime(instant) => {
+            // Runtime temporal equality is timestamp identity. Zone spelling
+            // remains in the value's legacy serialization, not in this key.
+            out.push(if matches!(value, Value::ZonedDateTime(_)) {
+                15
+            } else {
+                16
+            });
+            out.extend_from_slice(&instant.timestamp().as_nanosecond().to_le_bytes());
+        }
+        Value::Duration(value) => {
+            out.push(14);
+            let (months, nanos) = selene_core::duration_order_key(value);
+            out.extend_from_slice(&months.to_le_bytes());
+            out.extend_from_slice(&nanos.to_le_bytes());
+        }
         Value::Bool(value) => {
             out.push(1);
             out.push(u8::from(*value));
-        }
-        Value::Int(value) => {
-            out.push(2);
-            out.extend_from_slice(&value.to_le_bytes());
-        }
-        Value::Uint(value) => {
-            out.push(3);
-            out.extend_from_slice(&value.to_le_bytes());
-        }
-        Value::Int128(value) => {
-            out.push(4);
-            out.extend_from_slice(&value.to_le_bytes());
-        }
-        Value::Uint128(value) => {
-            out.push(5);
-            out.extend_from_slice(&value.to_le_bytes());
-        }
-        Value::Float(value) => {
-            out.push(6);
-            out.extend_from_slice(&canonical_f64_bits(*value).to_le_bytes());
-        }
-        Value::Float32(value) => {
-            out.push(7);
-            out.extend_from_slice(&canonical_f32_bits(*value).to_le_bytes());
-        }
-        Value::Decimal(value) => {
-            write_variable_key(8, value.normalize().to_string().as_bytes(), out)
         }
         Value::String(value) => write_variable_key(9, value.as_str().as_bytes(), out),
         Value::Bytes(value) => write_variable_key(10, value, out),
@@ -501,6 +541,8 @@ fn write_value_key(value: &Value, out: &mut Vec<u8>) {
             match record.as_ref() {
                 selene_core::Record::Open(fields) => {
                     write_len(fields.len(), out);
+                    let mut fields: Vec<_> = fields.iter().collect();
+                    fields.sort_by(|a, b| a.0.cmp(&b.0));
                     for (name, value) in fields {
                         write_variable_key(0, name.as_str().as_bytes(), out);
                         write_value_key(value, out);
@@ -552,16 +594,6 @@ fn write_fallback_key<T: serde::Serialize>(value: T, out: &mut Vec<u8>) {
     let bytes = postcard::to_allocvec(&value).expect("Value uniqueness key payload serializes");
     write_len(bytes.len(), out);
     out.extend_from_slice(&bytes);
-}
-
-fn canonical_f64_bits(value: f64) -> u64 {
-    if value.is_nan() {
-        f64::NAN.to_bits()
-    } else if value == 0.0 {
-        0.0_f64.to_bits()
-    } else {
-        value.to_bits()
-    }
 }
 
 fn canonical_f32_bits(value: f32) -> u32 {

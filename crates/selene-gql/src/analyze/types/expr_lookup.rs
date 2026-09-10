@@ -21,16 +21,22 @@ pub struct ExprIdLookup {
 }
 
 impl ExprIdLookup {
-    pub(crate) fn set_parameter_types(&mut self, parameters: &[crate::ParameterUse]) {
-        self.parameter_types = parameters
+    pub(crate) fn set_parameter_types(
+        &mut self,
+        parameters: &[crate::ParameterUse],
+        supplied: &BTreeMap<selene_core::DbString, selene_core::StructuralType>,
+    ) {
+        self.parameter_types = supplied
             .iter()
-            .filter_map(|parameter| {
+            .map(|(name, ty)| (name.clone(), crate::lower_value_type(ty)))
+            .collect();
+        self.parameter_types
+            .extend(parameters.iter().filter_map(|parameter| {
                 parameter
                     .declared_type
                     .clone()
                     .map(|ty| (parameter.name.clone(), ty))
-            })
-            .collect();
+            }));
     }
 
     /// Effective statement-wide declaration, separate from source spelling.

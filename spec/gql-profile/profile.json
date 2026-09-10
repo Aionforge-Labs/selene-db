@@ -687,7 +687,7 @@
     },
     {
       "id": "GA04",
-      "name": "Binding table function value expressions",
+      "name": "Universal comparison",
       "runtime_support": "referenced",
       "claim_state": "unsupported",
       "unsupported_rationale": "",
@@ -731,7 +731,7 @@
     },
     {
       "id": "GA09",
-      "name": "Binding table function WHERE clause",
+      "name": "Comparison of paths",
       "runtime_support": "referenced",
       "claim_state": "unsupported",
       "unsupported_rationale": "",
@@ -2379,7 +2379,7 @@
     },
     {
       "id": "GV70",
-      "name": "Path type",
+      "name": "Immaterial value types",
       "runtime_support": "referenced",
       "claim_state": "unsupported",
       "unsupported_rationale": "",
@@ -2390,7 +2390,7 @@
     },
     {
       "id": "GV71",
-      "name": "Open path types",
+      "name": "Immaterial value types: null type support",
       "runtime_support": "referenced",
       "claim_state": "unsupported",
       "unsupported_rationale": "",
@@ -2401,7 +2401,7 @@
     },
     {
       "id": "GV72",
-      "name": "Closed path types",
+      "name": "Immaterial value types: empty type support",
       "runtime_support": "referenced",
       "claim_state": "unsupported",
       "unsupported_rationale": "",
@@ -5065,16 +5065,23 @@
       "id": "IV002",
       "topic": "Otherwise-unspecified essential inequality",
       "decision": {
-        "disposition": "pending",
-        "owner": "M05-PR03",
-        "reason": "The structural comparison matrix must close every essentially comparable pairing."
+        "disposition": "selected",
+        "value": {
+          "type": "identifier",
+          "value": "lexicographic_structural_and_stable_reference_order"
+        },
+        "rationale": "Comparable lists use lexicographic element order; record values use canonical exact field-name order; same-domain references use stable IDs. Paths compare path-element lists. Nested sort nulls are high; NaNs follow IA025. Three-valued predicates and grouping not-distinct are separate.",
+        "stability": "provisional",
+        "visibility": "public"
       },
       "runtime_order": 87,
       "clause_anchors": [
         "CLAUSE-ANNEX-B"
       ],
       "evidence": [
-        "EVID-PLAN-M05-PR03"
+        "EVID-STRUCTURAL-OPERATIONS",
+        "EVID-STRUCTURAL-TYPES",
+        "EVID-VALUE-COMPARE"
       ],
       "applicability": "APP-ALWAYS"
     },
@@ -5117,16 +5124,22 @@
       "id": "IV008",
       "topic": "Value type normal forms",
       "decision": {
-        "disposition": "pending",
-        "owner": "M05-PR03",
-        "reason": "Structural type descriptors will define one normal form for every supported value type."
+        "disposition": "selected",
+        "value": {
+          "type": "identifier",
+          "value": "owned_normalized_structural_type"
+        },
+        "rationale": "StructuralType normalizes nullability, scalar envelopes, list elements and bounds, sorted exact record field names, and flattened deduplicated closed unions. Descriptors own their data and share record fields without global interning or durable arena IDs. Unsupported source types fail closed.",
+        "stability": "provisional",
+        "visibility": "public"
       },
       "runtime_order": 89,
       "clause_anchors": [
         "CLAUSE-ANNEX-B"
       ],
       "evidence": [
-        "EVID-PLAN-M05-PR03"
+        "EVID-STRUCTURAL-INVENTORY",
+        "EVID-STRUCTURAL-TYPES"
       ],
       "applicability": "APP-ALWAYS"
     },
@@ -5134,18 +5147,17 @@
       "id": "IV010",
       "topic": "Universal comparison result",
       "decision": {
-        "disposition": "pending",
-        "owner": "M05-PR03",
-        "reason": "Predicate and sort comparison currently have different fallback domains and need one reviewed rule."
+        "disposition": "not_applicable",
+        "reason": "Universal comparison GA04 is unsupported. Non-essentially-comparable value families raise 22G04 rather than selecting a cross-family total order."
       },
       "runtime_order": 90,
       "clause_anchors": [
         "CLAUSE-ANNEX-B"
       ],
       "evidence": [
-        "EVID-PLAN-M05-PR03"
+        "EVID-STRUCTURAL-OPERATIONS"
       ],
-      "applicability": "APP-ALWAYS"
+      "applicability": "APP-UNIVERSAL-COMPARISON"
     },
     {
       "id": "IV011",
@@ -5170,15 +5182,12 @@
             "DURATION",
             "LIST",
             "RECORD",
-            "NODE",
-            "EDGE",
-            "PATH",
             "UUID",
             "JSON",
             "VECTOR"
           ]
         },
-        "rationale": "Property values use the closed native Value family, including selected implementation extensions.",
+        "rationale": "Owner-selected query-only references and paths are rejected recursively in properties and defaults. Scalars, native JSON/vectors, lists and named records remain storable. RecordTypeId is not a stored descriptor. StoredValue defines semantic admission; F02-PR03 owns bytes.",
         "stability": "provisional",
         "visibility": "public"
       },
@@ -5187,6 +5196,7 @@
         "CLAUSE-ANNEX-B"
       ],
       "evidence": [
+        "EVID-STORED-VALUES",
         "EVID-VALUE-TYPES"
       ],
       "applicability": "APP-DYNAMIC-UNION"
@@ -6116,6 +6126,11 @@
       "description": "Facade diagnostic bundles preserve the primary status, every ordered additional status, and recursive ordered causes without truncation."
     },
     {
+      "id": "EVID-STORED-VALUES",
+      "reference": "crates/selene-core/src/stored_value.rs",
+      "description": "Recursive semantic storage admission with query-only references and named records."
+    },
+    {
       "id": "EVID-STRING-CONCAT",
       "reference": "crates/selene-gql/src/runtime/evaluator/concat_ops.rs",
       "description": "String concatenation normalization and truncation behavior."
@@ -6124,6 +6139,21 @@
       "id": "EVID-STRING-LIMIT",
       "reference": "crates/selene-core/src/db_string.rs",
       "description": "Stored database-string byte limit."
+    },
+    {
+      "id": "EVID-STRUCTURAL-INVENTORY",
+      "reference": "crates/selene-gql/tests/structural_type_inventory.rs",
+      "description": "Source and selected-profile type-family admission inventory."
+    },
+    {
+      "id": "EVID-STRUCTURAL-OPERATIONS",
+      "reference": "crates/selene-db/tests/value_operations.rs",
+      "description": "Operation-specific predicate, grouping, distinctness, and ordering regressions."
+    },
+    {
+      "id": "EVID-STRUCTURAL-TYPES",
+      "reference": "crates/selene-core/src/structural_type.rs",
+      "description": "Owned normalized semantic descriptor authority."
     },
     {
       "id": "EVID-TEMPORAL-PARSE",
@@ -6474,6 +6504,13 @@
       "expression": {
         "kind": "feature",
         "feature_id": "GT01"
+      }
+    },
+    {
+      "id": "APP-UNIVERSAL-COMPARISON",
+      "expression": {
+        "kind": "feature",
+        "feature_id": "GA04"
       }
     },
     {

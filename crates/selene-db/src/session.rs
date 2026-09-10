@@ -149,9 +149,8 @@ mod tests {
     use std::{panic::AssertUnwindSafe, sync::Arc};
 
     use crate::{
-        CreatePolicy, Database, ErrorKind, ExecutionOutcome, GeneralParameter, GqlType, ObjectPath,
-        Request, RequestOutcome, RequestParams, RequestSlotState, RequestTimestamp, SchemaPath,
-        Value,
+        CreatePolicy, Database, ErrorKind, ExecutionOutcome, GeneralParameter, ObjectPath, Request,
+        RequestOutcome, RequestParams, RequestSlotState, RequestTimestamp, SchemaPath, Type, Value,
     };
 
     fn session() -> super::Session {
@@ -173,7 +172,7 @@ mod tests {
         params
             .insert(
                 "p",
-                GeneralParameter::new(GqlType::Integer, Value::Int(value)).unwrap(),
+                GeneralParameter::new(Type::INT64, Value::Int(value)).unwrap(),
             )
             .unwrap();
         Request::with_params("RETURN $p", params)
@@ -182,7 +181,11 @@ mod tests {
     fn request_with_any(source: &str, value: Value) -> Request {
         let mut params = RequestParams::new();
         params
-            .insert("value", GeneralParameter::new(GqlType::Any, value).unwrap())
+            .insert(
+                "value",
+                GeneralParameter::new(Type::union([Type::STRING, Type::INT64]).unwrap(), value)
+                    .unwrap(),
+            )
             .unwrap();
         Request::with_params(source, params)
     }

@@ -1,3 +1,5 @@
+use crate::runtime::comparison_domain::ComparisonDomain;
+use selene_core::ComparisonMode;
 use std::cmp::Ordering;
 
 use selene_core::Value;
@@ -17,10 +19,12 @@ pub(super) fn execute(
 ) -> Result<BindingTable, ExecutorError> {
     let (schema, rows) = table.into_parts();
     let mut keyed_rows = Vec::with_capacity(rows.len());
+    let mut domains = ComparisonDomain::default();
     let mut rows_since_check = 0;
     for row in rows {
         ctx.tx.check_cancellation_stride(&mut rows_since_check, 1)?;
         let tuple = evaluate_key_tuple(keys, &row, &schema, ctx)?;
+        domains.observe(&tuple, ComparisonMode::Ordering)?;
         keyed_rows.push(KeyedRow { tuple, row });
     }
 

@@ -1,4 +1,6 @@
+use crate::runtime::comparison_domain::ComparisonDomain;
 use rustc_hash::FxHashMap;
+use selene_core::ComparisonMode;
 use selene_core::Value;
 use smallvec::SmallVec;
 
@@ -28,11 +30,13 @@ pub(super) fn execute(
     let mut groups = Vec::<Group<'_>>::with_capacity(hash_capacity);
     let mut group_index = FxHashMap::<RuntimeEqKey, usize>::default();
     group_index.reserve(hash_capacity);
+    let mut domains = ComparisonDomain::default();
     let mut rows_since_check = 0;
 
     for row in &input_rows {
         ctx.tx.check_cancellation_stride(&mut rows_since_check, 1)?;
         let key = evaluate_key_tuple(keys, row, &input_schema, ctx)?;
+        domains.observe(&key, ComparisonMode::Distinctness)?;
         let probe = RuntimeEqKey::from_row(key);
         let index = match group_index.get(&probe) {
             Some(index) => *index,

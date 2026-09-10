@@ -103,7 +103,7 @@ impl GraphRef {
     }
 }
 
-/// Opaque, non-durable reference to one live node in a facade database instance.
+/// Opaque, non-durable reference to one node in a facade database instance.
 ///
 /// Equality and hashing use only database, graph, and stable node identity.
 /// Generation is deliberately absent. Construction is limited to
@@ -143,7 +143,7 @@ impl NodeRef {
     }
 }
 
-/// Opaque, non-durable reference to one live edge in a facade database instance.
+/// Opaque, non-durable reference to one edge in a facade database instance.
 ///
 /// Equality and hashing use only database, graph, and stable edge identity.
 /// Generation is deliberately absent. Construction is limited to
@@ -262,8 +262,8 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// Returns runtime invalid-reference `42002` when `node` is deleted, absent,
-    /// or the selected graph is no longer live.
+    /// Returns `22G11` when `node` is deleted or absent, or ownership-domain
+    /// invalid-reference `42002` when the selected graph is no longer live.
     pub fn node_reference(&self, node: crate::NodeId) -> Result<NodeRef> {
         let reference = NodeRef::new(self.database_id(), self.context.current_graph().id, node);
         self.resolve_node_reference(reference)?;
@@ -274,17 +274,15 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// Returns runtime invalid-reference `42002` for wrong ownership, a wrong
-    /// selected graph, or a deleted/absent node.
+    /// Returns `42002` for wrong ownership or a wrong selected graph, and
+    /// `22G11` when the node referent is deleted or absent.
     pub fn resolve_node_reference(&self, reference: NodeRef) -> Result<crate::NodeId> {
         self.ensure_selected(reference.database, reference.graph)?;
         self.inner.with_reference_graph(reference.graph, |runtime| {
             if runtime.read().is_node_alive(reference.node) {
                 Ok(reference.node)
             } else {
-                Err(Error::invalid_runtime_reference(
-                    "node is absent or no longer alive",
-                ))
+                Err(crate::value::deleted_reference())
             }
         })
     }
@@ -293,8 +291,8 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// Returns runtime invalid-reference `42002` when `edge` is deleted, absent,
-    /// or the selected graph is no longer live.
+    /// Returns `22G11` when `edge` is deleted or absent, or ownership-domain
+    /// invalid-reference `42002` when the selected graph is no longer live.
     pub fn edge_reference(&self, edge: crate::EdgeId) -> Result<EdgeRef> {
         let reference = EdgeRef::new(self.database_id(), self.context.current_graph().id, edge);
         self.resolve_edge_reference(reference)?;
@@ -305,22 +303,20 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// Returns runtime invalid-reference `42002` for wrong ownership, a wrong
-    /// selected graph, or a deleted/absent edge.
+    /// Returns `42002` for wrong ownership or a wrong selected graph, and
+    /// `22G11` when the edge referent is deleted or absent.
     pub fn resolve_edge_reference(&self, reference: EdgeRef) -> Result<crate::EdgeId> {
         self.ensure_selected(reference.database, reference.graph)?;
         self.inner.with_reference_graph(reference.graph, |runtime| {
             if runtime.read().is_edge_alive(reference.edge) {
                 Ok(reference.edge)
             } else {
-                Err(Error::invalid_runtime_reference(
-                    "edge is absent or no longer alive",
-                ))
+                Err(crate::value::deleted_reference())
             }
         })
     }
 
-    fn ensure_selected(&self, database: DatabaseId, graph: GraphId) -> Result<()> {
+    pub(crate) fn ensure_selected(&self, database: DatabaseId, graph: GraphId) -> Result<()> {
         if database != self.database_id() {
             return Err(Error::invalid_runtime_reference(
                 "reference belongs to another database instance",
@@ -352,7 +348,7 @@ impl crate::database::DatabaseInner {
         })
     }
 
-    fn with_reference_graph<T>(
+    pub(crate) fn with_reference_graph<T>(
         &self,
         graph: GraphId,
         inspect: impl FnOnce(&selene_graph::SharedGraph) -> Result<T>,

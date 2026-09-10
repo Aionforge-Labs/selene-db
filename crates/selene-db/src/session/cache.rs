@@ -3,14 +3,14 @@
 use selene_gql::{PreparedCatalogPlan, ProcedureRegistry};
 
 use crate::{
-    CatalogGeneration, CatalogReadSnapshot, DatabaseId, GqlType, GraphId, ProfileIdentity, Result,
-    SchemaId, session::Session,
+    CatalogGeneration, CatalogReadSnapshot, DatabaseId, GraphId, ProfileIdentity, Result, SchemaId,
+    Type, session::Session,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RequestPlanKey {
     pub(crate) source: String,
-    pub(crate) parameter_types: Vec<(String, GqlType)>,
+    pub(crate) parameter_types: Vec<(String, Type)>,
 }
 
 /// Stable lexical defaults and non-catalog compilation environment.

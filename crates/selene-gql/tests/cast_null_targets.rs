@@ -28,12 +28,12 @@ fn first_status(source: &str) -> String {
 }
 
 #[test]
-fn cast_null_to_null_and_nothing_targets_propagates_null() {
+fn cast_null_to_unselected_immaterial_types_is_unsupported() {
     for source in [
         "RETURN CAST(NULL AS NULL) AS v",
         "RETURN CAST(NULL AS NOTHING) AS v",
     ] {
-        assert_eq!(first_value(source), Value::Null, "{source}");
+        assert_eq!(first_status(source), "42N01", "{source}");
     }
 }
 
@@ -48,17 +48,13 @@ fn cast_non_null_to_null_and_nothing_targets_remains_unsupported() {
 }
 
 #[test]
-fn null_is_typed_null_but_not_nothing() {
-    assert_eq!(
-        first_value("RETURN NULL IS TYPED NULL AS ok"),
-        Value::Bool(true)
-    );
-    assert_eq!(
-        first_value("RETURN NULL IS TYPED NOTHING AS ok"),
-        Value::Bool(false)
-    );
-    assert_eq!(
-        first_value("RETURN NULL IS NOT TYPED NOTHING AS ok"),
-        Value::Bool(true)
-    );
+fn null_values_remain_supported_without_immaterial_type_syntax() {
+    assert_eq!(first_value("RETURN CAST(NULL AS INTEGER)"), Value::Null);
+    for source in [
+        "RETURN NULL IS TYPED NULL",
+        "RETURN NULL IS TYPED NOTHING",
+        "RETURN NULL IS NOT TYPED NOTHING",
+    ] {
+        assert_eq!(first_status(source), "42N01", "{source}");
+    }
 }

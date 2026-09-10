@@ -9,8 +9,8 @@ use selene_core::{Value, VectorMetric};
 
 use super::meta::{StaticOutputColumn, StaticParameter};
 use super::vector_common::{
-    BatchMismatch, cardinality_arg, invalid_arg, metric_arg, node_list_arg, query_arg, string_arg,
-    vector_search_error,
+    BatchMismatch, cardinality_arg, invalid_arg, live_node_list_arg, metric_arg, query_arg,
+    string_arg, vector_search_error,
 };
 use crate::procedure_registry::ProcedureError;
 use crate::{
@@ -62,7 +62,7 @@ pub(super) fn execute(
 
     let property = string_arg(PROC_NAME, &args[0], "property")?;
     let query = query_arg(PROC_NAME, &args[1])?;
-    let nodes = node_list_arg(PROC_NAME, &args[2], "nodes")?;
+    let nodes = live_node_list_arg(ctx.snapshot(), PROC_NAME, &args[2], "nodes")?;
     let k = cardinality_arg(PROC_NAME, &args[3], "k")?;
     let metric = args
         .get(4)

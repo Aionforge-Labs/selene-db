@@ -3,12 +3,13 @@
 use std::collections::BTreeMap;
 
 use proptest::prelude::*;
-use selene_core::{JsonValue, Record, Value, VectorValue, db_string};
+use selene_core::{JsonValue, VectorValue, db_string};
 use selene_db::{
-    CreatePolicy, Database, ErrorKind, GeneralParameter, GqlType, ObjectPath, Request,
-    RequestOutcome, RequestParams, SchemaPath,
+    CreatePolicy, Database, ErrorKind, GeneralParameter, ObjectPath, Request, RequestOutcome,
+    RequestParams, ScalarType, SchemaPath, Type, TypeKind,
 };
-use selene_gql::RecordType;
+use selene_db::{Record, Value};
+use selene_gql::{GqlType, RecordType, normalize_value_type};
 
 type IntegerSnapshot = Vec<(String, i64)>;
 
@@ -19,7 +20,7 @@ struct OverlayObservation {
 }
 
 fn parameter(declared_type: GqlType, value: Value) -> GeneralParameter {
-    GeneralParameter::new(declared_type, value).unwrap()
+    GeneralParameter::new(normalize_value_type(&declared_type).unwrap(), value).unwrap()
 }
 
 fn session() -> selene_db::Session {
@@ -120,23 +121,31 @@ fn names_match_parser_spelling_and_duplicates_are_exact() {
 
 #[test]
 fn declared_types_use_runtime_matcher_for_representative_values() {
-    assert!(GeneralParameter::new(GqlType::Integer, Value::Null).is_ok());
+    assert!(GeneralParameter::new(Type::INT64, Value::Null).is_ok());
     let null_error =
-        GeneralParameter::new(GqlType::NotNull(Box::new(GqlType::Integer)), Value::Null)
-            .unwrap_err();
+        GeneralParameter::new(Type::INT64.with_nullability(false), Value::Null).unwrap_err();
     assert_eq!(null_error.gqlstatus().unwrap().as_str(), "22G03");
 
-    assert!(GeneralParameter::new(GqlType::Int8, Value::Int(127)).is_ok());
+    assert!(
+        GeneralParameter::new(
+            Type::from_scalar(ScalarType::Int8).unwrap(),
+            Value::Int(127)
+        )
+        .is_ok()
+    );
     assert_eq!(
-        GeneralParameter::new(GqlType::Int8, Value::Int(128))
-            .unwrap_err()
-            .gqlstatus()
-            .unwrap()
-            .as_str(),
+        GeneralParameter::new(
+            Type::from_scalar(ScalarType::Int8).unwrap(),
+            Value::Int(128)
+        )
+        .unwrap_err()
+        .gqlstatus()
+        .unwrap()
+        .as_str(),
         "22G03"
     );
 
-    let list_type = GqlType::List(Box::new(GqlType::Integer));
+    let list_type = Type::list(Type::INT64, None).unwrap();
     assert!(GeneralParameter::new(list_type.clone(), Value::List(vec![Value::Int(1)])).is_ok());
     assert!(
         GeneralParameter::new(
@@ -151,17 +160,19 @@ fn declared_types_use_runtime_matcher_for_representative_values() {
             .into_iter()
             .collect(),
     )));
-    assert!(GeneralParameter::new(GqlType::Record(RecordType::Open), record).is_ok());
+    assert!(
+        GeneralParameter::new(Type::new(TypeKind::Record(None), true).unwrap(), record).is_ok()
+    );
     assert!(
         GeneralParameter::new(
-            GqlType::Vector,
+            Type::VECTOR,
             Value::Vector(VectorValue::new(vec![1.0, 2.0]).unwrap())
         )
         .is_ok()
     );
     assert!(
         GeneralParameter::new(
-            GqlType::Json,
+            Type::JSON,
             Value::Json(JsonValue::parse_str(r#"{"kind":"request"}"#).unwrap())
         )
         .is_ok()
@@ -233,6 +244,46 @@ fn request_overlay_is_sorted_request_wins_and_session_state_is_unchanged() {
     );
     assert_eq!(session.context().parameters().len(), 1);
     assert!(session.remove_parameter("missing").unwrap().is_none());
+}
+
+#[test]
+fn structural_parameter_descriptors_ignore_synonyms_and_field_order() {
+    let a = db_string("a").unwrap();
+    let b = db_string("b").unwrap();
+    let value = Value::Record(Box::new(Record::Open(
+        [
+            (a.clone(), Value::Int(7)),
+            (b.clone(), Value::List(vec![Value::Null])),
+        ]
+        .into_iter()
+        .collect(),
+    )));
+    let left = parameter(
+        GqlType::Record(RecordType::Closed(vec![
+            (a.clone(), GqlType::SmallInt),
+            (b.clone(), GqlType::List(Box::new(GqlType::Integer))),
+        ])),
+        value.clone(),
+    );
+    let right = parameter(
+        GqlType::Record(RecordType::Closed(vec![
+            (b, GqlType::List(Box::new(GqlType::Int64))),
+            (a, GqlType::Int16),
+        ])),
+        value,
+    );
+    assert_eq!(left.declared_type(), right.declared_type());
+    let mut params = RequestParams::new();
+    params.insert("p", left.clone()).unwrap();
+    let output = session().execute_request(Request::with_params("RETURN $p AS item", params));
+    let selene_db::ExecutionOutcome::Rows { result, .. } = output.execution().unwrap() else {
+        panic!("typed parameter produces a regular result");
+    };
+    assert_eq!(result.rows()[0].values(), &[left.value().clone()]);
+    assert_eq!(
+        result.descriptor().fields()[0].declared_type(),
+        &selene_db::DeclaredType::Resolved(left.declared_type().clone())
+    );
 }
 
 #[test]

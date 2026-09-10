@@ -4,23 +4,24 @@ use selene_core::Value;
 use crate::{
     Aggregate, GqlStatus, SourceSpan,
     runtime::{
-        Binding, BindingTableSchema, DataExceptionSubclass, EvalCtx, ExecutorError,
-        ExecutorWarning, evaluator, value_compare, value_key::RuntimeEqKey,
+        Binding, BindingTableSchema, EvalCtx, ExecutorError, ExecutorWarning, evaluator,
+        value_compare, value_key::RuntimeEqKey,
     },
 };
 
 mod numeric;
 
 use self::numeric::{
-    NumericSum, Welford, add_numeric, avg_to_value, count_to_value, data_exception_value,
-    percentile_cont_to_value, percentile_disc_to_value, percentile_numeric_to_f64,
-    percentile_value, stddev_pop_to_value, stddev_samp_to_value,
+    NumericSum, Welford, add_numeric, avg_to_value, count_to_value, percentile_cont_to_value,
+    percentile_disc_to_value, percentile_numeric_to_f64, percentile_value, stddev_pop_to_value,
+    stddev_samp_to_value,
 };
 
 pub(super) struct AggregateSlot<'plan> {
     aggregate: &'plan Aggregate,
     state: AggregateState,
     seen: FxHashSet<RuntimeEqKey>,
+    domain: crate::runtime::comparison_domain::ComparisonDomain,
 }
 
 impl<'plan> AggregateSlot<'plan> {
@@ -29,6 +30,7 @@ impl<'plan> AggregateSlot<'plan> {
             aggregate,
             state: AggregateState::new(classify(aggregate)?),
             seen: FxHashSet::default(),
+            domain: Default::default(),
         })
     }
 
@@ -70,6 +72,10 @@ impl<'plan> AggregateSlot<'plan> {
             return Ok(());
         }
         if self.aggregate.distinct {
+            self.domain.observe(
+                std::slice::from_ref(&value),
+                selene_core::ComparisonMode::Distinctness,
+            )?;
             let key = RuntimeEqKey::from_row(vec![value.clone()]);
             if !self.seen.insert(key) {
                 return Ok(());
@@ -327,17 +333,24 @@ fn update_min_max(
     let next = next.ok_or(ExecutorError::ImplementationDefined {
         detail: "aggregate value missing",
     })?;
+    crate::runtime::comparison_domain::ensure_pair(
+        &next,
+        &next,
+        selene_core::ComparisonMode::Ordering,
+        span,
+    )?;
     let Some(current_value) = current else {
         *current = Some(next);
         return Ok(());
     };
-    let ordering = value_compare::compare_non_null(&next, current_value).ok_or_else(|| {
-        data_exception_value(
-            DataExceptionSubclass::ValuesNotComparable,
-            "aggregate value is not order-comparable",
-            span,
-        )
-    })?;
+    crate::runtime::comparison_domain::ensure_pair(
+        &next,
+        current_value,
+        selene_core::ComparisonMode::Ordering,
+        span,
+    )?;
+    let ordering =
+        value_compare::compare_for_sort(&next, current_value, value_compare::NullSortOrder::Last);
     if (keep_min && ordering.is_lt()) || (!keep_min && ordering.is_gt()) {
         *current_value = next;
     }

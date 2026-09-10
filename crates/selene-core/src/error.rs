@@ -12,6 +12,10 @@ pub type CoreResult<T> = Result<T, CoreError>;
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[non_exhaustive]
 pub enum CoreError {
+    /// A runtime value is not admitted by the semantic stored-value contract.
+    #[error(transparent)]
+    #[diagnostic(code(SLENE_C_017))]
+    StoredValue(#[from] crate::StoredValueError),
     /// A string or byte-string exceeded the implementation-defined length.
     #[error("string too long: {got} bytes (max {max})")]
     #[diagnostic(code(SLENE_C_002))]
@@ -135,6 +139,7 @@ impl CoreError {
     #[must_use]
     pub const fn gqlstatus(&self) -> &'static str {
         match self {
+            Self::StoredValue(_) => "22G03",
             Self::StringTooLong { .. } | Self::ConstructedValueTooLarge { .. } => "22G03",
             Self::DecimalPrecisionExceeded { .. } | Self::VectorComponentNotFinite { .. } => {
                 "22003"

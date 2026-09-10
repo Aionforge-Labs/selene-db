@@ -1,3 +1,5 @@
+use crate::runtime::comparison_domain::ComparisonDomain;
+use selene_core::ComparisonMode;
 use std::{cmp::Ordering, cmp::Reverse, collections::BinaryHeap, sync::Arc};
 
 use selene_core::Value;
@@ -27,10 +29,12 @@ pub(super) fn execute(
 
     let keys = Arc::<[OrderKey]>::from(keys.to_vec());
     let mut heap = BinaryHeap::<Reverse<RankedRow>>::with_capacity(retained.saturating_add(1));
+    let mut domains = ComparisonDomain::default();
     let mut rows_since_check = 0;
     for (sequence, row) in rows.into_iter().enumerate() {
         ctx.check_cancellation_stride(&mut rows_since_check, 1)?;
         let tuple = order_by::evaluate_key_tuple(&keys, &row, &schema, eval_ctx)?;
+        domains.observe(&tuple, ComparisonMode::Ordering)?;
         heap.push(Reverse(RankedRow {
             tuple,
             sequence,

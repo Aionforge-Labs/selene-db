@@ -22,11 +22,11 @@ pub enum DurationValueFamily {
 
 /// Ordered key used for duration comparisons and duration-backed indexes.
 ///
-/// ISO duration values are field-based rather than a single fixed number of
-/// nanoseconds, so the engine orders them by their stored field tuple. Keeping
-/// this key in core lets GQL runtime ordering and graph indexes share one
-/// durable comparison definition.
-pub type DurationOrderKey = (i16, i32, i32, i32, i32, i64, i64, i64, i64, i64);
+/// The components are total months and total day/time nanoseconds. Comparable
+/// values have at most one nonzero component; year/month and day/time values
+/// are separate comparison groups. This transient key does not change the
+/// stored field representation or assign a fixed length to a calendar month.
+pub type DurationOrderKey = (i64, i128);
 
 impl DurationTypeQualifier {
     /// Canonical GQL spelling for this qualifier.
@@ -54,15 +54,9 @@ impl DurationTypeQualifier {
 /// are mixed in one span.
 #[must_use]
 pub fn duration_value_family(value: &jiff::Span) -> Option<DurationValueFamily> {
-    let has_year_month = value.get_years() != 0 || value.get_months() != 0;
-    let has_day_time = value.get_weeks() != 0
-        || value.get_days() != 0
-        || value.get_hours() != 0
-        || value.get_minutes() != 0
-        || value.get_seconds() != 0
-        || value.get_milliseconds() != 0
-        || value.get_microseconds() != 0
-        || value.get_nanoseconds() != 0;
+    let (months, nanos) = duration_order_key(value);
+    let has_year_month = months != 0;
+    let has_day_time = nanos != 0;
     match (has_year_month, has_day_time) {
         (false, false) => Some(DurationValueFamily::Zero),
         (true, false) => Some(DurationValueFamily::YearMonth),
@@ -74,16 +68,57 @@ pub fn duration_value_family(value: &jiff::Span) -> Option<DurationValueFamily> 
 /// Return the canonical ordered key for a duration span.
 #[must_use]
 pub fn duration_order_key(value: &jiff::Span) -> DurationOrderKey {
-    (
-        value.get_years(),
-        value.get_months(),
-        value.get_weeks(),
-        value.get_days(),
-        value.get_hours(),
-        value.get_minutes(),
-        value.get_seconds(),
-        value.get_milliseconds(),
-        value.get_microseconds(),
-        value.get_nanoseconds(),
-    )
+    let months = i64::from(value.get_years()) * 12 + i64::from(value.get_months());
+    // Even treating every field as a full i64, eight fields times the largest
+    // multiplier (604_800_000_000_000) fit below 2^116. Real jiff bounds are
+    // smaller, so this exact i128 accumulation cannot overflow.
+    let nanos = i128::from(value.get_weeks()) * 604_800_000_000_000
+        + i128::from(value.get_days()) * 86_400_000_000_000
+        + i128::from(value.get_hours()) * 3_600_000_000_000
+        + i128::from(value.get_minutes()) * 60_000_000_000
+        + i128::from(value.get_seconds()) * 1_000_000_000
+        + i128::from(value.get_milliseconds()) * 1_000_000
+        + i128::from(value.get_microseconds()) * 1_000
+        + i128::from(value.get_nanoseconds());
+    (months, nanos)
+}
+
+/// Whether two canonical duration keys belong to a common comparison group.
+/// Zero belongs to both groups; a mixed-group value belongs to neither.
+#[must_use]
+pub fn duration_keys_comparable(left: DurationOrderKey, right: DurationOrderKey) -> bool {
+    (left.0 == 0 && right.0 == 0) || (left.1 == 0 && right.1 == 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_units_zero_and_mixed_groups() {
+        for (left, right) in [
+            ("P1Y", "P12M"),
+            ("P1W", "P7D"),
+            ("PT1H", "PT60M"),
+            ("-PT1H", "-PT60M"),
+        ] {
+            assert_eq!(
+                duration_order_key(&left.parse().unwrap()),
+                duration_order_key(&right.parse().unwrap())
+            );
+        }
+        let zero = jiff::Span::new()
+            .hours(1)
+            .checked_sub(jiff::Span::new().minutes(60))
+            .unwrap();
+        assert_eq!(duration_order_key(&zero), (0, 0));
+        assert_eq!(
+            duration_value_family(&zero),
+            Some(DurationValueFamily::Zero)
+        );
+        assert!(duration_keys_comparable((0, 0), (12, 0)));
+        assert!(duration_keys_comparable((0, 0), (0, 1)));
+        assert!(!duration_keys_comparable((1, 0), (0, 1)));
+        assert!(!duration_keys_comparable((1, 1), (0, 0)));
+    }
 }

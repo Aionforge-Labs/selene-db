@@ -487,46 +487,12 @@ fn remove_commit(
 /// asymmetric filter drives the tally toward zero and re-promotes an index that
 /// is still missing rows.
 ///
-/// # Why this stays an over-approximation
-///
-/// Cross-variant *equality* really does collapse only within the numeric
-/// family. ISO/IEC 39075:2024 §4.16.5.2 says "any two numbers are essentially
-/// comparable values"; every other family is narrower (§4.16.6.2 temporal
-/// instants only at the same most specific type, §4.16.6.3 durations only
-/// within one unit group, §4.4.2 NOTE 25 otherwise only identical values), and
-/// absent Feature GA04 "Universal comparison" — which the generated runtime
-/// inventory does not report as supported — §4.4.2 NOTE 26 leaves no
-/// further comparability. `selene-gql`'s `value_compare` implements exactly
-/// that: its only cross-variant arms are numeric, so a `String` skipped by an
-/// `I64` index is a definite `false` for any `I64`-keyed equality probe.
-///
-/// So narrowing this to `kind.is_numeric() && value.is_number()` is sound *for
-/// the equality probe alone*. Range is where it breaks, and the failure is
-/// silent: a non-comparable pair is a data exception (`ValuesNotComparable`,
-/// `eval_ordering`), not a `false`. Today the drifted index declines, the
-/// predicate stays a general filter, and `n.level > 2` over a column holding
-/// one `String` raises `22G04`. Let the index survive and the
-/// `range_index_scan` rule fires instead; when its range probe then declines,
-/// `linear_rows_filtered_by_resolved_bounds` treats the incomparable row as a
-/// plain non-match. The statement stops raising and starts returning rows —
-/// which is what applying the narrowing to this function actually does to
-/// `a_range_predicate_over_cross_family_drift_still_raises` in
-/// `selene-gql/tests/property_index_scan_parity.rs`.
-///
-/// The prefix probe carries the same hazard latently rather than actually.
-/// `STARTS WITH` against a non-string is a `22G03` data exception, so a
-/// `String` index carrying one `Int` row would flip the same way — but at HEAD
-/// no optimizer rule routes `STARTS WITH` to [`TypedIndex::lookup_prefix`], so
-/// that predicate always reaches the evaluator and always raises. Wiring a
-/// prefix-scan rule to `IndexCatalog::typed_index` makes the hazard real.
-///
-/// Gating the probes separately does not rescue any of this: that single seam
-/// decides index-or-scan before it knows the predicate shape, so an
-/// equality-only completeness notion cannot reach the planner without making
-/// the seam predicate-aware. That is a broader design than a classifier tweak,
-/// so it stays queued rather than half-landed. Counting a non-collapsing
-/// mismatch costs a needless demotion to scan, which is safe; the opposite
-/// error is not.
+/// Without universal comparison, a cross-family value may raise `22G04` even
+/// when it cannot match a probe. Omitting that row changes both equality and
+/// range behavior. The planner therefore declines any kind-drifted index and
+/// lets ordinary predicate evaluation preserve the failure. Duration unit
+/// groups share one physical index kind; GQL additionally validates their
+/// actual key domain before consuming an indexed predicate.
 const fn counts_as_drift(err: &TypedIndexValueError) -> bool {
     matches!(err, TypedIndexValueError::KindMismatch { .. })
 }

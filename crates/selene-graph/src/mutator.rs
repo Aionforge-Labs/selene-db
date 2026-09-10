@@ -53,8 +53,10 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
     /// Returns [`GraphError::RowSpaceExhausted`] when the dense row store fills
     /// the v1 row-index range (max 2^32 rows).
     pub fn create_node(&mut self, labels: LabelSet, mut props: PropertyMap) -> GraphResult<NodeId> {
+        props.validate_stored_values()?;
         fill_node_defaults(self.txn.read(), &labels, &mut props)?;
         assignment::coerce_node_properties(self.txn.read(), &labels, &mut props)?;
+        props.validate_stored_values()?;
         let id = self.txn.allocator.allocate_node()?;
         {
             let graph = self.txn.guard_mut();
@@ -180,6 +182,7 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
         mut props: PropertyMap,
     ) -> GraphResult<EdgeId> {
         let (source, target) = directionality.canonical_endpoints(first, second);
+        props.validate_stored_values()?;
         self.require_live_node(source)?;
         self.require_live_node(target)?;
         fill_edge_defaults(
@@ -199,6 +202,7 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
             &mut props,
         )?;
         let id = self.txn.allocator.allocate_edge()?;
+        props.validate_stored_values()?;
         if directionality == selene_core::EdgeDirectionality::Undirected
             && let Some(type_def) = self.txn.read().meta.bound_type.as_deref()
         {
@@ -287,6 +291,7 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
         labels_diff: LabelDiff,
         mut props_diff: PropertyDiff,
     ) -> GraphResult<()> {
+        props_diff.validate_stored_values()?;
         let row = self.require_live_node(id)?;
 
         // Compute the new label set without mutating the working graph yet.
@@ -385,6 +390,7 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
     /// Edge labels are immutable, so property updates do not touch
     /// `idx_edge_label`.
     pub fn update_edge(&mut self, id: EdgeId, mut props_diff: PropertyDiff) -> GraphResult<()> {
+        props_diff.validate_stored_values()?;
         let row = self.require_live_edge(id)?;
         reject_immutable_edge_update(self.txn.read(), id, &props_diff)?;
         assignment::coerce_edge_property_diff(self.txn.read(), id, &mut props_diff)?;

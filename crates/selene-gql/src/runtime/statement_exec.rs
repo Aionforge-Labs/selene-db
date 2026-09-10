@@ -455,13 +455,13 @@ mod tests {
 
         let error = session
             .execute_source_catalog_request(
-                "RETURN $value",
+                "RETURN $value.name",
                 &EmptyProcedureRegistry,
                 node_request(),
             )
             .unwrap_err();
 
-        assert_eq!(error.gqlstatus().as_str(), "42002");
+        assert_eq!(error.gqlstatus().as_str(), "22G11");
         assert_eq!(graph.read().node_count(), 0);
     }
 
@@ -479,13 +479,13 @@ mod tests {
 
         let error = session
             .execute_source_catalog_request(
-                "INSERT (:ShouldNotPublish) FINISH",
+                "INSERT (:ShouldNotPublish {name: $value.name}) FINISH",
                 &EmptyProcedureRegistry,
                 node_request(),
             )
             .unwrap_err();
 
-        assert_eq!(error.gqlstatus().as_str(), "42002");
+        assert_eq!(error.gqlstatus().as_str(), "22G11");
         let after = graph.read();
         assert_eq!(after.meta.generation, generation + 1);
         assert_eq!(after.meta.next_node_id, next_node_id);
@@ -505,13 +505,13 @@ mod tests {
 
         let error = session
             .execute_source_catalog_request(
-                "INSERT (:ShouldNotPublish) FINISH",
+                "INSERT (:ShouldNotPublish {name: $value.name}) FINISH",
                 &EmptyProcedureRegistry,
                 node_request(),
             )
             .unwrap_err();
 
-        assert_eq!(error.gqlstatus().as_str(), "42002");
+        assert_eq!(error.gqlstatus().as_str(), "22G11");
         assert!(session.is_aborted());
         session.rollback_transaction().unwrap();
         let after = graph.read();

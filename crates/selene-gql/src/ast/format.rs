@@ -28,6 +28,12 @@ use type_name::fmt_type;
 
 pub(crate) use type_name::fmt_type as format_gql_type;
 
+pub(crate) fn format_value_expr(value: &ValueExpr) -> String {
+    let mut out = String::new();
+    fmt_expr(&mut out, value).expect("formatting an expression into String cannot fail");
+    out
+}
+
 /// Format a read-side statement as GQL source.
 ///
 /// # Errors

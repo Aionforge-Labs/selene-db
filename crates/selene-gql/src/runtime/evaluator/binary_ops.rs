@@ -31,7 +31,7 @@ pub(super) fn eval_binary(
     match op {
         BinaryOp::And => boolean_ops::eval_and(lhs, rhs, span),
         BinaryOp::Or => boolean_ops::eval_or(lhs, rhs, span),
-        BinaryOp::Eq | BinaryOp::Ne => eval_equality(op, &lhs, &rhs),
+        BinaryOp::Eq | BinaryOp::Ne => eval_equality(op, &lhs, &rhs, span),
         BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
             eval_ordering(op, lhs, rhs, span)
         }
@@ -105,7 +105,14 @@ pub(super) fn eval_equality(
     op: BinaryOp,
     lhs: &Value,
     rhs: &Value,
+    span: SourceSpan,
 ) -> Result<Value, ExecutorError> {
+    crate::runtime::comparison_domain::ensure_pair(
+        lhs,
+        rhs,
+        selene_core::ComparisonMode::PredicateEquality,
+        span,
+    )?;
     if matches!(lhs, Value::Null) || matches!(rhs, Value::Null) {
         return Ok(Value::Null);
     }
@@ -125,15 +132,17 @@ pub(super) fn eval_ordering(
     rhs: Value,
     span: SourceSpan,
 ) -> Result<Value, ExecutorError> {
+    crate::runtime::comparison_domain::ensure_pair(
+        &lhs,
+        &rhs,
+        selene_core::ComparisonMode::Ordering,
+        span,
+    )?;
     if matches!(lhs, Value::Null) || matches!(rhs, Value::Null) {
         return Ok(Value::Null);
     }
     let Some(ordering) = value_compare::compare_non_null(&lhs, &rhs) else {
-        return data_exception_with(
-            DataExceptionSubclass::ValuesNotComparable,
-            "values are not order-comparable",
-            span,
-        );
+        return Ok(Value::Null);
     };
     Ok(Value::Bool(match op {
         BinaryOp::Lt => ordering == Ordering::Less,
@@ -627,7 +636,7 @@ fn eval_in_list_item(
         *saw_unknown = true;
         return Ok(false);
     }
-    let comparison = eval_equality(BinaryOp::Eq, value, item)?;
+    let comparison = eval_equality(BinaryOp::Eq, value, item, span)?;
     match comparison {
         Value::Bool(true) => Ok(true),
         Value::Bool(false) => Ok(false),

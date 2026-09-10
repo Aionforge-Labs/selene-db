@@ -21,9 +21,7 @@ fn vector_score_nodes_reranks_explicit_candidates_without_index() {
             Value::NodeRef(ids[3]),
             Value::NodeRef(ids[3]),
             Value::NodeRef(ids[0]),
-            Value::NodeRef(ids[7]),
             Value::NodeRef(ids[8]),
-            Value::NodeRef(NodeId::new(999)),
         ]),
     );
 

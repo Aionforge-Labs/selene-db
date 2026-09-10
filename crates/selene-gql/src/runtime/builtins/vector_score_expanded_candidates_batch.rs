@@ -78,7 +78,7 @@ pub(super) fn execute(
 
     let property = string_arg(PROC_NAME, &args[0], "property")?;
     let queries = queries_arg(PROC_NAME, &args[1])?;
-    let root_sets = candidate_sets_arg(PROC_NAME, &args[2], "roots")?;
+    let root_sets = candidate_sets_arg(ctx.snapshot(), PROC_NAME, &args[2], "roots")?;
     if queries.len() != root_sets.len() {
         return Err(invalid_arg(format!(
             "{PROC_NAME} queries and roots must have the same length"

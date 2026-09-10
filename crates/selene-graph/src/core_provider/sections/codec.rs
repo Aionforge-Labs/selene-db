@@ -13,6 +13,11 @@ use selene_persist::MAX_SECTION_PAYLOAD_BYTES;
 
 use crate::core_provider::{inconsistent, invalid_payload, serialization_failed};
 
+// Each supported recursive default uses at most two archive subtrees (Vec and
+// Box) per semantic level. The remaining allowance covers the section, schema,
+// and property carriers. Semantic limits are checked by the owning decoder.
+const MAX_ARCHIVE_SUBTREE_DEPTH: usize = 2 * selene_core::MAX_STORED_VALUE_DEPTH + 32;
+
 /// Reject a section payload that exceeds the per-section byte cap.
 pub(in crate::core_provider) fn ensure_section_within_cap(
     section: &'static str,
@@ -58,10 +63,28 @@ where
         + rkyv::Deserialize<T, rkyv::api::high::HighDeserializer<rkyv::rancor::Error>>,
 {
     ensure_section_within_cap(section, bytes.len())?;
-    rkyv::from_bytes::<T, rkyv::rancor::Error>(bytes).map_err(|error| {
-        invalid_payload(format!("{section} rkyv bytecheck/decode failed: {error}"))
-    })
+    use rkyv::validation::{Validator, archive::ArchiveValidator, shared::SharedValidator};
+    let mut validator = Validator::new(
+        ArchiveValidator::with_max_depth(
+            bytes,
+            std::num::NonZeroUsize::new(MAX_ARCHIVE_SUBTREE_DEPTH),
+        ),
+        SharedValidator::new(),
+    );
+    let archived = rkyv::api::access_with_context::<T::Archived, _, rkyv::rancor::Error>(
+        bytes,
+        &mut validator,
+    )
+    .map_err(|error| invalid_payload(format!("{section} rkyv bytecheck/decode failed: {error}")))?;
+    rkyv::api::deserialize_using::<T, _, rkyv::rancor::Error>(archived, &mut rkyv::de::Pool::new())
+        .map_err(|error| {
+            invalid_payload(format!("{section} rkyv bytecheck/decode failed: {error}"))
+        })
 }
+
+#[cfg(test)]
+#[path = "codec_nesting_tests.rs"]
+mod nesting_tests;
 
 /// Encode a property map to a postcard blob (the per-row property column form).
 pub(in crate::core_provider::sections) fn encode_properties_blob(

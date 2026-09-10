@@ -20,10 +20,14 @@ fn record_equality_ignores_field_order() {
 }
 
 #[test]
-fn record_inequality_on_differing_field_sets() {
-    let table = execute_read("RETURN {a: 1} = {a: 1, b: 2} AS eq");
-
-    assert_eq!(column_values(&table, "eq"), vec![Value::Bool(false)]);
+fn differing_record_field_sets_are_not_comparable_without_ga04() {
+    let error = selene_gql::analyze(
+        parse("RETURN {a: 1} = {a: 1, b: 2} AS eq").unwrap(),
+        &selene_gql::EmptyProcedureRegistry,
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(error.gqlstatus().as_str(), "22G03");
 }
 
 #[test]

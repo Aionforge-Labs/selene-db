@@ -330,39 +330,15 @@ impl<'g> Session<'g> {
         registry: &dyn ProcedureRegistry,
         request: RequestExecutionInput,
     ) -> Result<PreparedCatalogRequest, ExecutorError> {
-        let snapshot = self.graph().read();
-        let graph_id = snapshot.graph_id();
-        let graph_generation = snapshot.meta.generation;
-        drop(snapshot);
-        let schema_version = self.graph().schema_version();
-        let (result, request, _, prepared_graph) =
-            self.with_facade_request(request, false, |session| {
-                session.execute_source_with_policy(
-                    source,
-                    registry,
-                    SourceExecutionPolicy::PrepareCatalogSession,
-                )
-            });
-        debug_assert!(prepared_graph.is_none());
-        let CatalogSessionOutput::Prepared {
-            plan,
-            parameter_uses,
-        } = result?
-        else {
-            return Err(ExecutorError::ImplementationDefined {
-                detail: "selected request preparation did not return an owned plan",
-            });
-        };
-        Ok(PreparedCatalogRequest {
-            source: Arc::from(source),
-            plan,
-            parameter_uses,
-            request,
-            graph_id,
-            graph_generation,
-            schema_version,
-            catalog: None,
-        })
+        let statement = crate::parse(source).map_err(|source| ExecutorError::Parse { source })?;
+        let analyzed = crate::analyze::analyze_with_parameters(
+            statement,
+            registry,
+            None,
+            &request.parameter_types()?,
+        )
+        .map_err(|source| ExecutorError::Analysis { source })?;
+        self.prepare_analyzed_catalog_request(source, analyzed, registry, request)
     }
 
     /// Recompile a stale prepared request against this session's graph.

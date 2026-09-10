@@ -119,13 +119,16 @@ impl RequestContext {
     pub(crate) fn lower_input(
         &self,
         time_zone: jiff::tz::TimeZone,
-    ) -> selene_gql::RequestExecutionInput {
-        selene_gql::RequestExecutionInput::with_runtime(
+        database: crate::DatabaseId,
+    ) -> Result<selene_gql::RequestExecutionInput> {
+        let reference_graph = self.parameters.reference_graph(database)?;
+        Ok(selene_gql::RequestExecutionInput::with_runtime(
             self.parameters.to_lower(),
             self.timestamp.lower(),
             time_zone,
             self.runtime.clone(),
         )
+        .with_reference_graph(reference_graph.map(|id| selene_core::GraphId::new(id.get()))))
     }
 
     pub(crate) fn plan_key(&self, source: &str) -> RequestPlanKey {

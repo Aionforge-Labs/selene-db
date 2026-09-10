@@ -135,6 +135,11 @@ fn execute_counted(
     rhs: &BindingTable,
     ctx: &TxContext<'_, '_>,
 ) -> Result<BindingTable, ExecutorError> {
+    let mut domains = crate::runtime::comparison_domain::ComparisonDomain::default();
+    for row in lhs.rows().iter().chain(rhs.rows()) {
+        ctx.check_cancellation()?;
+        domains.observe(row.values(), selene_core::ComparisonMode::Distinctness)?;
+    }
     let mut rhs_counts = count_rows(rhs.rows(), ctx)?;
     let (schema, lhs_rows) = lhs.into_parts();
     let mut output = Vec::new();

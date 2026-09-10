@@ -1,23 +1,13 @@
-//! Composite-value (LIST / RECORD / RECORD-typed) durability coverage.
-//!
-//! These tests pin that `Value::List`, `Value::Record(Record::Open)`, and
-//! `Value::RecordTyped` property values — including empty collections, deep
-//! nesting, and positional `None` gaps — survive every persistence path the
-//! engine offers: the CORE/NODE & CORE/EDGE snapshot section codec, full
-//! snapshot recovery into a live graph, the WAL change codec, and WAL replay.
-//!
-//! The round-trip works by construction: each row's property bag is a postcard
-//! `Arc<[u8]>` blob embedded in the rkyv-archived row (so rkyv never recurses
-//! into `Value`), and the WAL serializes `Change` via postcard. These tests are
-//! the regression guard for that construction (L1c-c / gap C5).
+//! Named LIST/RECORD values survive legacy snapshot, recovery and WAL paths.
+//! Query-only and positional-record rejection is covered by stored_value_boundary.
 
-use selene_core::{Record, RecordTypeId, RecordTyped};
+use selene_core::Record;
 use smallvec::smallvec;
 
 use super::*;
 
 /// Fold a `Value::List` around a leaf `depth` times to build a deeply nested
-/// list, proving the postcard/rkyv path imposes no value-level depth cap.
+/// list, within the explicit semantic nesting cap.
 fn deeply_nested_list(depth: usize) -> Value {
     let mut value = Value::Int(99);
     for _ in 0..depth {
@@ -28,8 +18,8 @@ fn deeply_nested_list(depth: usize) -> Value {
 
 /// Property map exercising every composite shape + edge case in one bag:
 /// flat list, empty list, nested list-of-list, open record, empty record,
-/// record holding both a list field and a nested record field, a positional
-/// `RecordTyped` with a `None` gap, and an 8-deep nested list.
+/// record holding both a list field and a nested record field, named null fields,
+/// and an 8-deep nested list.
 fn composite_property_map(prefix: &str) -> PropertyMap {
     PropertyMap::from_pairs([
         (
@@ -81,15 +71,15 @@ fn composite_property_map(prefix: &str) -> PropertyMap {
             ]))),
         ),
         (
-            db_string(&format!("{prefix}.record_typed")).unwrap(),
-            Value::RecordTyped(Box::new(RecordTyped {
-                type_id: RecordTypeId::new(1),
-                values: smallvec![
-                    Some(Value::Int(1)),
-                    None,
-                    Some(Value::String(db_string("x").unwrap())),
-                ],
-            })),
+            db_string(&format!("{prefix}.record_nulls")).unwrap(),
+            Value::Record(Box::new(Record::Open(smallvec![
+                (db_string("number").unwrap(), Value::Int(1)),
+                (db_string("optional").unwrap(), Value::Null),
+                (
+                    db_string("text").unwrap(),
+                    Value::String(db_string("x").unwrap())
+                ),
+            ]))),
         ),
         (
             db_string(&format!("{prefix}.deep")).unwrap(),

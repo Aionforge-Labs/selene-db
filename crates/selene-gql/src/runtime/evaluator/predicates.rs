@@ -193,6 +193,7 @@ fn eval_is_directed(
     span: SourceSpan,
     ctx: &EvalCtx<'_, '_, '_, '_>,
 ) -> Result<Value, ExecutorError> {
+    super::require_live_referent(&value, span, ctx)?;
     match value {
         Value::Null => Ok(Value::Null),
         Value::EdgeRef(id) => Ok(Value::Bool(
@@ -210,6 +211,7 @@ fn eval_is_labeled(
     span: SourceSpan,
     ctx: &EvalCtx<'_, '_, '_, '_>,
 ) -> Result<Value, ExecutorError> {
+    super::require_live_referent(&value, span, ctx)?;
     match value {
         Value::Null => Ok(Value::Null),
         Value::NodeRef(id) => {
@@ -254,6 +256,8 @@ fn eval_is_endpoint(
     ctx: &EvalCtx<'_, '_, '_, '_>,
 ) -> Result<Value, ExecutorError> {
     let value = evaluate(value, binding, schema, ctx)?;
+    super::require_live_referent(&operand, span, ctx)?;
+    super::require_live_referent(&value, span, ctx)?;
     if matches!(operand, Value::Null) || matches!(value, Value::Null) {
         return Ok(Value::Null);
     }

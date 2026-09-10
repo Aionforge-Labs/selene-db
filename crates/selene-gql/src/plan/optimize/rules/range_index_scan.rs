@@ -411,7 +411,9 @@ fn compare_literals(a: &Literal, b: &Literal) -> Option<std::cmp::Ordering> {
         (Literal::LocalTime(lhs, _, _), Literal::LocalTime(rhs, _, _)) => Some(lhs.cmp(rhs)),
         (Literal::ZonedTime(lhs, _, _), Literal::ZonedTime(rhs, _, _)) => Some(lhs.cmp(rhs)),
         (Literal::Duration(lhs, _, _), Literal::Duration(rhs, _, _)) => {
-            Some(selene_core::duration_order_key(lhs).cmp(&selene_core::duration_order_key(rhs)))
+            let lhs = selene_core::duration_order_key(lhs);
+            let rhs = selene_core::duration_order_key(rhs);
+            selene_core::duration_keys_comparable(lhs, rhs).then(|| lhs.cmp(&rhs))
         }
         (Literal::Bool(lhs, _), Literal::Bool(rhs, _)) => Some(lhs.cmp(rhs)),
         _ => None,

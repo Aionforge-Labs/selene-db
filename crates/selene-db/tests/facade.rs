@@ -4,9 +4,9 @@ use std::error::Error as _;
 
 use selene_db::{
     CreatePolicy, Database, DatabaseBuilder, DatabaseConfig, DeclaredType, DropPolicy, ErrorKind,
-    ExecutionOutcome, GeneralParameter, GqlStatus, GqlType, ObjectPath, OpenMode, Request,
-    RequestOutcome, RequestParams, SchemaPath, Session, SessionTerminationState,
-    TransactionAccessMode, TransactionSlotState, Value, WriteSummary,
+    ExecutionOutcome, GeneralParameter, GqlStatus, ObjectPath, OpenMode, Request, RequestOutcome,
+    RequestParams, SchemaPath, Session, SessionTerminationState, TransactionAccessMode,
+    TransactionSlotState, Type, Value, WriteSummary,
 };
 
 fn schema(name: &str) -> SchemaPath {
@@ -108,11 +108,11 @@ fn facade_preserves_rows_names_and_analyzer_declared_types() {
     assert_eq!(result.descriptor().fields()[1].name(), Some("name"));
     assert_eq!(
         result.descriptor().fields()[0].declared_type(),
-        &DeclaredType::Resolved(GqlType::Integer)
+        &DeclaredType::Resolved(Type::INT64)
     );
     assert_eq!(
         result.descriptor().fields()[1].declared_type(),
-        &DeclaredType::Resolved(GqlType::String)
+        &DeclaredType::Resolved(Type::STRING)
     );
 
     let procedure = session
@@ -125,7 +125,7 @@ fn facade_preserves_rows_names_and_analyzer_declared_types() {
     assert_eq!(result.descriptor().fields()[1].name(), Some("node_count"));
     assert_eq!(
         result.descriptor().fields()[1].declared_type(),
-        &DeclaredType::Resolved(GqlType::Uint64)
+        &DeclaredType::Resolved(Type::UINT64)
     );
     assert_eq!(result.rows().len(), 1);
 
@@ -138,12 +138,14 @@ fn facade_preserves_rows_names_and_analyzer_declared_types() {
     };
     assert_eq!(
         result.rows()[0].values(),
-        &[Value::NodeRef(selene_core::NodeId::new(1))]
+        &[Value::NodeRef(
+            session.node_reference(selene_core::NodeId::new(1)).unwrap()
+        )]
     );
     assert_eq!(result.descriptor().fields()[0].name(), Some("node"));
     assert_eq!(
         result.descriptor().fields()[0].declared_type(),
-        &DeclaredType::Resolved(GqlType::NodeRef)
+        &DeclaredType::Resolved(Type::NODE)
     );
 }
 
@@ -390,7 +392,7 @@ fn session_characteristics_are_atomic_persistent_and_request_shadowed() {
     params
         .insert(
             "answer",
-            GeneralParameter::new(GqlType::Integer, Value::Int(7)).unwrap(),
+            GeneralParameter::new(Type::INT64, Value::Int(7)).unwrap(),
         )
         .unwrap();
     let shadowed = session.execute_request(Request::with_params("RETURN $answer", params));

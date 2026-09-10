@@ -8,6 +8,8 @@ mod fingerprint;
 pub use expr_lookup::ExprIdLookup;
 
 use crate::GqlType;
+use selene_core::{StructuralType, StructuralTypeError, TypeKind};
+use std::sync::OnceLock;
 
 /// Stable, opaque identifier for a `ValueExpr` cell within one analyzer call.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -40,6 +42,13 @@ pub enum AnalyzedType {
 }
 
 impl AnalyzedType {
+    /// Normalize a transient inference result into the structural authority.
+    pub fn structural_type(&self) -> Result<StructuralType, StructuralTypeError> {
+        match self {
+            Self::Resolved(ty) => crate::normalize_value_type(ty),
+            Self::Dynamic => Ok(StructuralType::DYNAMIC),
+        }
+    }
     /// Canonical dynamic type cell.
     pub const DYNAMIC: Self = Self::Dynamic;
 
@@ -59,14 +68,35 @@ impl AnalyzedType {
 /// Side-table of inferred type cells, indexed by [`ExprId`].
 #[derive(Clone, Debug, Default)]
 pub struct ExprTypeTable {
-    cells: Vec<AnalyzedType>,
+    cells: Vec<TypeCell>,
+}
+
+/// Only `semantic` is authoritative. `legacy` is an immutable, lazily derived
+/// current-planner view through the single F03-PR04 deletion adapter.
+#[derive(Clone, Debug)]
+struct TypeCell {
+    semantic: StructuralType,
+    legacy: OnceLock<AnalyzedType>,
+}
+
+impl TypeCell {
+    fn lower(&self) -> &AnalyzedType {
+        self.legacy.get_or_init(|| match self.semantic.kind() {
+            TypeKind::Dynamic => AnalyzedType::Dynamic,
+            _ => AnalyzedType::Resolved(crate::lower_value_type(&self.semantic)),
+        })
+    }
 }
 
 impl ExprTypeTable {
-    pub(crate) fn push(&mut self, ty: AnalyzedType) -> ExprId {
+    pub(crate) fn push(&mut self, ty: AnalyzedType) -> Result<ExprId, StructuralTypeError> {
+        let semantic = ty.structural_type()?;
         let id = ExprId::new(self.cells.len() as u32);
-        self.cells.push(ty);
-        id
+        self.cells.push(TypeCell {
+            semantic,
+            legacy: OnceLock::new(),
+        });
+        Ok(id)
     }
 
     /// Type cell for `id`.
@@ -77,7 +107,14 @@ impl ExprTypeTable {
     /// indicate analyzer corruption rather than user input.
     #[must_use]
     pub fn get(&self, id: ExprId) -> &AnalyzedType {
-        &self.cells[id.0 as usize]
+        self.cells[id.0 as usize].lower()
+    }
+
+    /// Borrow the authoritative normalized descriptor, independent of the
+    /// current planner's derived source-type vocabulary.
+    #[must_use]
+    pub fn structural_type(&self, id: ExprId) -> &StructuralType {
+        &self.cells[id.0 as usize].semantic
     }
 
     /// Type cell for `id`, or `None` when `id` is out of range.
@@ -88,7 +125,7 @@ impl ExprTypeTable {
     /// in range. (Precedent: `SubqueryRegistry::get`.)
     #[must_use]
     pub fn try_get(&self, id: ExprId) -> Option<&AnalyzedType> {
-        self.cells.get(id.0 as usize)
+        self.cells.get(id.0 as usize).map(TypeCell::lower)
     }
 
     /// Number of allocated cells.
@@ -108,6 +145,6 @@ impl ExprTypeTable {
         self.cells
             .iter()
             .enumerate()
-            .map(|(index, ty)| (ExprId::new(index as u32), ty))
+            .map(|(index, ty)| (ExprId::new(index as u32), ty.lower()))
     }
 }

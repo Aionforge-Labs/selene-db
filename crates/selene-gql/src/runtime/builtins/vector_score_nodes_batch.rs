@@ -10,7 +10,7 @@ use selene_core::{Value, VectorMetric};
 
 use super::meta::{StaticOutputColumn, StaticParameter};
 use super::vector_common::{
-    BatchMismatch, cardinality_arg, invalid_arg, metric_arg, node_list_sets_arg, queries_arg,
+    BatchMismatch, cardinality_arg, invalid_arg, live_node_list_sets_arg, metric_arg, queries_arg,
     query_index_too_large, string_arg, vector_search_error,
 };
 use crate::procedure_registry::ProcedureError;
@@ -70,7 +70,7 @@ pub(super) fn execute(
 
     let property = string_arg(PROC_NAME, &args[0], "property")?;
     let queries = queries_arg(PROC_NAME, &args[1])?;
-    let node_sets = node_list_sets_arg(PROC_NAME, &args[2], "nodes")?;
+    let node_sets = live_node_list_sets_arg(ctx.snapshot(), PROC_NAME, &args[2], "nodes")?;
     if queries.len() != node_sets.len() {
         return Err(invalid_arg(format!(
             "{PROC_NAME} queries and nodes must have the same length"

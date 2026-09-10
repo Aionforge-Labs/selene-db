@@ -59,6 +59,8 @@ pub enum DataExceptionSubclass {
     InvalidDurationFormat,
     /// Path data, right truncation (`22G10`).
     PathDataRightTruncation,
+    /// Access to a deleted referent (`22G11`), distinct from wrong ownership.
+    InvalidReferenceValue,
     /// Incompatible temporal instant unit groups (`22G14`).
     IncompatibleTemporalInstantUnitGroups,
     /// Multiple assignments to a graph element property (`22G0M`).
@@ -104,6 +106,7 @@ impl DataExceptionSubclass {
             Self::InvalidTimeZone => GqlStatus::INVALID_TIME_ZONE,
             Self::NegativeLimitValue => GqlStatus::NEGATIVE_LIMIT_VALUE,
             Self::InvalidValueType => GqlStatus::DATATYPE_MISMATCH,
+            Self::InvalidReferenceValue => GqlStatus::INVALID_REFERENCE_VALUE,
             Self::ValuesNotComparable => GqlStatus::VALUES_NOT_COMPARABLE,
             Self::InvalidDatetimeFunctionFieldName => {
                 GqlStatus::INVALID_DATETIME_FUNCTION_FIELD_NAME

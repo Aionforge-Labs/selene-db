@@ -1,14 +1,10 @@
-//! Request preflight coverage for graph-backed parameter references.
+//! Request preflight coverage for ownership-bearing query references.
 
-use selene_core::{
-    BindingTableId, EdgeDirection, EdgeId, GraphId as ValueGraphId, NodeId, Path as ValuePath,
-    PathSegment as ValuePathSegment, Record, RecordTypeId, RecordTyped, Value, db_string,
-};
+use selene_core::{EdgeDirection, db_string};
 use selene_db::{
-    CreatePolicy, Database, GeneralParameter, GqlType, ObjectPath, Request, RequestOutcome,
-    RequestParams, SchemaPath,
+    CreatePolicy, Database, EdgeId, GeneralParameter, NodeId, ObjectPath, Record, Request,
+    RequestOutcome, RequestParams, SchemaPath, Type, TypeKind, Value, ValuePathSegment,
 };
-use selene_gql::BindingTableType;
 
 fn fixture(name: &str) -> selene_db::Session {
     let database = Database::builder().build();
@@ -24,149 +20,116 @@ fn fixture(name: &str) -> selene_db::Session {
     database.session(&graph).unwrap()
 }
 
-fn graph_id(session: &selene_db::Session) -> ValueGraphId {
-    ValueGraphId::new(session.context().dependencies().current_graph().get())
-}
-
-fn execute_parameter(
-    session: &selene_db::Session,
-    declared_type: GqlType,
-    value: Value,
-) -> RequestOutcome {
+fn execute_parameter(session: &selene_db::Session, ty: Type, value: Value) -> RequestOutcome {
     let mut params = RequestParams::new();
     params
-        .insert(
-            "value",
-            GeneralParameter::new(declared_type, value).unwrap(),
-        )
+        .insert("value", GeneralParameter::new(ty, value).unwrap())
         .unwrap();
     session.execute_request(Request::with_params("RETURN $value", params))
 }
 
-fn assert_invalid_reference(outcome: &RequestOutcome, detail: &str) {
-    let error = outcome.error().expect("reference must be rejected");
+fn assert_foreign(outcome: &RequestOutcome) {
+    let error = outcome.error().expect("foreign reference rejected");
     assert_eq!(error.gqlstatus().unwrap().as_str(), "42002");
-    assert!(error.message().contains(detail), "{}", error.message());
+    assert!(error.message().contains("another database"));
 }
 
 #[test]
-fn graph_and_node_references_must_belong_to_the_live_selected_graph() {
+fn graph_and_node_values_retain_their_ownership_domain() {
     let session = fixture("reference_nodes");
-    let graph = graph_id(&session);
-    assert!(matches!(
-        execute_parameter(&session, GqlType::GraphRef, Value::GraphRef(graph)),
-        RequestOutcome::Succeeded { .. }
-    ));
-    assert_invalid_reference(
-        &execute_parameter(
-            &session,
-            GqlType::GraphRef,
-            Value::GraphRef(ValueGraphId::new(graph.get() + 1)),
-        ),
-        "another graph",
+    let other = fixture("reference_foreign");
+    let graph_ty = Type::new(TypeKind::GraphRef, true).unwrap();
+    let graph = Value::GraphRef(session.graph_reference().unwrap());
+    assert!(
+        execute_parameter(&session, graph_ty.clone(), graph.clone())
+            .error()
+            .is_none()
     );
-
+    assert_foreign(&execute_parameter(&other, graph_ty, graph));
     session.execute("INSERT (:Live) FINISH").unwrap();
-    assert!(matches!(
-        execute_parameter(&session, GqlType::NodeRef, Value::NodeRef(NodeId::new(1))),
-        RequestOutcome::Succeeded { .. }
-    ));
+    other.execute("INSERT (:Live) FINISH").unwrap();
+    let node = Value::NodeRef(session.node_reference(NodeId::new(1)).unwrap());
+    assert!(
+        execute_parameter(&session, Type::NODE, node.clone())
+            .error()
+            .is_none()
+    );
+    assert_foreign(&execute_parameter(&other, Type::NODE, node.clone()));
     session.execute("MATCH (n:Live) DELETE n FINISH").unwrap();
-    assert_invalid_reference(
-        &execute_parameter(&session, GqlType::NodeRef, Value::NodeRef(NodeId::new(1))),
-        "not alive",
+    assert!(
+        execute_parameter(&session, Type::NODE, node)
+            .error()
+            .is_none()
     );
 }
 
 #[test]
-fn edge_and_path_references_validate_elements_connectivity_and_staleness() {
+fn edge_and_path_values_preserve_ownership_and_remain_copyable_after_deletion() {
     let session = fixture("reference_paths");
+    let other = fixture("reference_foreign_paths");
     session.execute("INSERT (:A)-[:STEP]->(:B) FINISH").unwrap();
-    let path = ValuePath {
-        graph: graph_id(&session),
-        start: NodeId::new(1),
-        segments: [ValuePathSegment {
-            edge: EdgeId::new(1),
-            direction: EdgeDirection::Outgoing,
-            node: NodeId::new(2),
-        }]
-        .into_iter()
-        .collect(),
-    };
-    assert!(matches!(
-        execute_parameter(&session, GqlType::EdgeRef, Value::EdgeRef(EdgeId::new(1))),
-        RequestOutcome::Succeeded { .. }
+    other.execute("INSERT (:A)-[:STEP]->(:B) FINISH").unwrap();
+    let start = session.node_reference(NodeId::new(1)).unwrap();
+    let end = session.node_reference(NodeId::new(2)).unwrap();
+    let edge = session.edge_reference(EdgeId::new(1)).unwrap();
+    let step = ValuePathSegment::new(edge, EdgeDirection::Outgoing, end);
+    let path = Value::Path(Box::new(
+        session.path_reference(start, vec![step.clone()]).unwrap(),
     ));
-    assert!(matches!(
-        execute_parameter(&session, GqlType::Path, Value::Path(Box::new(path.clone()))),
-        RequestOutcome::Succeeded { .. }
-    ));
-
-    let foreign_path = ValuePath {
-        graph: ValueGraphId::new(graph_id(&session).get() + 1),
-        ..path.clone()
-    };
-    assert_invalid_reference(
-        &execute_parameter(&session, GqlType::Path, Value::Path(Box::new(foreign_path))),
-        "another graph",
+    assert!(
+        execute_parameter(&session, Type::PATH, path.clone())
+            .error()
+            .is_none()
     );
-
-    let disconnected = ValuePath {
-        start: NodeId::new(2),
-        ..path.clone()
-    };
-    assert_invalid_reference(
-        &execute_parameter(&session, GqlType::Path, Value::Path(Box::new(disconnected))),
-        "not connected",
-    );
-
+    assert_foreign(&execute_parameter(&other, Type::PATH, path.clone()));
+    assert_foreign(&execute_parameter(&other, Type::EDGE, Value::EdgeRef(edge)));
+    let error = session.path_reference(end, vec![step.clone()]).unwrap_err();
+    assert_eq!(error.gqlstatus().unwrap().as_str(), "42002");
+    assert!(error.message().contains("not connected"));
     session
         .execute("MATCH ()-[e:STEP]->() DELETE e FINISH")
         .unwrap();
-    assert_invalid_reference(
-        &execute_parameter(&session, GqlType::EdgeRef, Value::EdgeRef(EdgeId::new(1))),
-        "not alive",
+    assert!(
+        execute_parameter(&session, Type::EDGE, Value::EdgeRef(edge))
+            .error()
+            .is_none()
     );
-    assert_invalid_reference(
-        &execute_parameter(&session, GqlType::Path, Value::Path(Box::new(path))),
-        "stale element",
+    assert!(
+        execute_parameter(&session, Type::PATH, path)
+            .error()
+            .is_none()
+    );
+    assert_eq!(
+        session
+            .path_reference(start, vec![step])
+            .unwrap_err()
+            .gqlstatus()
+            .unwrap()
+            .as_str(),
+        "22G11"
     );
 }
 
 #[test]
-fn nested_references_are_walked_and_foreign_table_references_are_rejected() {
+fn nested_foreign_references_cannot_hide_in_untyped_containers() {
     let session = fixture("reference_nested");
-    let stale = Value::NodeRef(NodeId::new(99));
-
-    let list = Value::List(vec![Value::List(vec![stale.clone()])]);
-    assert_invalid_reference(
-        &execute_parameter(&session, GqlType::Any, list),
-        "not alive",
-    );
-
-    let record = Value::Record(Box::new(Record::Open(
-        [(db_string("nested").unwrap(), stale.clone())]
-            .into_iter()
-            .collect(),
-    )));
-    assert_invalid_reference(
-        &execute_parameter(&session, GqlType::Any, record),
-        "not alive",
-    );
-
-    let typed = Value::RecordTyped(Box::new(RecordTyped {
-        type_id: RecordTypeId::new(1),
-        values: [Some(stale)].into_iter().collect(),
-    }));
-    assert_invalid_reference(
-        &execute_parameter(&session, GqlType::Any, typed),
-        "not alive",
-    );
-
-    let table = execute_parameter(
-        &session,
-        GqlType::TableRef(BindingTableType::Any),
-        Value::TableRef(BindingTableId::new(1)),
-    );
-    assert_invalid_reference(&table, "belongs to another request");
+    let other = fixture("reference_nested_foreign");
+    session.execute("INSERT (:Live) FINISH").unwrap();
+    other.execute("INSERT (:Live) FINISH").unwrap();
+    let reference = Value::NodeRef(other.node_reference(NodeId::new(1)).unwrap());
+    for (ty, value) in [
+        (
+            Type::list(Type::list(Type::NODE, None).unwrap(), None).unwrap(),
+            Value::List(vec![Value::List(vec![reference.clone()])]),
+        ),
+        (
+            Type::new(selene_db::TypeKind::Record(None), true).unwrap(),
+            Value::Record(Box::new(Record::Open(vec![(
+                db_string("nested").unwrap(),
+                reference,
+            )]))),
+        ),
+    ] {
+        assert_foreign(&execute_parameter(&session, ty, value));
+    }
 }

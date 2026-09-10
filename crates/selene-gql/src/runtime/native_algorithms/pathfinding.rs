@@ -73,6 +73,7 @@ pub(super) fn dijkstra(
     checker: CancellationChecker<'_>,
 ) -> Result<ProcedureResult, ProcedureError> {
     let (projection_name, from, to) = parse_dijkstra_args(args)?;
+    crate::runtime::reference_access::require_live_nodes(snapshot, [&from, &to].into_iter())?;
     with_projection(catalogs, snapshot, &projection_name, |projection| {
         let Some(result) = dijkstra_with_checker(projection, from, to, checker)
             .map_err(|error| pathfinding_error(DIJKSTRA_PROC, error))?
@@ -98,6 +99,7 @@ pub(super) fn sssp(
     checker: CancellationChecker<'_>,
 ) -> Result<ProcedureResult, ProcedureError> {
     let (projection_name, source) = parse_sssp_args(args)?;
+    crate::runtime::reference_access::require_live_nodes(snapshot, std::iter::once(&source))?;
     with_projection(catalogs, snapshot, &projection_name, |projection| {
         let rows = sssp_with_checker(projection, source, checker)
             .map_err(|error| pathfinding_error(SSSP_PROC, error))?

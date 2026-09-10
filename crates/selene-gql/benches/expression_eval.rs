@@ -6,6 +6,8 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod common;
+#[path = "expression_eval/structural.rs"]
+mod structural;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use selene_core::{DbString, GraphId, JsonValue, Value, db_string};
@@ -153,6 +155,16 @@ fn bench_expression_eval(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("gql_expression_eval");
     for (case, plan, parameters) in &plans {
+        if case.group == "predicate" && case.name == "range" {
+            let mut session = Session::new(&graph);
+            let StatementOutput::Rows(table) = execute_statement(plan, &mut session, &empty)
+                .expect("range correctness guard executes")
+            else {
+                panic!("range correctness guard must produce rows");
+            };
+            assert_eq!(table.row_count(), 1);
+            assert_eq!(table.rows()[0].values(), &[Value::Bool(true)]);
+        }
         group.bench_function(BenchmarkId::new(case.group, case.name), |b| {
             let mut session = Session::new(&graph);
             bind_parameters(&mut session, parameters);
@@ -265,6 +277,6 @@ fn output_rows(output: StatementOutput) -> usize {
 criterion_group! {
     name = expression_eval_group;
     config = common::criterion_config();
-    targets = bench_expression_eval
+    targets = bench_expression_eval, structural::bench_structural_types
 }
 criterion_main!(expression_eval_group);

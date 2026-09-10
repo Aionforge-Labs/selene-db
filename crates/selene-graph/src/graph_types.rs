@@ -1,9 +1,11 @@
 //! Closed graph type catalog definitions.
 
 mod endpoint;
+mod legacy_default_serde;
 mod property_defaults;
 mod property_element_types;
 mod record_types;
+mod structural;
 
 use std::collections::BTreeSet;
 
@@ -273,6 +275,20 @@ fn validate_property_element_types(
     properties: &[PropertyTypeDef],
 ) -> GraphResult<()> {
     for property in properties {
+        let ty = property
+            .structural_type()
+            .map_err(|source| GraphError::Inconsistent {
+                reason: source.to_string(),
+            })?;
+        if !ty.is_storable_descriptor() {
+            return Err(
+                selene_core::CoreError::from(selene_core::StoredValueError::QueryOnly {
+                    family: "property descriptor",
+                })
+                .into(),
+            );
+        }
+
         if property.decimal_type.is_some() && property.value_type != PropertyValueType::Decimal {
             return Err(GraphError::Inconsistent {
                 reason: format!(
@@ -300,19 +316,16 @@ fn validate_property_element_types(
             });
         }
         if property.value_type == PropertyValueType::List {
-            let Some(element_type) = property.list_element_type.as_ref() else {
-                // Legacy snapshots written before typed LIST<T> descriptors
-                // stored only the coarse LIST tag. Keep that shape valid so
-                // recovery preserves existing closed graph schemas; new GQL
-                // catalog DDL always fills the descriptor.
-                continue;
-            };
-            validate_property_element_type(
-                type_name.clone(),
-                property.name.clone(),
-                element_type,
-                1,
-            )?;
+            // Legacy bare LIST keeps its unconstrained element descriptor,
+            // but still validates defaults and storage admission below.
+            if let Some(element_type) = property.list_element_type.as_ref() {
+                validate_property_element_type(
+                    type_name.clone(),
+                    property.name.clone(),
+                    element_type,
+                    1,
+                )?;
+            }
         } else if property.value_type == PropertyValueType::RecordTyped {
             // Bare RecordTyped is permissive (mirrors legacy untyped LIST): with no
             // declared field structure there is nothing to validate.
@@ -334,6 +347,7 @@ fn validate_property_element_types(
                 ),
             });
         }
+        crate::type_validator::validate_property_default(property)?;
     }
     Ok(())
 }

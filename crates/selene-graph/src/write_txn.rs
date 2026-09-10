@@ -429,6 +429,9 @@ impl<'g> WriteTxn<'g> {
         principal: Option<Arc<[u8]>>,
         cancel: Option<&AtomicBool>,
     ) -> GraphResult<PreparedCommitParts> {
+        for change in &self.changes {
+            change.validate_stored_values()?;
+        }
         let schema_changed = self
             .changes
             .iter()

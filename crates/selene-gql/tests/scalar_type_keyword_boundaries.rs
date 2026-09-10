@@ -41,7 +41,17 @@ fn scalar_type_keywords_accept_real_boundaries_before_type_suffixes() {
         "RETURN NULL IS TYPED PATH /* boundary */ NOT NULL AS ok",
         "RETURN NULL IS TYPED NULL /* boundary */ NOT NULL AS ok",
     ] {
-        parse(source).unwrap_or_else(|err| panic!("{source:?} should parse: {err:?}"));
+        if source.contains("TYPED NULL") || source.contains("TYPED NOTHING") {
+            assert!(
+                matches!(
+                    parse(source).unwrap_err(),
+                    ParserError::UnsupportedFeature { .. }
+                ),
+                "{source}"
+            );
+        } else {
+            parse(source).unwrap_or_else(|err| panic!("{source:?} should parse: {err:?}"));
+        }
     }
 }
 

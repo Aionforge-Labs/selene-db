@@ -30,9 +30,14 @@ pub(super) fn property_map(
         ));
     }
     PropertyMap::from_pairs(pairs).map_err(|source| {
-        let subclass = match target {
-            PropertyMapTarget::Node => DataExceptionSubclass::NodePropertiesExceedSupportedMaximum,
-            PropertyMapTarget::Edge => DataExceptionSubclass::EdgePropertiesExceedSupportedMaximum,
+        let subclass = match (&source, target) {
+            (selene_core::CoreError::StoredValue(_), _) => DataExceptionSubclass::InvalidValueType,
+            (_, PropertyMapTarget::Node) => {
+                DataExceptionSubclass::NodePropertiesExceedSupportedMaximum
+            }
+            (_, PropertyMapTarget::Edge) => {
+                DataExceptionSubclass::EdgePropertiesExceedSupportedMaximum
+            }
         };
         ExecutorError::data_exception(
             subclass,
@@ -235,7 +240,11 @@ pub(super) fn property_diff(
 ) -> Result<PropertyDiff, ExecutorError> {
     PropertyDiff::new(set, removed).map_err(|source| {
         ExecutorError::data_exception(
-            DataExceptionSubclass::MultipleAssignmentsToGraphElementProperty,
+            if matches!(source, selene_core::CoreError::StoredValue(_)) {
+                DataExceptionSubclass::InvalidValueType
+            } else {
+                DataExceptionSubclass::MultipleAssignmentsToGraphElementProperty
+            },
             format!("property diff construction failed: {source}"),
             span,
         )
@@ -243,6 +252,17 @@ pub(super) fn property_diff(
 }
 
 pub(super) fn graph_mutation(source: selene_graph::GraphError, span: SourceSpan) -> ExecutorError {
+    if matches!(
+        source,
+        selene_graph::GraphError::NodeNotAlive { .. }
+            | selene_graph::GraphError::EdgeNotAlive { .. }
+    ) {
+        return ExecutorError::data_exception(
+            DataExceptionSubclass::InvalidReferenceValue,
+            source.to_string(),
+            span,
+        );
+    }
     ExecutorError::GraphMutation { source, span }
 }
 

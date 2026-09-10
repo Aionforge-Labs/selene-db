@@ -12,8 +12,7 @@
 use std::collections::BTreeSet;
 
 use selene_core::{
-    ByteStringType, CharacterStringType, DbString, DecimalType, PropertyValueType, Record, Value,
-    byte_string_fits_type, character_string_fits_type, decimal_fits_type,
+    ByteStringType, CharacterStringType, DbString, DecimalType, PropertyValueType, Value,
 };
 use serde::{Deserialize, Serialize};
 
@@ -126,26 +125,7 @@ impl RecordFieldType {
     /// Return true when `value` structurally conforms to this declared field type.
     #[must_use]
     pub fn matches(&self, value: &Value) -> bool {
-        match self {
-            Self::NotNull(inner) => !matches!(value, Value::Null) && inner.matches(value),
-            _ if matches!(value, Value::Null) => true,
-            Self::Scalar(value_type) => value_type.matches(value),
-            Self::CharacterString(character_string_type) => {
-                matches!(value, Value::String(value) if character_string_fits_type(value, *character_string_type))
-            }
-            Self::Decimal(decimal_type) => {
-                matches!(value, Value::Decimal(value) if decimal_fits_type(*value, *decimal_type))
-            }
-            Self::ByteString(byte_string_type) => {
-                matches!(value, Value::Bytes(value) if byte_string_fits_type(value, *byte_string_type))
-            }
-            Self::List(inner) => match value {
-                Value::List(values) => values.iter().all(|value| inner.matches(value)),
-                _ => false,
-            },
-            Self::OpenRecord => matches!(value, Value::Record(_) | Value::RecordTyped(_)),
-            Self::Record(inner) => inner.matches(value),
-        }
+        self.structural_type().is_ok_and(|ty| ty.matches(value))
     }
 }
 
@@ -154,8 +134,8 @@ impl RecordFieldTypes {
     ///
     /// A `Value::Record(Record::Open)` is checked by field name with **set equality** —
     /// every declared field must be present (or optional) and match, and no undeclared
-    /// extra field may appear. A `Value::RecordTyped` is checked positionally with the
-    /// same cardinality, because it carries no inline names. Per ISO 39075:2024 §4.15.4 a
+    /// extra field may appear. A legacy `Value::RecordTyped` cannot establish field-name
+    /// identity and is rejected. Per ISO 39075:2024 §4.15.4 a
     /// closed record value must have the same field-name set as the descriptor.
     ///
     /// An explicit `Value::Null` for a field conforms unless that field is declared
@@ -163,43 +143,8 @@ impl RecordFieldTypes {
     /// value must have the same field-name set as the descriptor.
     #[must_use]
     pub fn matches(&self, value: &Value) -> bool {
-        match value {
-            Value::RecordTyped(record) => {
-                record.values.len() == self.0.len()
-                    && self
-                        .0
-                        .iter()
-                        .zip(record.values.iter())
-                        .all(|(field, slot)| {
-                            field_matches(field, slot.as_ref().unwrap_or(&Value::Null))
-                        })
-            }
-            Value::Record(record) => match record.as_ref() {
-                Record::Open(fields) => {
-                    // Every declared field present and type-matched ...
-                    self.0.iter().all(|field| {
-                        fields
-                            .iter()
-                            .find(|(name, _)| *name == field.name)
-                            .is_some_and(|(_, value)| field_matches(field, value))
-                    })
-                    // ... and no undeclared extra field (ISO §4.15.4 set equality).
-                        && fields
-                            .iter()
-                            .all(|(name, _)| self.0.iter().any(|field| field.name == *name))
-                }
-                _ => false,
-            },
-            _ => false,
-        }
+        self.structural_type().is_ok_and(|ty| ty.matches(value))
     }
-}
-
-fn field_matches(field: &RecordFieldTypeDef, value: &Value) -> bool {
-    if field.required && matches!(value, Value::Null) {
-        return false;
-    }
-    field.field_type.matches(value)
 }
 
 /// Validate the shape of a typed-`RECORD` field-type list at catalog time:

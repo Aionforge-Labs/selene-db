@@ -6,6 +6,7 @@ use selene_core::{CoreError, DbString, NodeId, Value, VectorMetric, VectorValue}
 use selene_graph::{GraphError, VectorCandidateSet, VectorNeighborDirection, VectorSearchError};
 
 use crate::procedure_registry::ProcedureError;
+use crate::runtime::reference_access::require_live_nodes;
 
 /// Handling policy for vector batch-shape errors at a built-in boundary.
 pub(super) enum BatchMismatch {
@@ -79,6 +80,7 @@ pub(super) fn queries_arg(
 
 /// Parse one node reference argument.
 pub(super) fn node_arg(
+    graph: &selene_graph::SeleneGraph,
     proc_name: &'static str,
     value: &Value,
     name: &'static str,
@@ -86,7 +88,32 @@ pub(super) fn node_arg(
     let Value::NodeRef(node_id) = value else {
         return Err(invalid_arg(format!("{proc_name} {name} must be a NODE")));
     };
+    require_live_nodes(graph, std::iter::once(node_id))?;
     Ok(*node_id)
+}
+
+/// Parse explicit nodes for an operation that will inspect graph data.
+pub(super) fn live_node_list_arg(
+    graph: &selene_graph::SeleneGraph,
+    proc_name: &'static str,
+    value: &Value,
+    name: &'static str,
+) -> Result<Vec<NodeId>, ProcedureError> {
+    let nodes = node_list_arg(proc_name, value, name)?;
+    require_live_nodes(graph, nodes.iter())?;
+    Ok(nodes)
+}
+
+/// Parse explicit batched nodes for an operation that inspects graph data.
+pub(super) fn live_node_list_sets_arg(
+    graph: &selene_graph::SeleneGraph,
+    proc_name: &'static str,
+    value: &Value,
+    name: &'static str,
+) -> Result<Vec<Vec<NodeId>>, ProcedureError> {
+    let nodes = node_list_sets_arg(proc_name, value, name)?;
+    require_live_nodes(graph, nodes.iter().flatten())?;
+    Ok(nodes)
 }
 
 /// Parse a list of node references.
@@ -146,20 +173,22 @@ pub(super) fn node_list_sets_arg(
 
 /// Parse a node list into a vector candidate set.
 pub(super) fn candidate_set_arg(
+    graph: &selene_graph::SeleneGraph,
     proc_name: &'static str,
     value: &Value,
     name: &'static str,
 ) -> Result<VectorCandidateSet, ProcedureError> {
-    node_list_arg(proc_name, value, name).map(VectorCandidateSet::from_nodes)
+    live_node_list_arg(graph, proc_name, value, name).map(VectorCandidateSet::from_nodes)
 }
 
 /// Parse node-list batches into vector candidate sets.
 pub(super) fn candidate_sets_arg(
+    graph: &selene_graph::SeleneGraph,
     proc_name: &'static str,
     value: &Value,
     name: &'static str,
 ) -> Result<Vec<VectorCandidateSet>, ProcedureError> {
-    Ok(node_list_sets_arg(proc_name, value, name)?
+    Ok(live_node_list_sets_arg(graph, proc_name, value, name)?
         .into_iter()
         .map(VectorCandidateSet::from_nodes)
         .collect())

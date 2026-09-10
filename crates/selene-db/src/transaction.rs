@@ -27,7 +27,10 @@ use std::{
 use parking_lot::{Mutex, MutexGuard};
 use selene_catalog::{CatalogGeneration, CatalogObjectId, CatalogSnapshot, GraphId, GraphTypeId};
 use selene_core::GraphId as CoreGraphId;
-use selene_graph::{GraphTypeDef, SeleneGraph, SharedGraph, write_txn::PreparedGraphCommit};
+use selene_graph::{
+    GraphAllocationAuthority, GraphTypeDef, SeleneGraph, SharedGraph,
+    write_txn::PreparedGraphCommit,
+};
 
 use crate::{
     Error, Result,
@@ -112,7 +115,8 @@ impl DetachedGraphReplacement {
 /// Lifetime-free detached catalog/graph draft pinned to outer-state metadata.
 ///
 /// This type deliberately contains no outer state allocation, graph instance,
-/// shared graph, transaction, lock guard, committer, or provider state.
+/// shared graph, transaction, lock guard, committer, or provider state. Its
+/// allocation-only capability burns identities independently of draft lifetime.
 pub(crate) struct DatabaseDraft {
     base_state_identity: usize,
     base_publication: u64,
@@ -124,6 +128,7 @@ pub(crate) struct DatabaseDraft {
     graph_removals: BTreeSet<GraphId>,
     graph_replacements: BTreeMap<GraphId, DetachedGraphReplacement>,
     selected_graph: Option<Box<SeleneGraph>>,
+    allocation: Option<GraphAllocationAuthority>,
     forget_graphs: BTreeSet<CoreGraphId>,
     modified: bool,
 }
@@ -141,6 +146,7 @@ impl DatabaseDraft {
             graph_removals: BTreeSet::new(),
             graph_replacements: BTreeMap::new(),
             selected_graph: None,
+            allocation: None,
             forget_graphs: BTreeSet::new(),
             modified: false,
         }
@@ -179,6 +185,7 @@ impl DatabaseDraft {
             generation: snapshot.meta.generation,
         });
         self.selected_graph = Some(Box::new(snapshot.as_ref().clone()));
+        self.allocation = Some(instance.graph.allocation_authority());
         drop(snapshot);
         Ok(instance)
     }
@@ -215,6 +222,14 @@ impl DatabaseDraft {
             .map(DetachedGraphReplacement::snapshot)
             .or(self.selected_graph.as_deref())
             .ok_or_else(|| Error::catalog_invariant("database draft lost its selected graph"))
+    }
+
+    pub(crate) fn mutation_scratch(&self) -> Result<SharedGraph> {
+        let authority = self.allocation.as_ref().ok_or_else(|| {
+            Error::catalog_invariant("database draft has no allocation authority")
+        })?;
+        SharedGraph::try_from_graph_with_allocation(self.selected_graph()?.clone(), authority)
+            .map_err(Error::invalid_graph_type_source)
     }
 
     pub(crate) fn selected_graph_id(&self) -> Result<GraphId> {
@@ -522,8 +537,15 @@ impl DatabaseInner {
             graphs.remove(&id);
         }
         for (id, replacement) in graph_replacements {
-            let graph = SharedGraph::try_from_graph(replacement.into_snapshot())
-                .map_err(Error::invalid_graph_type_source)?;
+            let snapshot = replacement.into_snapshot();
+            let graph = match current.graphs.get(&id) {
+                Some(instance) => SharedGraph::try_from_graph_with_allocation(
+                    snapshot,
+                    &instance.graph.allocation_authority(),
+                ),
+                None => SharedGraph::try_from_graph(snapshot),
+            }
+            .map_err(Error::invalid_graph_type_source)?;
             #[cfg(test)]
             self.replacement_graph_constructions
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

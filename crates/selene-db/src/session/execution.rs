@@ -65,7 +65,7 @@ impl Session {
         let graph_id = LowerGraphId::new(graph.id.get()).map_err(|source| {
             Error::invalid_session_reference(Error::from_catalog_invariant(source))
         })?;
-        let input = context.lower_input(self.context.time_zone_value());
+        let input = context.lower_input(self.context.time_zone_value(), self.database_id())?;
         let schema = LowerSchemaId::new(self.context.current_schema().id.get())
             .map_err(Error::from_catalog_invariant)?;
         let (catalog, transaction_graph) = match slot.as_ref() {
@@ -381,7 +381,7 @@ impl DatabaseInner {
         request: selene_gql::RequestExecutionInput,
         environment: CatalogEnvironment,
     ) -> Result<PreparedCatalogRequest> {
-        let analyzed = analyze_catalog_source(source, &self.procedures, environment)?;
+        let analyzed = analyze_catalog_source(source, &self.procedures, environment, &request)?;
         let id = analyzed
             .catalog
             .as_ref()
@@ -401,7 +401,7 @@ impl DatabaseInner {
     ) -> Result<PreparedCatalogRequest> {
         let scratch =
             SharedGraph::try_from_graph(snapshot).map_err(Error::invalid_graph_type_source)?;
-        let analyzed = analyze_catalog_source(source, &self.procedures, environment)?;
+        let analyzed = analyze_catalog_source(source, &self.procedures, environment, &request)?;
         prepare_on_graph(&scratch, audit, source, request, &self.procedures, analyzed)
     }
 
@@ -415,6 +415,7 @@ impl DatabaseInner {
         self.with_graph_request(id, path, |graph| {
             execute_read_on_graph(
                 graph,
+                self.database_id,
                 audit,
                 prepared,
                 &self.procedures,
@@ -433,6 +434,7 @@ impl DatabaseInner {
             .map_err(Error::invalid_graph_type_source)?;
         execute_read_on_graph(
             &scratch,
+            self.database_id,
             audit,
             prepared,
             &self.procedures,
@@ -446,8 +448,7 @@ impl DatabaseInner {
         audit: Option<Arc<[u8]>>,
         prepared: PreparedCatalogRequest,
     ) -> Result<ExecutionOutcome> {
-        let scratch = SharedGraph::try_from_graph(transaction.draft()?.selected_graph()?.clone())
-            .map_err(Error::invalid_graph_type_source)?;
+        let scratch = transaction.draft()?.mutation_scratch()?;
         let mut session = lower_session(&scratch, audit);
         let prepared = reprepare_if_stale(
             &scratch,
@@ -471,7 +472,10 @@ impl DatabaseInner {
         transaction
             .draft_mut()?
             .attach_prepared_graph(selected_graph, prepared_graph)?;
-        ExecutionOutcome::from_engine(output)
+        ExecutionOutcome::from_engine(
+            output,
+            crate::GraphRef::new(self.database_id, crate::GraphId(selected_graph.get())),
+        )
     }
 
     pub(crate) fn with_graph_request<T>(
@@ -516,6 +520,7 @@ fn prepare_on_graph(
 
 fn execute_read_on_graph(
     graph: &SharedGraph,
+    database: crate::DatabaseId,
     audit: Option<Arc<[u8]>>,
     prepared: PreparedCatalogRequest,
     procedures: &selene_gql::BuiltinProcedureRegistry,
@@ -523,11 +528,14 @@ fn execute_read_on_graph(
 ) -> Result<ExecutionOutcome> {
     let mut session = lower_session(graph, audit);
     let prepared = reprepare_if_stale(graph, &mut session, prepared, procedures, catalog)?;
+    let reference_graph = crate::GraphRef::new(database, crate::GraphId(prepared.graph_id().get()));
     match session
         .execute_prepared_catalog_request(prepared, procedures)
         .map_err(Error::from_engine)?
     {
-        CatalogSessionOutput::RequestOutcome(output) => ExecutionOutcome::from_engine(output),
+        CatalogSessionOutput::RequestOutcome(output) => {
+            ExecutionOutcome::from_engine(output, reference_graph)
+        }
         _ => Err(Error::unsupported_engine_outcome()),
     }
 }
@@ -566,11 +574,17 @@ fn analyze_catalog_source(
     source: &str,
     procedures: &selene_gql::BuiltinProcedureRegistry,
     environment: CatalogEnvironment,
+    request: &selene_gql::RequestExecutionInput,
 ) -> Result<selene_gql::AnalyzedStatement> {
     let statement = selene_gql::parse(source)
         .map_err(|source| Error::from_engine(selene_gql::ExecutorError::Parse { source }))?;
-    selene_gql::analyze::analyze_catalog(statement, procedures, environment)
-        .map_err(|source| Error::from_engine(selene_gql::ExecutorError::Analysis { source }))
+    selene_gql::analyze::analyze_with_parameters(
+        statement,
+        procedures,
+        Some(environment),
+        &request.parameter_types().map_err(Error::from_engine)?,
+    )
+    .map_err(|source| Error::from_engine(selene_gql::ExecutorError::Analysis { source }))
 }
 
 pub(super) fn lower_session<'g>(

@@ -93,6 +93,15 @@ pub(in crate::runtime::native_algorithms) fn pagerank(
         mut result_options,
         edge_filter,
     } = parse_pagerank_args(args)?;
+    crate::runtime::reference_access::require_live_nodes(
+        snapshot,
+        config
+            .personalization
+            .iter()
+            .flatten()
+            .map(|(node, _)| node)
+            .chain(result_options.result_nodes.iter().flatten()),
+    )?;
     if let Some(filter) = &edge_filter {
         let edge_nodes = resolve_edge_result_nodes(snapshot, filter)?;
         result_options.result_nodes =
