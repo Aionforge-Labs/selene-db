@@ -28,6 +28,10 @@ pub struct HnswIndexConfig {
 }
 
 impl HnswIndexConfig {
+    /// Native engine maximum HNSW neighbor fanout.
+    pub const MAX_NEIGHBORS: u16 = 512;
+    /// Native engine maximum construction beam width.
+    pub const MAX_EF_CONSTRUCTION: u16 = 4096;
     /// Default HNSW `M` fanout.
     pub const DEFAULT_MAX_NEIGHBORS: u16 = 18;
     /// Default HNSW construction beam width.
@@ -88,6 +92,8 @@ pub struct IvfIndexConfig {
 }
 
 impl IvfIndexConfig {
+    /// Native engine maximum explicit centroid count.
+    pub const MAX_TARGET_CENTROIDS: u16 = 1024;
     /// Construct a configuration without validation.
     ///
     /// The graph layer validates bounds because it owns index memory policy.

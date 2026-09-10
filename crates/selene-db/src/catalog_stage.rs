@@ -123,7 +123,7 @@ impl<'a> CatalogStager<'a> {
         let mut transaction =
             CatalogTransaction::new(&self.draft.catalog).map_err(Error::from_catalog_invariant)?;
         if let Some((dropped, _)) = &replaced {
-            transaction.remove(CatalogObjectId::GraphType(*dropped));
+            transaction.remove_owner(CatalogObjectId::GraphType(*dropped));
             self.draft.graph_types.remove(dropped);
         }
         let descriptor = LowerDescriptor::graph_type(
@@ -170,7 +170,7 @@ impl<'a> CatalogStager<'a> {
         let summary = graph_type_summary(&state, descriptor)?;
         let mut transaction =
             CatalogTransaction::new(&self.draft.catalog).map_err(Error::from_catalog_invariant)?;
-        transaction.remove(CatalogObjectId::GraphType(id));
+        transaction.remove_owner(CatalogObjectId::GraphType(id));
         self.inner.after_descriptor_staging()?;
         self.draft.catalog = transaction.build().map_err(Error::from_catalog_invariant)?;
         self.draft.graph_types.remove(&id);
@@ -207,7 +207,7 @@ impl<'a> CatalogStager<'a> {
         let mut transaction =
             CatalogTransaction::new(&self.draft.catalog).map_err(Error::from_catalog_invariant)?;
         if let Some((dropped, _)) = &replaced {
-            transaction.remove(CatalogObjectId::Graph(*dropped));
+            transaction.remove_owner(CatalogObjectId::Graph(*dropped));
             self.draft.remove_graph(*dropped);
         }
         let descriptor = LowerDescriptor::graph(
@@ -227,6 +227,9 @@ impl<'a> CatalogStager<'a> {
         graph.meta.bound_type = runtime;
         self.draft.catalog = transaction.build().map_err(Error::from_catalog_invariant)?;
         self.draft.high_water.graph = raw;
+        graph
+            .bind_catalog(&self.draft.catalog)
+            .map_err(Error::from_catalog_invariant)?;
         self.draft.replace_graph(id, graph)?;
         self.inner.after_graph_construction()?;
         if let Some((dropped, _)) = &replaced {
@@ -263,7 +266,7 @@ impl<'a> CatalogStager<'a> {
         let summary = graph_summary(&state, descriptor)?;
         let mut transaction =
             CatalogTransaction::new(&self.draft.catalog).map_err(Error::from_catalog_invariant)?;
-        transaction.remove(CatalogObjectId::Graph(id));
+        transaction.remove_owner(CatalogObjectId::Graph(id));
         self.inner.after_descriptor_staging()?;
         self.draft.catalog = transaction.build().map_err(Error::from_catalog_invariant)?;
         self.draft.remove_graph(id);

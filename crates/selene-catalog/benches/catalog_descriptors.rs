@@ -14,6 +14,9 @@ use selene_catalog::{
     CatalogSnapshotBuilder, CreationMetadata, DirectoryId, GraphId, SchemaId,
 };
 
+#[path = "catalog_descriptors/declarations.rs"]
+mod catalog_declarations;
+
 fn generation() -> CatalogGeneration {
     CatalogGeneration::new(1).expect("benchmark generation is nonzero")
 }
@@ -91,7 +94,7 @@ fn bench_catalog_descriptors(c: &mut Criterion) {
         let schema_id = SchemaId::new(1).unwrap();
         let memory = snapshot.memory_accounting();
         eprintln!(
-            "[catalog_descriptor_memory] objects={object_count} descriptors={} descriptor_accounted_bytes={} bytes_per_descriptor={:.2} dictionary_entries={} dictionary_accounted_bytes={} bytes_per_dictionary_entry={:.2} exclusions=allocator_metadata,btreemap_node_slack,arc_control_blocks",
+            "[catalog_descriptor_memory] objects={object_count} descriptors={} descriptor_accounted_bytes={} bytes_per_descriptor={:.2} dictionary_entries={} dictionary_accounted_bytes={} bytes_per_dictionary_entry={:.2} exclusions=declaration_payload_heap,allocator_metadata,btreemap_node_slack,arc_control_blocks",
             memory.descriptor_count(),
             memory.descriptor_bytes(),
             memory.descriptor_bytes() as f64 / memory.descriptor_count() as f64,
@@ -145,6 +148,6 @@ fn bench_catalog_descriptors(c: &mut Criterion) {
 criterion_group! {
     name = catalog_descriptors;
     config = criterion_config();
-    targets = bench_catalog_descriptors
+    targets = bench_catalog_descriptors, catalog_declarations::bench
 }
 criterion_main!(catalog_descriptors);

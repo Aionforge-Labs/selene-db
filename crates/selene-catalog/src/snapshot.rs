@@ -141,6 +141,10 @@ impl CatalogSnapshotBuilder {
         let mut schema_names = BTreeMap::new();
         let mut object_names: BTreeMap<SchemaId, BTreeMap<CatalogName, CatalogObjectId>> =
             BTreeMap::new();
+        let mut declaration_names: BTreeMap<
+            CatalogObjectId,
+            BTreeMap<CatalogName, CatalogObjectId>,
+        > = BTreeMap::new();
         for descriptor in self.descriptors.values() {
             if descriptor.generation() > self.generation {
                 return Err(CatalogError::DescriptorGenerationAfterSnapshot {
@@ -191,6 +195,30 @@ impl CatalogSnapshotBuilder {
                         });
                     }
                 }
+                (_, CatalogParent::Graph(id)) => {
+                    index_declaration_name(
+                        &self.descriptors,
+                        &mut declaration_names,
+                        CatalogObjectId::Graph(id),
+                        descriptor,
+                    )?;
+                }
+                (CatalogObjectKind::Procedure, CatalogParent::Catalog(id)) => {
+                    index_declaration_name(
+                        &self.descriptors,
+                        &mut declaration_names,
+                        CatalogObjectId::Catalog(id),
+                        descriptor,
+                    )?;
+                }
+                (_, CatalogParent::GraphType(id)) => {
+                    index_declaration_name(
+                        &self.descriptors,
+                        &mut declaration_names,
+                        CatalogObjectId::GraphType(id),
+                        descriptor,
+                    )?;
+                }
                 _ => unreachable!("descriptor parent validation ran"),
             }
         }
@@ -205,6 +233,7 @@ impl CatalogSnapshotBuilder {
             validate_graph_type_reference(&self.descriptors, descriptor, *graph_type)?;
         }
 
+        crate::dependencies::validate(&self.descriptors)?;
         Ok(CatalogState {
             generation: self.generation,
             catalog_id: self.catalog_id,
@@ -212,6 +241,7 @@ impl CatalogSnapshotBuilder {
             descriptors: self.descriptors,
             schema_names,
             object_names,
+            declaration_names,
         })
     }
 }
@@ -244,6 +274,7 @@ struct CatalogState {
     descriptors: BTreeMap<CatalogObjectId, CatalogDescriptor>,
     schema_names: BTreeMap<CatalogName, SchemaId>,
     object_names: BTreeMap<SchemaId, BTreeMap<CatalogName, CatalogObjectId>>,
+    declaration_names: BTreeMap<CatalogObjectId, BTreeMap<CatalogName, CatalogObjectId>>,
 }
 
 /// Immutable generation-bound catalog state for lock-free readers.
@@ -256,6 +287,26 @@ pub struct CatalogSnapshot {
 }
 
 impl CatalogSnapshot {
+    /// Resolve a declaration in its owner's namespace, independent of primary schema names.
+    #[must_use]
+    pub fn declaration(
+        &self,
+        owner: CatalogObjectId,
+        name: &CatalogName,
+    ) -> Option<&CatalogDescriptor> {
+        self.descriptor(*self.state.declaration_names.get(&owner)?.get(name)?)
+    }
+
+    /// Iterate only the declarations owned by a graph or graph type.
+    pub fn declarations(&self, owner: CatalogObjectId) -> impl Iterator<Item = &CatalogDescriptor> {
+        self.state
+            .declaration_names
+            .get(&owner)
+            .into_iter()
+            .flat_map(|names| names.values())
+            .filter_map(|id| self.descriptor(*id))
+    }
+
     /// Return the generation that bounds every descriptor in this snapshot.
     #[must_use]
     pub fn generation(&self) -> CatalogGeneration {
@@ -335,8 +386,9 @@ impl CatalogSnapshot {
     /// Return reproducible lower-bound structural memory accounting.
     ///
     /// The result includes inline key/value sizes and owned string capacities.
-    /// It excludes allocator metadata, `BTreeMap` node slack, and `Arc` control
-    /// blocks, which are implementation- and allocator-dependent.
+    /// It excludes declaration payload heap allocations, allocator metadata,
+    /// `BTreeMap` node slack, and `Arc` control blocks. In particular this is not
+    /// total retained-memory accounting for native signatures/configurations.
     #[must_use]
     pub fn memory_accounting(&self) -> CatalogMemoryAccounting {
         let descriptor_bytes = self
@@ -360,11 +412,18 @@ impl CatalogSnapshot {
             .object_names
             .values()
             .map(BTreeMap::len)
-            .sum::<usize>();
+            .sum::<usize>()
+            + self
+                .state
+                .declaration_names
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>();
         let object_bytes = self
             .state
             .object_names
             .values()
+            .chain(self.state.declaration_names.values())
             .flat_map(BTreeMap::keys)
             .map(|name| size_of::<CatalogName>() + size_of::<CatalogObjectId>() + name.heap_bytes())
             .sum::<usize>();
@@ -375,6 +434,32 @@ impl CatalogSnapshot {
             dictionary_bytes: schema_bytes + object_bytes,
         }
     }
+}
+
+fn index_declaration_name(
+    descriptors: &BTreeMap<CatalogObjectId, CatalogDescriptor>,
+    names: &mut BTreeMap<CatalogObjectId, BTreeMap<CatalogName, CatalogObjectId>>,
+    owner: CatalogObjectId,
+    descriptor: &CatalogDescriptor,
+) -> CatalogResult<()> {
+    if !descriptors.contains_key(&owner) {
+        return Err(CatalogError::MissingParent {
+            object: descriptor.id(),
+            parent: owner,
+        });
+    }
+    if let Some(existing) = names
+        .entry(owner)
+        .or_default()
+        .insert(descriptor.name().clone(), descriptor.id())
+    {
+        return Err(CatalogError::DuplicateCanonicalName {
+            existing,
+            incoming: descriptor.id(),
+            canonical: descriptor.name().canonical().to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Reproducible lower-bound memory accounting for a catalog snapshot.

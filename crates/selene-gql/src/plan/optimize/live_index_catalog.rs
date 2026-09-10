@@ -117,6 +117,9 @@ impl IndexCatalog for LiveIndexCatalog {
         let entry = self
             .snapshot
             .composite_property_index_entry_for(&label, &canonical)?;
+        if !entry.is_complete() {
+            return None;
+        }
         let kinds = entry.kinds();
         // Per-component IndexKind in declaration order enables parameter-aware
         // composite probes (BRIEF-154 §B.2). The runtime re-derives the actual

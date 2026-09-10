@@ -11,6 +11,20 @@ pub type CatalogResult<T> = Result<T, CatalogError>;
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum CatalogError {
+    /// Malformed or unsupported logical declaration, with a stable reason code.
+    InvalidDeclaration {
+        /// Stable machine-readable reason.
+        reason: &'static str,
+    },
+    /// A declaration dependency failed whole-snapshot validation.
+    InvalidDependency {
+        /// Dependent identity.
+        object: CatalogObjectId,
+        /// Required identity.
+        target: CatalogObjectId,
+        /// Stable machine-readable reason.
+        reason: &'static str,
+    },
     /// Zero is outside every catalog object ID domain.
     ZeroIdentifier {
         /// Kind of ID that rejected zero.
@@ -137,6 +151,14 @@ pub enum CatalogError {
 impl fmt::Display for CatalogError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidDeclaration { reason } => {
+                write!(formatter, "invalid declaration: {reason}")
+            }
+            Self::InvalidDependency {
+                object,
+                target,
+                reason,
+            } => write!(formatter, "{object} depends on {target}: {reason}"),
             Self::ZeroIdentifier { kind } => write!(formatter, "{kind} ID must be nonzero"),
             Self::ZeroGeneration => formatter.write_str("catalog generation must be nonzero"),
             Self::GenerationOverflow { current } => {

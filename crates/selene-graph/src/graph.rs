@@ -10,6 +10,8 @@ use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
+use selene_catalog::ElementKind::{Edge, Node};
+use selene_catalog::IndexFamily::{Property, Text, Vector};
 use selene_core::{DbString, EdgeId, GraphId, LabelSet, NodeId, PropertyMap, Value};
 
 use crate::adjacency::AdjacencyEntry;
@@ -23,14 +25,18 @@ use crate::typed_index::{TypedIndex, TypedIndexKind};
 use crate::vector_index::VectorIndex;
 
 mod cardinality;
+mod constraint_declarations;
 mod index_entries;
 mod index_stats;
+mod property_info;
+mod registrations;
 
 pub use index_entries::{
     CompositePropertyIndexEntry, CompositePropertyIndexEntryRow, PropertyIndexEntry,
     TextIndexEntry, TextIndexEntryRow, VectorIndexEntry, VectorIndexEntryRow,
 };
 pub use index_stats::{IndexedEntity, PropertyIndexStatsRow};
+pub use property_info::PropertyIndexReadInfo;
 
 /// Snapshot metadata.
 #[derive(
@@ -92,6 +98,8 @@ pub struct SeleneGraph {
     pub(crate) edge_rows: EngineIdMap<EdgeId, EdgeRow>,
     /// Private, non-serialized identity for this physical snapshot layout.
     pub(crate) layout: SnapshotLayout,
+    /// Derived catalog binding for facade-owned graphs, never snapshot/WAL payload.
+    pub(crate) catalog_binding: Option<registrations::CatalogBinding>,
 }
 
 impl SeleneGraph {
@@ -121,6 +129,7 @@ impl SeleneGraph {
             node_rows: engine_id_map(),
             edge_rows: engine_id_map(),
             layout: SnapshotLayout::new(),
+            catalog_binding: None,
         }
     }
 
@@ -314,8 +323,7 @@ impl SeleneGraph {
         label: &DbString,
         property: &DbString,
     ) -> Option<Arc<TypedIndex>> {
-        self.property_index
-            .get(&(label.clone(), property.clone()))
+        self.query_property_entry(Node, label, property)
             .and_then(PropertyIndexEntry::probe_arc)
     }
 
@@ -328,8 +336,7 @@ impl SeleneGraph {
         label: &DbString,
         property: &DbString,
     ) -> Option<Arc<TypedIndex>> {
-        self.edge_property_index
-            .get(&(label.clone(), property.clone()))
+        self.query_property_entry(Edge, label, property)
             .and_then(PropertyIndexEntry::probe_arc)
     }
 
@@ -351,6 +358,9 @@ impl SeleneGraph {
         label: &DbString,
         properties: &[DbString],
     ) -> Option<&CompositePropertyIndexEntry> {
+        if !self.catalog_index_usable(Node, label, properties, Property) {
+            return None;
+        }
         let key = composite_property_key(properties);
         self.composite_property_index.get(&(label.clone(), key))
     }
@@ -362,6 +372,9 @@ impl SeleneGraph {
         label: &DbString,
         property: &DbString,
     ) -> Option<Arc<VectorIndex>> {
+        if !self.catalog_index_usable(Node, label, std::slice::from_ref(property), Vector) {
+            return None;
+        }
         self.vector_index
             .get(&(label.clone(), property.clone()))
             .map(|entry| Arc::clone(&entry.index))
@@ -370,6 +383,9 @@ impl SeleneGraph {
     /// Return a clone of the registered text index.
     #[must_use]
     pub fn text_index_for(&self, label: &DbString, property: &DbString) -> Option<Arc<TextIndex>> {
+        if !self.catalog_index_usable(Node, label, std::slice::from_ref(property), Text) {
+            return None;
+        }
         self.text_index
             .get(&(label.clone(), property.clone()))
             .map(|entry| Arc::clone(&entry.index))
@@ -499,8 +515,7 @@ impl SeleneGraph {
         property: &DbString,
         value: &Value,
     ) -> Option<Cow<'_, RoaringBitmap>> {
-        self.property_index
-            .get(&(label.clone(), property.clone()))
+        self.query_property_entry(Node, label, property)
             .and_then(|entry| entry.lookup_eq(value))
     }
 
@@ -516,9 +531,7 @@ impl SeleneGraph {
         property: &DbString,
         values: &[Value],
     ) -> Option<RoaringBitmap> {
-        let entry = self
-            .property_index
-            .get(&(label.clone(), property.clone()))?;
+        let entry = self.query_property_entry(Node, label, property)?;
         let mut rows = RoaringBitmap::new();
         for value in values {
             rows |= entry.lookup_eq(value)?.as_ref();
@@ -538,8 +551,7 @@ impl SeleneGraph {
         property: &DbString,
         value: &Value,
     ) -> Option<Cow<'_, RoaringBitmap>> {
-        self.edge_property_index
-            .get(&(label.clone(), property.clone()))
+        self.query_property_entry(Edge, label, property)
             .and_then(|entry| entry.lookup_eq(value))
     }
 
@@ -555,9 +567,7 @@ impl SeleneGraph {
         property: &DbString,
         values: &[Value],
     ) -> Option<RoaringBitmap> {
-        let entry = self
-            .edge_property_index
-            .get(&(label.clone(), property.clone()))?;
+        let entry = self.query_property_entry(Edge, label, property)?;
         let mut rows = RoaringBitmap::new();
         for value in values {
             rows |= entry.lookup_eq(value)?.as_ref();
@@ -580,8 +590,7 @@ impl SeleneGraph {
     where
         R: RangeBounds<Value>,
     {
-        self.property_index
-            .get(&(label.clone(), property.clone()))
+        self.query_property_entry(Node, label, property)
             .and_then(|entry| entry.lookup_range(range))
     }
 
@@ -600,8 +609,7 @@ impl SeleneGraph {
     where
         R: RangeBounds<Value>,
     {
-        self.edge_property_index
-            .get(&(label.clone(), property.clone()))
+        self.query_property_entry(Edge, label, property)
             .and_then(|entry| entry.lookup_range(range))
     }
 
@@ -617,8 +625,7 @@ impl SeleneGraph {
         property: &DbString,
         prefix: &str,
     ) -> Option<RoaringBitmap> {
-        self.property_index
-            .get(&(label.clone(), property.clone()))
+        self.query_property_entry(Node, label, property)
             .and_then(|entry| entry.lookup_prefix(prefix))
     }
 

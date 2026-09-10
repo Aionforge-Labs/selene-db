@@ -13,11 +13,14 @@ description = "Catalog ownership types for the selene-db GQL engine."
 name = "selene_catalog"
 
 [dependencies]
+selene-core = { package = "selene-db-core", path = "../selene-core", version = "2.0.0-alpha.1" }
+selene-profile.workspace = true
 serde.workspace = true
 unicode-ident.workspace = true
 unicode-normalization.workspace = true
 
 [dev-dependencies]
+postcard.workspace = true
 criterion.workspace = true
 mimalloc.workspace = true
 proptest.workspace = true

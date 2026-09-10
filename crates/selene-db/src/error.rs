@@ -283,7 +283,29 @@ impl Error {
     }
 
     pub(crate) fn from_catalog_invariant(source: selene_catalog::CatalogError) -> Self {
-        Self::with_source(ErrorKind::CatalogInvariant, source.to_string(), source)
+        use selene_catalog::CatalogError;
+        let kind = match &source {
+            CatalogError::DuplicateCanonicalName { .. } => ErrorKind::CatalogObjectAlreadyExists,
+            CatalogError::InvalidDependency {
+                reason: "missing_dependency",
+                ..
+            } => ErrorKind::CatalogRestrictViolation,
+            CatalogError::InvalidDependency { .. } => ErrorKind::CatalogReferenceViolation,
+            CatalogError::InvalidDeclaration { reason }
+                if reason.starts_with("unsupported_")
+                    || *reason == "caller_asserted_activation"
+                    || *reason == "active_declaration_requires_runtime_mutation" =>
+            {
+                ErrorKind::FeatureNotSupported
+            }
+            CatalogError::InvalidDeclaration { .. } => ErrorKind::CatalogReferenceViolation,
+            _ => ErrorKind::CatalogInvariant,
+        };
+        let mut error = Self::with_source(kind, source.to_string(), source);
+        if kind == ErrorKind::FeatureNotSupported {
+            error.status = Some(GqlStatus::FEATURE_NOT_SUPPORTED);
+        }
+        error
     }
 
     pub(crate) fn invalid_graph_type_source(source: impl StdError + Send + Sync + 'static) -> Self {

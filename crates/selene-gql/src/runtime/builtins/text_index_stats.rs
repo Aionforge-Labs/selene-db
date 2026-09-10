@@ -138,14 +138,10 @@ fn render_text_index_name(
     explicit
         .map(|name| name.as_str().to_owned())
         .unwrap_or_else(|| {
-            let label = label.as_str();
-            let property = property.as_str();
-            format!(
-                "tidx:{}:{}:{}:{}",
-                label.len(),
-                label,
-                property.len(),
-                property
+            selene_catalog::generated_index_name(
+                selene_catalog::IndexFamily::Text,
+                label.as_str(),
+                std::iter::once(property.as_str()),
             )
         })
 }

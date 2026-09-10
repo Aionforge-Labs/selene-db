@@ -20,6 +20,18 @@ use crate::{
 #[path = "catalog_conflicts.rs"]
 mod catalog_conflicts;
 
+#[path = "registrations.rs"]
+mod registrations;
+
+#[path = "registration_corrections.rs"]
+mod registration_corrections;
+
+#[path = "binding_corrections.rs"]
+mod binding_corrections;
+
+#[path = "registration_sequences.rs"]
+mod registration_sequences;
+
 fn fixture() -> (Database, SchemaPath, ObjectPath) {
     let database = Database::builder().build();
     let schema = SchemaPath::regular("selene", "authority").unwrap();

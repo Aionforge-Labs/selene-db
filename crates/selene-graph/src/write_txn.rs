@@ -72,6 +72,21 @@ pub struct PreparedGraphCommit {
 }
 
 impl PreparedGraphCommit {
+    /// Install validated catalog bindings before the facade's sole publication.
+    #[doc(hidden)]
+    pub fn bind_catalog(
+        &mut self,
+        catalog: &selene_catalog::CatalogSnapshot,
+    ) -> selene_catalog::CatalogResult<()> {
+        Arc::make_mut(&mut self.next_snapshot).bind_catalog(catalog)
+    }
+
+    /// Borrow the trusted logical changes validated by the graph mutation funnel.
+    #[must_use]
+    pub fn changes(&self) -> &[Change] {
+        &self.changes
+    }
+
     /// Borrow the immutable graph snapshot that would become visible.
     #[must_use]
     pub fn snapshot(&self) -> &SeleneGraph {

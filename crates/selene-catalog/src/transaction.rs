@@ -43,6 +43,11 @@ impl CatalogTransaction {
         self.generation
     }
 
+    /// Inspect the current detached logical records in stable ID order.
+    pub fn descriptors(&self) -> impl Iterator<Item = &CatalogDescriptor> {
+        self.descriptors.values()
+    }
+
     /// Stage a new descriptor without replacing stable identity.
     ///
     /// # Errors
@@ -63,6 +68,21 @@ impl CatalogTransaction {
     /// Stage removal of a descriptor by typed ID.
     pub fn remove(&mut self, id: CatalogObjectId) -> Option<CatalogDescriptor> {
         self.descriptors.remove(&id)
+    }
+
+    /// Remove an admitted owner and its own declarations. Foreign dependants
+    /// remain and cause whole-draft validation to reject publication.
+    pub fn remove_owner(&mut self, id: CatalogObjectId) {
+        self.descriptors.retain(|key, descriptor| {
+            *key != id
+                && match descriptor.parent() {
+                    crate::CatalogParent::Graph(owner) => id != CatalogObjectId::Graph(owner),
+                    crate::CatalogParent::GraphType(owner) => {
+                        id != CatalogObjectId::GraphType(owner)
+                    }
+                    _ => true,
+                }
+        });
     }
 
     /// Validate the complete draft and return its immutable snapshot.

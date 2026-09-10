@@ -108,6 +108,8 @@ impl SeleneGraph {
     /// Covers all three families that carry drift — node single-property, edge
     /// single-property, and composite — in that order. Vector and text indexes
     /// have their own stats surfaces and are not included.
+    /// These are physical diagnostics: zero drift does not imply that a catalog
+    /// binding permits query use. Use checked query accessors for that decision.
     pub fn iter_property_index_stats(&self) -> impl Iterator<Item = PropertyIndexStatsRow> + '_ {
         let single = |entity: IndexedEntity,
                       map: &'_ rustc_hash::FxHashMap<

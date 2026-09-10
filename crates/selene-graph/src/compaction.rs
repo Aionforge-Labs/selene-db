@@ -370,6 +370,11 @@ pub fn compact_core(graph: &SeleneGraph) -> GraphResult<CompactedCore> {
     crate::composite_property_index::rebuild_composite_property_indexes(&mut dense)?;
     crate::vector_index::rebuild_vector_indexes(&mut dense)?;
     crate::text_index::rebuild_text_indexes(&mut dense)?;
+    dense
+        .rebind_catalog_after_rebuild(graph)
+        .map_err(|error| GraphError::Inconsistent {
+            reason: format!("compacted catalog binding failed validation: {error}"),
+        })?;
 
     // Debug-only structural net (matches the snapshot-load publication seam):
     // re-derive every index from the compacted columns and confirm agreement.
