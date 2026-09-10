@@ -148,8 +148,8 @@ proptest! {
             .unwrap();
         duplicate_builder
             .insert(
-                CatalogDescriptor::procedure(
-                    ProcedureId::new(1).unwrap(),
+                CatalogDescriptor::binding_table(
+                    BindingTableId::new(1).unwrap(),
                     decomposed,
                     SchemaId::new(1).unwrap(),
                     generation(1),
@@ -300,7 +300,7 @@ fn descriptor_validation_checks_kind_payload_parent_and_user_names() {
             CatalogParent::Schema(SchemaId::new(1).unwrap()),
             generation(1),
             creation(1),
-            CatalogPayload::Procedure,
+            CatalogPayload::BindingTable,
         ),
         Err(CatalogError::DescriptorKindMismatch { .. })
     ));
@@ -407,8 +407,8 @@ fn snapshot_rejects_duplicate_ids_and_shared_namespace_conflicts() {
     cross_kind.insert(graph(1, 1, "shared", 1)).unwrap();
     cross_kind
         .insert(
-            CatalogDescriptor::procedure(
-                ProcedureId::new(1).unwrap(),
+            CatalogDescriptor::binding_table(
+                BindingTableId::new(1).unwrap(),
                 name("shared"),
                 SchemaId::new(1).unwrap(),
                 generation(1),

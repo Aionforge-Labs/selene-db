@@ -235,37 +235,26 @@ pub(super) fn render_vector_index_name(
 }
 
 fn render_auto_index_name(label: DbString, property: DbString) -> String {
-    let label = label.as_str();
-    let property = property.as_str();
-    format!(
-        "idx:{}:{}:{}:{}",
-        label.len(),
-        label,
-        property.len(),
-        property
+    selene_catalog::generated_index_name(
+        selene_catalog::IndexFamily::Property,
+        label.as_str(),
+        std::iter::once(property.as_str()),
     )
 }
 
 fn render_vector_auto_index_name(label: DbString, property: DbString) -> String {
-    let label = label.as_str();
-    let property = property.as_str();
-    format!(
-        "vidx:{}:{}:{}:{}",
-        label.len(),
-        label,
-        property.len(),
-        property
+    selene_catalog::generated_index_name(
+        selene_catalog::IndexFamily::Vector,
+        label.as_str(),
+        std::iter::once(property.as_str()),
     )
 }
 
 fn render_composite_auto_index_name(label: DbString, properties: &[DbString]) -> String {
-    let label = label.as_str();
-    let mut rendered = format!("idx:{}:{}:c{}", label.len(), label, properties.len());
-    for property in properties {
-        let property = property.as_str();
-        rendered.push_str(&format!(":{}:{}", property.len(), property));
-    }
-    rendered
+    selene_catalog::generated_composite_index_name(
+        label.as_str(),
+        properties.iter().map(DbString::as_str),
+    )
 }
 
 pub(super) fn render_drop_target(target: &DropTarget) -> String {

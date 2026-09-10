@@ -7,11 +7,11 @@ use crate::{GraphError, GraphResult};
 use super::VectorIndexKind;
 
 /// Upper bound for HNSW `M` accepted by the native graph engine.
-pub(crate) const MAX_HNSW_MAX_NEIGHBORS: u16 = 512;
+pub(crate) const MAX_HNSW_MAX_NEIGHBORS: u16 = HnswIndexConfig::MAX_NEIGHBORS;
 /// Upper bound for HNSW construction beam width.
-pub(crate) const MAX_HNSW_EF_CONSTRUCTION: u16 = 4096;
+pub(crate) const MAX_HNSW_EF_CONSTRUCTION: u16 = HnswIndexConfig::MAX_EF_CONSTRUCTION;
 /// Upper bound for explicit IVF target centroid counts.
-pub(crate) const MAX_IVF_TARGET_CENTROIDS: u16 = 1024;
+pub(crate) const MAX_IVF_TARGET_CENTROIDS: u16 = IvfIndexConfig::MAX_TARGET_CENTROIDS;
 
 pub(crate) fn hnsw_config_for_kind(
     kind: VectorIndexKind,

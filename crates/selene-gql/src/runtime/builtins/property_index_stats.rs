@@ -13,6 +13,8 @@
 //!
 //! The `name` column is rendered with the same helpers `SHOW INDEXES` uses, so
 //! the two surfaces join on it rather than each inventing a spelling.
+//! Counts and `answers_probes` diagnose physical drift, not catalog activation.
+//! Retained inactive/failed backing remains auditable but cannot admit queries.
 
 use selene_core::{DbString, Value, db_string};
 use selene_graph::PropertyIndexStatsRow;

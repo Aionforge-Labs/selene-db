@@ -250,19 +250,22 @@ pub(crate) struct DatabaseInner {
 
 impl DatabaseInner {
     fn new(config: DatabaseConfig) -> Self {
+        let procedures = BuiltinProcedureRegistry::new();
+        let mut high_water = HighWaterMarks::initial();
+        high_water.procedure = procedures.declarations().count() as u64;
         Self {
             database_id: DatabaseId::allocate(),
             config,
             state: ArcSwap::from(Arc::new(DatabaseState {
                 publication: 0,
-                catalog: initial_snapshot(),
+                catalog: initial_snapshot(&procedures),
                 graphs: BTreeMap::new(),
                 graph_types: BTreeMap::new(),
-                high_water: HighWaterMarks::initial(),
+                high_water,
             })),
             transactions: MutationCoordinator::new(),
             next_transaction_id: AtomicU64::new(1),
-            procedures: BuiltinProcedureRegistry::new(),
+            procedures,
             #[cfg(test)]
             failure: Mutex::new(None),
             #[cfg(test)]
@@ -354,6 +357,9 @@ pub(crate) struct HighWaterMarks {
     pub(crate) schema: u64,
     pub(crate) graph: u64,
     pub(crate) graph_type: u64,
+    pub(crate) index: u64,
+    pub(crate) constraint: u64,
+    pub(crate) procedure: u64,
 }
 
 impl HighWaterMarks {
@@ -362,11 +368,14 @@ impl HighWaterMarks {
             schema: 0,
             graph: 0,
             graph_type: 0,
+            index: 0,
+            constraint: 0,
+            procedure: 0,
         }
     }
 }
 
-fn initial_snapshot() -> CatalogSnapshot {
+fn initial_snapshot(procedures: &BuiltinProcedureRegistry) -> CatalogSnapshot {
     let generation = CatalogGeneration::new(1).expect("initial generation is nonzero");
     let creation = CreationMetadata::new(generation, None);
     let catalog_id = CatalogId::new(1).expect("catalog ID is nonzero");
@@ -380,8 +389,14 @@ fn initial_snapshot() -> CatalogSnapshot {
     .expect("catalog descriptor is valid");
     let root = CatalogDescriptor::root_directory(root_id, catalog_id, generation, creation.clone())
         .expect("root descriptor is valid");
-    CatalogSnapshotBuilder::new(generation, catalog, root)
-        .expect("catalog and root are related")
+    let mut builder = CatalogSnapshotBuilder::new(generation, catalog, root)
+        .expect("catalog and root are related");
+    for declaration in procedures.declarations() {
+        builder
+            .insert(declaration.clone())
+            .expect("canonical native declaration");
+    }
+    builder
         .build()
         .expect("initial catalog snapshot is complete")
 }

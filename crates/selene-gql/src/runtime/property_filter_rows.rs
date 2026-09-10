@@ -19,14 +19,15 @@
 //! its cost tracks the label rather than the graph.
 
 use selene_core::{DbString, Value};
-use selene_graph::{CandidateSet, Edge, Node, PropertyIndexEntry, SeleneGraph};
+use selene_graph::{CandidateSet, Edge, IndexedEntity, Node, PropertyIndexReadInfo, SeleneGraph};
 
 use super::value_compare;
 
 /// Node candidates of `label` whose `property` equals any of `values`.
 ///
 /// `None` means no index is registered for `(label, property)`, or a supplied
-/// value is of a kind that index could never key — the two argument errors the
+/// value is of a kind that index could never key, or its catalog binding is
+/// ineligible — the unavailable/invalid-index argument errors the
 /// procedures report. It never means "the index is incomplete"; that case
 /// scans.
 pub(crate) fn node_candidates_with_property_any(
@@ -36,9 +37,7 @@ pub(crate) fn node_candidates_with_property_any(
     values: &[Value],
 ) -> Result<Option<CandidateSet<Node>>, selene_graph::GraphError> {
     let entry = usable_entry(
-        snapshot
-            .property_index
-            .get(&(label.clone(), property.clone())),
+        snapshot.property_index_read_info(IndexedEntity::Node, label, property),
         values,
     );
     let Some(entry) = entry else {
@@ -70,9 +69,7 @@ pub(crate) fn edge_candidates_with_property_any(
     values: &[Value],
 ) -> Result<Option<CandidateSet<Edge>>, selene_graph::GraphError> {
     let entry = usable_entry(
-        snapshot
-            .edge_property_index
-            .get(&(label.clone(), property.clone())),
+        snapshot.property_index_read_info(IndexedEntity::Edge, label, property),
         values,
     );
     let Some(entry) = entry else {
@@ -96,9 +93,9 @@ pub(crate) fn edge_candidates_with_property_any(
 
 /// The registered entry, if one exists and can key every supplied value.
 fn usable_entry<'a>(
-    entry: Option<&'a PropertyIndexEntry>,
+    entry: Option<PropertyIndexReadInfo<'a>>,
     values: &[Value],
-) -> Option<&'a PropertyIndexEntry> {
+) -> Option<PropertyIndexReadInfo<'a>> {
     let entry = entry?;
     values
         .iter()

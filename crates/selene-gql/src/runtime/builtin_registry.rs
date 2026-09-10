@@ -54,6 +54,9 @@
 
 use std::collections::HashMap;
 
+#[path = "native_declarations.rs"]
+mod native_declarations;
+
 use selene_core::{DbString, GraphId, Value, db_string};
 
 use crate::ProcedureContext;
@@ -89,6 +92,8 @@ pub struct BuiltinProcedureRegistry {
     ordered: Vec<(Vec<DbString>, ProcedureMetadata)>,
     /// Engine-internal, per-`GraphId`, ephemeral projection catalogs.
     catalogs: AlgorithmCatalogs,
+    /// Canonical immutable declarations normalized from the same closed specs.
+    declarations: Vec<selene_catalog::CatalogDescriptor>,
 }
 
 impl BuiltinProcedureRegistry {
@@ -134,12 +139,58 @@ impl BuiltinProcedureRegistry {
             ordered.push((name, metadata));
         }
 
+        let declarations = ordered
+            .iter()
+            .enumerate()
+            .map(|(index, (name, metadata))| {
+                native_declarations::descriptor(index as u64 + 1, name, metadata)
+            })
+            .collect();
         Self {
             by_name,
             by_handle,
             ordered,
             catalogs: AlgorithmCatalogs::default(),
+            declarations,
         }
+    }
+
+    /// Canonical frozen native declaration inventory. Runtime tables are derived
+    /// dispatch adapters; changing catalog payloads cannot install callable code.
+    pub fn declarations(&self) -> impl Iterator<Item = &selene_catalog::CatalogDescriptor> {
+        self.declarations.iter()
+    }
+
+    /// Reject a facade publication that would misdescribe its frozen code bindings.
+    #[doc(hidden)]
+    pub fn validate_catalog(
+        &self,
+        catalog: &selene_catalog::CatalogSnapshot,
+    ) -> selene_catalog::CatalogResult<()> {
+        let engine = selene_catalog::CatalogObjectId::Catalog(catalog.catalog_id());
+        let actual: Vec<_> = catalog.declarations(engine).collect();
+        if actual.len() != self.declarations.len()
+            || self
+                .declarations
+                .iter()
+                .any(|expected| catalog.descriptor(expected.id()) != Some(expected))
+        {
+            return Err(selene_catalog::CatalogError::InvalidDeclaration {
+                reason: "unsupported_native_activation",
+            });
+        }
+        for descriptor in catalog.descriptors() {
+            if matches!(descriptor.payload(), selene_catalog::CatalogPayload::Procedure(native)
+                if native.metadata.state == selene_catalog::DeclarationState::Ready)
+                && descriptor.parent()
+                    != selene_catalog::CatalogParent::Catalog(catalog.catalog_id())
+            {
+                return Err(selene_catalog::CatalogError::InvalidDeclaration {
+                    reason: "unsupported_native_activation",
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Reclaim the ephemeral projection catalog for a dropped graph.

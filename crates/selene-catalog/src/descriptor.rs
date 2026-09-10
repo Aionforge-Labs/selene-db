@@ -4,8 +4,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
     BindingTableId, CatalogError, CatalogGeneration, CatalogId, CatalogName, CatalogObjectId,
-    CatalogObjectKind, CatalogResult, ConstraintId, DirectoryId, GraphId, GraphTypeId, IndexId,
-    ProcedureId, SchemaId,
+    CatalogObjectKind, CatalogResult, ConstraintDeclaration, ConstraintId, DeclarationMetadata,
+    DirectoryId, GraphId, GraphTypeId, IndexDeclaration, IndexId, NativeDeclaration, ProcedureId,
+    SchemaId,
 };
 
 /// Deterministic metadata recorded when a descriptor is created.
@@ -54,6 +55,10 @@ pub enum CatalogParent {
     Directory(DirectoryId),
     /// A primary catalog object belongs to a schema.
     Schema(SchemaId),
+    /// A declaration belongs to one graph.
+    Graph(GraphId),
+    /// A declaration belongs to one graph type.
+    GraphType(GraphTypeId),
 }
 
 impl CatalogParent {
@@ -63,6 +68,8 @@ impl CatalogParent {
             Self::Catalog(_) => "catalog",
             Self::Directory(_) => "directory",
             Self::Schema(_) => "schema",
+            Self::Graph(_) => "graph",
+            Self::GraphType(_) => "graph_type",
         }
     }
 }
@@ -86,15 +93,26 @@ pub enum CatalogPayload {
     GraphType,
     /// Binding-table marker.
     BindingTable,
-    /// Procedure marker.
-    Procedure,
-    /// Index marker.
-    Index,
-    /// Constraint marker.
-    Constraint,
+    /// Declarative native registration, never a code pointer.
+    Procedure(NativeDeclaration),
+    /// An analyzed native index declaration, not its accelerator.
+    Index(IndexDeclaration),
+    /// A semantic constraint declaration, not caller-asserted enforcement proof.
+    Constraint(ConstraintDeclaration),
 }
 
 impl CatalogPayload {
+    /// Shared declaration metadata, when this payload is a registration.
+    #[must_use]
+    pub fn declaration_metadata(&self) -> Option<&DeclarationMetadata> {
+        match self {
+            Self::Index(index) => Some(&index.metadata),
+            Self::Constraint(constraint) => Some(&constraint.metadata),
+            Self::Procedure(native) => Some(&native.metadata),
+            _ => None,
+        }
+    }
+
     /// Return the descriptor kind represented by this payload.
     #[must_use]
     pub const fn kind(&self) -> CatalogObjectKind {
@@ -105,9 +123,9 @@ impl CatalogPayload {
             Self::Graph { .. } => CatalogObjectKind::Graph,
             Self::GraphType => CatalogObjectKind::GraphType,
             Self::BindingTable => CatalogObjectKind::BindingTable,
-            Self::Procedure => CatalogObjectKind::Procedure,
-            Self::Index => CatalogObjectKind::Index,
-            Self::Constraint => CatalogObjectKind::Constraint,
+            Self::Procedure(_) => CatalogObjectKind::Procedure,
+            Self::Index(_) => CatalogObjectKind::Index,
+            Self::Constraint(_) => CatalogObjectKind::Constraint,
         }
     }
 }
@@ -269,57 +287,63 @@ impl CatalogDescriptor {
         )
     }
 
-    /// Construct a schema-owned procedure descriptor marker.
+    /// Construct a native declaration under an engine, schema, or graph owner.
     pub fn procedure(
         id: ProcedureId,
         name: CatalogName,
-        schema: SchemaId,
+        owner: CatalogParent,
         generation: CatalogGeneration,
         creation: CreationMetadata,
+        declaration: NativeDeclaration,
     ) -> CatalogResult<Self> {
-        Self::schema_object(
+        Self::new(
             CatalogObjectId::Procedure(id),
+            CatalogObjectKind::Procedure,
             name,
-            schema,
+            owner,
             generation,
             creation,
-            CatalogPayload::Procedure,
+            CatalogPayload::Procedure(declaration),
         )
     }
 
-    /// Construct a schema-owned index descriptor marker.
+    /// Construct a graph/type-owned index declaration.
     pub fn index(
         id: IndexId,
         name: CatalogName,
-        schema: SchemaId,
+        owner: CatalogParent,
         generation: CatalogGeneration,
         creation: CreationMetadata,
+        declaration: IndexDeclaration,
     ) -> CatalogResult<Self> {
-        Self::schema_object(
+        Self::new(
             CatalogObjectId::Index(id),
+            CatalogObjectKind::Index,
             name,
-            schema,
+            owner,
             generation,
             creation,
-            CatalogPayload::Index,
+            CatalogPayload::Index(declaration),
         )
     }
 
-    /// Construct a schema-owned constraint descriptor marker.
+    /// Construct a graph/type-owned constraint declaration.
     pub fn constraint(
         id: ConstraintId,
         name: CatalogName,
-        schema: SchemaId,
+        owner: CatalogParent,
         generation: CatalogGeneration,
         creation: CreationMetadata,
+        declaration: ConstraintDeclaration,
     ) -> CatalogResult<Self> {
-        Self::schema_object(
+        Self::new(
             CatalogObjectId::Constraint(id),
+            CatalogObjectKind::Constraint,
             name,
-            schema,
+            owner,
             generation,
             creation,
-            CatalogPayload::Constraint,
+            CatalogPayload::Constraint(declaration),
         )
     }
 
@@ -411,10 +435,18 @@ impl CatalogDescriptor {
                     CatalogObjectKind::Graph
                         | CatalogObjectKind::GraphType
                         | CatalogObjectKind::BindingTable
-                        | CatalogObjectKind::Procedure
-                        | CatalogObjectKind::Index
-                        | CatalogObjectKind::Constraint,
+                        | CatalogObjectKind::Procedure,
                     CatalogParent::Schema(_)
+                )
+                | (
+                    CatalogObjectKind::Index | CatalogObjectKind::Constraint,
+                    CatalogParent::Graph(_) | CatalogParent::GraphType(_)
+                )
+                | (
+                    CatalogObjectKind::Procedure,
+                    CatalogParent::Catalog(_)
+                        | CatalogParent::Graph(_)
+                        | CatalogParent::GraphType(_)
                 )
         );
         if !valid_parent {
@@ -435,6 +467,12 @@ impl CatalogDescriptor {
                 creation: self.creation.generation(),
                 descriptor: self.generation,
             });
+        }
+        match &self.payload {
+            CatalogPayload::Index(index) => index.validate()?,
+            CatalogPayload::Constraint(constraint) => constraint.validate()?,
+            CatalogPayload::Procedure(native) => native.validate()?,
+            _ => {}
         }
         Ok(())
     }

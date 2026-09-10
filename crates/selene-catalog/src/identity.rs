@@ -140,6 +140,22 @@ pub enum CatalogObjectId {
 }
 
 impl CatalogObjectId {
+    /// Numeric value within this typed identity's own allocation domain.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        match self {
+            Self::Catalog(id) => id.get(),
+            Self::Directory(id) => id.get(),
+            Self::Schema(id) => id.get(),
+            Self::Graph(id) => id.get(),
+            Self::GraphType(id) => id.get(),
+            Self::BindingTable(id) => id.get(),
+            Self::Procedure(id) => id.get(),
+            Self::Index(id) => id.get(),
+            Self::Constraint(id) => id.get(),
+        }
+    }
+
     /// Return the kind encoded by this typed identity.
     #[must_use]
     pub const fn kind(self) -> CatalogObjectKind {

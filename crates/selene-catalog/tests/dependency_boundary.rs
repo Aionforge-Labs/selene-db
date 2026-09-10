@@ -43,8 +43,8 @@ fn catalog_dependencies_are_allowlisted_and_workspace_is_acyclic() {
     let direct = normal_workspace_dependencies(catalog, &workspace_packages);
     assert_eq!(
         direct,
-        BTreeSet::new(),
-        "catalog must not depend on another workspace crate"
+        BTreeSet::from(["selene-db-core", "selene-db-profile"]),
+        "catalog may consume only storage-neutral core/profile declarations"
     );
 
     let graph = packages

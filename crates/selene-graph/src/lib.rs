@@ -84,7 +84,7 @@ pub use error::{
 };
 pub use graph::{
     CompositePropertyIndexEntry, GraphMeta, IndexedEntity, PropertyIndexEntry,
-    PropertyIndexStatsRow, SeleneGraph, TextIndexEntry, VectorIndexEntry,
+    PropertyIndexReadInfo, PropertyIndexStatsRow, SeleneGraph, TextIndexEntry, VectorIndexEntry,
 };
 pub use graph_types::{
     DropBehavior, EdgeEndpointDef, EdgeTypeDef, GraphTypeDef, MAX_RECORD_TYPE_NESTING, NodeTypeDef,

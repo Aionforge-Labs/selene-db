@@ -14,6 +14,7 @@ autobenches = false
 name = "selene_graph"
 
 [dependencies]
+selene-catalog.workspace = true
 selene-core = { package = "selene-db-core", path = "../selene-core", version = "2.0.0-alpha.1" }
 selene-persist.workspace = true
 arc-swap.workspace = true

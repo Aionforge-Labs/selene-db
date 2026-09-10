@@ -108,7 +108,10 @@ fn database_starts_with_only_catalog_root_and_empty_runtime_maps() {
     let database = Database::builder().build();
     let state = database.catalog().inner.state.load_full();
 
-    assert_eq!(state.catalog.descriptors().count(), 2);
+    assert_eq!(
+        state.catalog.descriptors().count(),
+        2 + database.catalog().inner.procedures.declarations().count()
+    );
     assert!(state.catalog.schemas().next().is_none());
     assert!(state.graphs.is_empty());
     assert!(state.graph_types.is_empty());
@@ -118,6 +121,9 @@ fn database_starts_with_only_catalog_root_and_empty_runtime_maps() {
             schema: 0,
             graph: 0,
             graph_type: 0,
+            index: 0,
+            constraint: 0,
+            procedure: database.catalog().inner.procedures.declarations().count() as u64,
         }
     );
 }

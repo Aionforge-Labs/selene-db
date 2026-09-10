@@ -87,6 +87,13 @@ enum DetachedGraphReplacement {
 }
 
 impl DetachedGraphReplacement {
+    fn bind_catalog(&mut self, catalog: &CatalogSnapshot) -> Result<()> {
+        match self {
+            Self::Snapshot(snapshot) => snapshot.bind_catalog(catalog),
+            Self::Prepared(prepared) => prepared.bind_catalog(catalog),
+        }
+        .map_err(Error::from_catalog_invariant)
+    }
     fn snapshot(&self) -> &SeleneGraph {
         match self {
             Self::Snapshot(snapshot) => snapshot,
@@ -268,7 +275,7 @@ impl DatabaseDraft {
     pub(crate) fn attach_prepared_graph(
         &mut self,
         id: GraphId,
-        prepared: PreparedGraphCommit,
+        mut prepared: PreparedGraphCommit,
     ) -> Result<()> {
         let Some(pinned) = self.pinned_graph else {
             return Err(Error::catalog_invariant(
@@ -285,6 +292,12 @@ impl DatabaseDraft {
             return Err(Error::catalog_invariant(
                 "prepared graph generation is not the detached generation successor",
             ));
+        }
+        if prepared.schema_changed() {
+            self.stage_registrations(id, &prepared)?;
+            prepared
+                .bind_catalog(&self.catalog)
+                .map_err(Error::from_catalog_invariant)?;
         }
         self.graph_removals.remove(&id);
         self.modified = true;
@@ -327,7 +340,7 @@ impl DatabaseInner {
     pub(crate) fn publish_database_draft(
         &self,
         _reservation: MutationReservation<'_>,
-        draft: DatabaseDraft,
+        mut draft: DatabaseDraft,
     ) -> Result<AuthorityOutcome> {
         if !draft.is_modified() && draft.pinned_graph.is_none() {
             return Ok(AuthorityOutcome::Committed);
@@ -342,6 +355,66 @@ impl DatabaseInner {
         }
 
         let current = self.state.load_full();
+        if draft.catalog.generation() != draft.base_catalog_generation {
+            self.procedures
+                .validate_catalog(&draft.catalog)
+                .map_err(Error::from_catalog_invariant)?;
+            for descriptor in draft.catalog.descriptors() {
+                if let Some(previous) = current.catalog.descriptor(descriptor.id())
+                    && descriptor != previous
+                    && (descriptor.generation() <= previous.generation()
+                        || descriptor.creation() != previous.creation()
+                        || descriptor.parent() != previous.parent())
+                {
+                    return Err(Error::from_catalog_invariant(
+                        selene_catalog::CatalogError::InvalidDeclaration {
+                            reason: "invalid_descriptor_revision",
+                        },
+                    ));
+                }
+            }
+            for descriptor in current
+                .catalog
+                .descriptors()
+                .chain(draft.catalog.descriptors())
+            {
+                if descriptor.payload().declaration_metadata().is_none()
+                    || current.catalog.descriptor(descriptor.id())
+                        == draft.catalog.descriptor(descriptor.id())
+                {
+                    continue;
+                }
+                if let selene_catalog::CatalogParent::Graph(id) = descriptor.parent()
+                    && !draft.graph_removals.contains(&id)
+                    && !draft.graph_replacements.contains_key(&id)
+                {
+                    return Err(Error::catalog_invariant(
+                        "declaration change lacks an atomic runtime replacement",
+                    ));
+                }
+                if matches!(
+                    descriptor.parent(),
+                    selene_catalog::CatalogParent::GraphType(_)
+                ) && descriptor
+                    .payload()
+                    .declaration_metadata()
+                    .is_some_and(|metadata| {
+                        metadata.state == selene_catalog::DeclarationState::Ready
+                    })
+                {
+                    return Err(Error::from_catalog_invariant(
+                        selene_catalog::CatalogError::InvalidDeclaration {
+                            reason: "unsupported_type_declaration_activation",
+                        },
+                    ));
+                }
+            }
+        }
+        for replacement in draft.graph_replacements.values_mut() {
+            if draft.catalog.generation() != draft.base_catalog_generation {
+                replacement.bind_catalog(&draft.catalog)?;
+            }
+        }
         if Arc::as_ptr(&current) as usize != draft.base_state_identity
             || current.publication != draft.base_publication
             || current.catalog.generation() != draft.base_catalog_generation

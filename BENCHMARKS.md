@@ -150,7 +150,9 @@ than regression thresholds.
 The bench also prints `CatalogSnapshot::memory_accounting`. This is a
 reproducible structural lower bound, not process resident memory: it sums inline
 descriptor/dictionary key-value sizes and owned string capacities, and excludes
-allocator metadata, `BTreeMap` node slack, and `Arc` control blocks.
+declaration payload heap allocations, allocator metadata, `BTreeMap` node slack,
+and `Arc` control blocks. The historical table below predates typed declarations;
+it is not current total-memory accounting.
 
 | Objects | Descriptors | Accounted bytes / descriptor | Dictionary entries | Accounted bytes / entry |
 |---:|---:|---:|---:|---:|
@@ -158,6 +160,119 @@ allocator metadata, `BTreeMap` node slack, and `Arc` control blocks.
 | 1,000 | 1,003 | 197.94 B | 1,001 | 95.98 B |
 
 ### Catalog lifecycle facade
+
+F02-PR02 adds `catalog_declaration/{lookup,clone_arc,draft_build}` to
+`catalog_descriptors` and `catalog_declaration/outer_publication` to
+`catalog_lifecycle`. These are additional groups in the existing registered
+targets, not new benchmark binaries.
+
+The following first table is the **pre-correction implementation**, before exact
+physical binding and end-to-end eligibility were corrected. Current-worktree
+measurements follow it. BTreeMap descriptor lookup is not runtime query overhead.
+
+Measured 2026-09-10 on Apple M5 (10 cores, 16 GiB), native arm64 macOS 27.0
+build 26A5425a, rustc 1.97.1, bench profile (opt-level 3, thin LTO, one codegen
+unit), mimalloc, worktree based on `099a7129436abbe9b35fb9df209b544641bcd03f`:
+
+```bash
+scripts/run-benches.sh --bench catalog_descriptors --compile-only
+scripts/run-benches.sh --bench catalog_lifecycle --compile-only
+scripts/run-benches.sh --profile quick --bench catalog_descriptors --filter catalog_declaration
+scripts/run-benches.sh --profile quick --bench catalog_lifecycle --filter catalog_declaration/outer_publication
+```
+
+Runs were serialized, with 10 samples, 100 ms warmup, and a requested 500 ms
+measurement window (Criterion extended the slowest rows). Intervals below are
+Criterion's reported time confidence intervals, not min/max observed samples.
+These are absolute characterization measurements, not a matched-baseline
+speedup claim or a release regression threshold.
+
+| Graph owners × declarations per owner | Owner/name lookup | Snapshot clone/drop | Detached catalog clone/validate/build/drop | Facade declaration create/publication |
+|---|---:|---:|---:|---:|
+| 100 × 4 | 17.031–17.221 ns | 3.2895–3.2967 ns | 131.37–131.82 µs | 303.05–317.31 µs |
+| 100 × 16 | 23.990–24.234 ns | 3.2946–3.3034 ns | 545.59–550.37 µs | Not measured |
+| 1,000 × 4 | 19.505–19.598 ns | 3.2945–3.3434 ns | 1.7608–1.7764 ms | Not measured |
+| 1,000 × 16 | 34.496–34.777 ns | 3.3005–3.3699 ns | 7.1263–7.2542 ms | 14.392–14.866 ms |
+
+Lower fixtures mix scalar, 384-dimensional flat-vector, text, and inactive
+arity-one constraint declarations. Only logical configurations are present, not
+accelerators. The draft row includes metadata cloning, complete validation,
+replacement construction and destruction; it is not an outer database store.
+Facade fixtures mix scalar/vector/text declarations across real empty graphs
+and include the frozen native inventory. The facade row times creation of one
+inactive projection declaration, including reservation, metadata validation,
+derived owner binding, outer publication and acknowledgement. Input cloning,
+initial fixtures, and the paired cleanup drop are outside the clock. Neither
+row measures filesystem durability. Snapshot clones share one `Arc`; draft and
+publication costs remain scale-dependent and are not claimed O(1).
+
+The facade rows were rebuilt and remeasured after the final descriptor-revision
+publication guard. An earlier intermediate-worktree run measured
+277.21–283.89 µs and 11.781–12.256 ms respectively. Criterion reported increases
+of approximately 10.7% and 21.8% against those saved intermediate samples. This
+is disclosed validation overhead, not a comparison against the supplied base
+revision; the correctness guard is retained. Larger catalog publication remains
+a measured follow-up, not grounds to weaken admission or claim a speedup.
+
+#### F02-PR02 pre-delivery correction: current measurements
+
+The same native host, toolchain, allocator, codegen, sample count, and clock
+boundaries above were used. Rebuilt, serialized reruns of the two existing
+catalog groups produced these current confidence intervals:
+
+| Graphs × declarations | Descriptor lookup | Snapshot clone/drop | Detached catalog build/drop | Facade declaration publication |
+|---|---:|---:|---:|---:|
+| 100 × 4 | 16.817–17.379 ns | 3.3506–3.5540 ns | 132.25–140.24 µs | 284.87–289.02 µs |
+| 100 × 16 | 25.210–26.189 ns | 3.3201–3.5222 ns | 550.90–588.50 µs | Not measured |
+| 1,000 × 4 | 19.633–20.873 ns | 3.3348–3.5450 ns | 1.7740–1.8942 ms | Not measured |
+| 1,000 × 16 | 34.286–36.352 ns | 3.3590–3.5607 ns | 6.9060–7.3854 ms | 11.946–12.247 ms |
+
+The added `catalog_runtime_binding` group in `catalog_lifecycle` measures the
+actual property/vector accessor and typed candidate-probe paths. Each fixture
+has **1,024 nodes and one physical index**; vector fixtures use 16-dimensional
+flat indexes. Bound/unbound variants share identical physical data and index
+allocations. Owner declaration counts are 1, 16, and 256: one ready registration
+named `zz_query`, sorted after the remaining inactive, non-backed declarations.
+All setup and key/value construction is outside the clock. Accessor rows include
+returned Arc clone/drop; candidate rows include the one-hit candidate result's
+construction/drop. These are access/probe costs, not ANN scoring or whole-query
+latency. No concurrent build/benchmark was launched during measurement.
+
+```bash
+scripts/run-benches.sh --bench catalog_lifecycle --compile-only
+# Before correcting the runtime implementation:
+scripts/run-benches.sh --profile quick --bench catalog_lifecycle --filter catalog_runtime_binding --save-baseline f02-pr02-pre-correction
+# After correction, against that saved same-fixture baseline:
+scripts/run-benches.sh --profile quick --bench catalog_lifecycle --filter catalog_runtime_binding --baseline f02-pr02-pre-correction
+scripts/run-benches.sh --bench catalog_descriptors --compile-only
+scripts/run-benches.sh --profile quick --bench catalog_descriptors --filter catalog_declaration
+scripts/run-benches.sh --profile quick --bench catalog_lifecycle --filter catalog_declaration/outer_publication
+```
+
+All intervals below are nanoseconds. Exact IDs are
+`catalog_runtime_binding/<operation>_<bound|unbound>/<declarations>`.
+
+| Operation | Declarations | Before, unbound | Before, bound | Corrected, unbound | Corrected, bound |
+|---|---:|---:|---:|---:|---:|
+| property_access | 1 | 9.1176–9.3897 | 39.276–40.577 | 9.7657–9.8719 | 28.007–29.453 |
+| property_access | 16 | 9.0791–9.3374 | 41.461–43.899 | 9.9713–10.339 | 27.877–29.257 |
+| property_access | 256 | 8.7615–9.1785 | 141.58–148.02 | 9.6340–10.084 | 27.700–28.608 |
+| vector_access | 1 | 9.1856–9.3963 | 40.690–41.476 | 9.7089–10.206 | 28.411–29.512 |
+| vector_access | 16 | 9.2243–9.4754 | 42.269–44.097 | 9.9783–10.621 | 28.291–29.796 |
+| vector_access | 256 | 9.0882–9.4875 | 143.05–151.40 | 10.004–10.511 | 28.350–28.946 |
+| candidate_probe | 1 | 44.986–46.638 | 44.475–45.877 | 44.512–45.899 | 62.287–65.714 |
+| candidate_probe | 16 | 42.009–42.707 | 42.872–45.213 | 44.986–46.993 | 61.152–64.196 |
+| candidate_probe | 256 | 42.764–44.055 | 42.027–43.989 | 43.285–44.514 | 62.143–64.046 |
+
+The original bound accessor cost grew with owner declarations. Admission now
+precompiles keyed metadata, with no whole-owner scan or String-to-DbString/Vec
+construction on scalar/vector probes. Current native names/configuration and
+drift remain checked. Bound access at 256 declarations improved by about 81% in
+this matched fixture. Unbound accessor controls rose roughly 0.6–1.2 ns, and are
+reported rather than hidden. The **candidate-probe increase is correctness
+overhead**: its original bound path bypassed eligibility entirely; it now pays
+the required check. This is not a claim that candidate queries became faster.
+Ten-sample results remain characterization, not general throughput guarantees.
 
 Bench bin: `catalog_lifecycle`. The quick profile measures absolute schema
 resolve, deterministic schema listing, outer snapshot clone, schema

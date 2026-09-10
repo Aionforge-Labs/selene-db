@@ -127,30 +127,27 @@ pub(super) fn execute(
 
     let snapshot = ctx.snapshot();
     let mut rows = snapshot
-        .iter_vector_index_entries()
+        // Physical diagnostics intentionally inspect retained backing regardless
+        // of catalog query eligibility. The existing metadata-only entry methods
+        // expose counts/configuration, not an unchecked query or row API.
+        .vector_index.iter()
         .map(
-            |(label, property, kind, dimension, hnsw_config, ivf_config, explicit_name)| {
-                let index = snapshot
-                    .vector_index_for(&label, &property)
-                    .ok_or_else(|| ProcedureError::Internal {
-                        detail: format!(
-                            "vector index registration for ({label}, {property}) had no index"
-                        ),
-                    })?;
-                let usage = index.memory_usage();
-                let name = render_vector_index_name(label.clone(), property.clone(), explicit_name);
-                let kind = render_vector_index_kind(kind, dimension, hnsw_config, ivf_config);
-                Ok(StatsRow {
-                    label,
-                    property,
+            |((label, property), entry)| {
+                let usage = entry.memory_usage();
+                let name = render_vector_index_name(label.clone(), property.clone(), entry.name.clone());
+                let dimension = entry.dimension();
+                let kind = render_vector_index_kind(entry.kind(), dimension, entry.hnsw_config(), entry.ivf_config());
+                StatsRow {
+                    label: label.clone(),
+                    property: property.clone(),
                     name,
                     kind,
                     dimension,
                     usage,
-                })
+                }
             },
         )
-        .collect::<Result<Vec<_>, ProcedureError>>()?;
+        .collect::<Vec<_>>();
     rows.sort_by(|left, right| {
         left.label
             .as_str()
@@ -261,14 +258,10 @@ fn render_vector_index_name(
     explicit
         .map(|name| name.as_str().to_owned())
         .unwrap_or_else(|| {
-            let label = label.as_str();
-            let property = property.as_str();
-            format!(
-                "vidx:{}:{}:{}:{}",
-                label.len(),
-                label,
-                property.len(),
-                property
+            selene_catalog::generated_index_name(
+                selene_catalog::IndexFamily::Vector,
+                label.as_str(),
+                std::iter::once(property.as_str()),
             )
         })
 }
