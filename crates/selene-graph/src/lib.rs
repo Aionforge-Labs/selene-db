@@ -108,7 +108,7 @@ pub use selene_persist::{
     DEFAULT_WAL_FILE_NAME, SectionCompression, SyncPolicy, WalConfig, WalRotationOutcome,
     WalTailReason, WalTailRepair,
 };
-pub use shared::{SharedGraph, SharedGraphBuilder};
+pub use shared::{GraphAllocationAuthority, SharedGraph, SharedGraphBuilder};
 pub use store::{EdgeStore, NodeStore};
 pub use text_index::{TextIndex, TextIndexMemoryUsage, TextIndexStats};
 pub use text_search::{TextSearchError, TextSearchHit};

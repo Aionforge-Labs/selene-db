@@ -8,6 +8,8 @@ use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
+mod stored;
+mod stored_default;
 
 use crate::{
     ByteStringType, CharacterStringType, CoreError, CoreResult, DbString, DecimalType,
@@ -391,6 +393,7 @@ pub struct PropertyDef {
     /// Whether `Value::Null` is allowed.
     pub nullable: bool,
     /// Optional default value.
+    #[serde(with = "stored_default")]
     pub default: Option<Value>,
     /// Whether updates to this property are forbidden after creation.
     #[serde(default)]
@@ -421,6 +424,7 @@ pub struct PropertyDefV1 {
     /// Whether `Value::Null` is allowed.
     pub nullable: bool,
     /// Optional default value.
+    #[serde(with = "stored_default")]
     pub default: Option<Value>,
 }
 

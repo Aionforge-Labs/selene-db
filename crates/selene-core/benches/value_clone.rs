@@ -13,6 +13,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[path = "value_clone/json.rs"]
 mod json;
+#[path = "value_clone/numeric.rs"]
+mod numeric;
 #[path = "value_clone/vector.rs"]
 mod vector;
 
@@ -415,6 +417,6 @@ fn vector_components(dim: usize) -> Vec<f32> {
 criterion_group! {
     name = value_clone;
     config = bench_config();
-    targets = bench_value_clone, bench_label_set, bench_change_diff, vector::bench_vector_value, vector::bench_vector_distance, vector::bench_vector_exact_top_k, vector::bench_vector_gpu_baseline
+    targets = bench_value_clone, bench_label_set, bench_change_diff, numeric::bench_numeric_keys, vector::bench_vector_value, vector::bench_vector_distance, vector::bench_vector_exact_top_k, vector::bench_vector_gpu_baseline
 }
 criterion_main!(value_clone);

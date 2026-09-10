@@ -343,7 +343,7 @@ fn duration_typed_index_returns_same_rows_as_linear() {
         let mut txn = graph.begin_write();
         {
             let mut m = txn.mutator();
-            for value in ["PT30M", "PT1H", "PT2H", "P1M"] {
+            for value in ["PT30M", "PT1H", "PT2H", "PT4H"] {
                 m.create_node(
                     LabelSet::single(event.clone()),
                     props([(

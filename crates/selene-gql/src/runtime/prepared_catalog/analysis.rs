@@ -112,8 +112,13 @@ impl Session<'_> {
         let environment = resolution.environment(catalog, None);
         let statement =
             crate::parse(&prepared.source).map_err(|source| ExecutorError::Parse { source })?;
-        let analyzed = crate::analyze::analyze_catalog(statement, registry, environment)
-            .map_err(|source| ExecutorError::Analysis { source })?;
+        let analyzed = crate::analyze::analyze_with_parameters(
+            statement,
+            registry,
+            Some(environment),
+            &prepared.request.parameter_types()?,
+        )
+        .map_err(|source| ExecutorError::Analysis { source })?;
         self.prepare_analyzed_catalog_request(
             &prepared.source,
             analyzed,

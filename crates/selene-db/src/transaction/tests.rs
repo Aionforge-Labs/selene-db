@@ -8,7 +8,7 @@ use selene_catalog::{
     CatalogDescriptor, CatalogObjectId, CatalogTransaction, CreationMetadata,
     GraphId as LowerGraphId, SchemaId as LowerSchemaId,
 };
-use selene_core::{GraphId as CoreGraphId, LabelSet, PropertyMap, Value};
+use selene_core::{GraphId as CoreGraphId, LabelSet, PropertyMap};
 use selene_graph::SharedGraph;
 
 use super::{AuthorityOutcome, DatabaseDraft};
@@ -227,7 +227,9 @@ fn selected_session_reports_indeterminate_with_complete_graph_visible() {
     };
     assert_eq!(
         result.rows()[0].values(),
-        &[Value::NodeRef(selene_core::NodeId::new(1))]
+        &[crate::Value::NodeRef(
+            session.node_reference(selene_core::NodeId::new(1)).unwrap()
+        )]
     );
 }
 

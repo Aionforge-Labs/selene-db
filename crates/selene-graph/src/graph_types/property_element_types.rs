@@ -1,9 +1,6 @@
 //! Typed `LIST<T>` element descriptors for the closed-graph catalog.
 
-use selene_core::{
-    ByteStringType, CharacterStringType, DecimalType, PropertyValueType, Value,
-    byte_string_fits_type, character_string_fits_type, decimal_fits_type,
-};
+use selene_core::{ByteStringType, CharacterStringType, DecimalType, PropertyValueType, Value};
 use serde::{Deserialize, Serialize};
 
 /// Persistable element-type descriptor for `LIST<T>` property declarations.
@@ -57,23 +54,6 @@ impl PropertyElementType {
     /// Return true when `value` belongs to this element type.
     #[must_use]
     pub fn matches(&self, value: &Value) -> bool {
-        match self {
-            Self::NotNull(inner) => !matches!(value, Value::Null) && inner.matches(value),
-            _ if matches!(value, Value::Null) => true,
-            Self::Scalar(value_type) => value_type.matches(value),
-            Self::CharacterString(character_string_type) => {
-                matches!(value, Value::String(value) if character_string_fits_type(value, *character_string_type))
-            }
-            Self::Decimal(decimal_type) => {
-                matches!(value, Value::Decimal(value) if decimal_fits_type(*value, *decimal_type))
-            }
-            Self::ByteString(byte_string_type) => {
-                matches!(value, Value::Bytes(value) if byte_string_fits_type(value, *byte_string_type))
-            }
-            Self::List(element_type) => match value {
-                Value::List(values) => values.iter().all(|value| element_type.matches(value)),
-                _ => false,
-            },
-        }
+        self.structural_type().is_ok_and(|ty| ty.matches(value))
     }
 }

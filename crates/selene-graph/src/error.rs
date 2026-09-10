@@ -497,6 +497,12 @@ impl GraphError {
             | Self::VectorIndexInvalidIvfConfig { .. }
             | Self::VectorIndexValueRejected { .. }
             | Self::TextIndexAlreadyExists { .. } => "22G03",
+            Self::TypeViolation(crate::TypeViolation::UniquePropertyComparison {
+                source, ..
+            }) => match source {
+                selene_core::ValueComparisonError::NotComparable => "22G04",
+                selene_core::ValueComparisonError::TooDeep => "53000",
+            },
             Self::TypeViolation(_) => "G2000",
             Self::StoreAssignment(source) => source.exception.gqlstatus(),
             Self::Core(source) => source.gqlstatus(),

@@ -160,15 +160,14 @@ fn for_position_aliases_are_integer() {
 }
 
 #[test]
-fn record_literal_resolves_to_open_record() {
-    // An open `RECORD{...}` value literal resolves to the open record type
-    // (ISO feature GV45, `<record constructor>` clause 20.18). `RecordType::Open`
-    // is a pure tag with no per-field inference; the executor builds the open
-    // record at runtime.
+fn record_literal_retains_its_named_field_descriptor() {
     let analyzed = analyze_one("RETURN {score: 1} AS r").unwrap();
     assert_eq!(
         projection_type(&analyzed, "r"),
-        AnalyzedType::Resolved(GqlType::Record(selene_gql::RecordType::Open))
+        AnalyzedType::Resolved(GqlType::Record(selene_gql::RecordType::Closed(vec![(
+            selene_core::db_string("score").unwrap(),
+            GqlType::Integer
+        )])))
     );
 }
 

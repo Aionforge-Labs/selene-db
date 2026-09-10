@@ -31,6 +31,8 @@ impl BindingTableField {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BindingTableDescriptor {
     fields: Vec<BindingTableField>,
+    ordering: Vec<selene_core::ResultOrderKey>,
+    preferred_columns: Vec<usize>,
 }
 
 impl BindingTableDescriptor {
@@ -38,6 +40,8 @@ impl BindingTableDescriptor {
     #[must_use]
     pub fn from_schema(schema: &BindingTableSchema) -> Self {
         Self {
+            ordering: Vec::new(),
+            preferred_columns: (0..schema.columns.len()).collect(),
             fields: schema
                 .columns
                 .iter()
@@ -53,6 +57,24 @@ impl BindingTableDescriptor {
     #[must_use]
     pub fn fields(&self) -> &[BindingTableField] {
         &self.fields
+    }
+
+    fn from_table(table: &BindingTable) -> Self {
+        let mut descriptor = Self::from_schema(table.schema());
+        descriptor.ordering = table.ordering().to_vec();
+        descriptor
+    }
+
+    /// Declared ordering, not an observation of the current rows.
+    #[must_use]
+    pub fn ordering(&self) -> &[selene_core::ResultOrderKey] {
+        &self.ordering
+    }
+
+    /// Preferred presentation order as zero-based descriptor field coordinates.
+    #[must_use]
+    pub fn preferred_columns(&self) -> &[usize] {
+        &self.preferred_columns
     }
 }
 
@@ -199,7 +221,7 @@ impl ExecutionOutcome {
         match output {
             StatementOutput::Rows(table) => {
                 let base = regular_completion(table.row_count());
-                let declared = BindingTableDescriptor::from_schema(table.schema());
+                let declared = BindingTableDescriptor::from_table(&table);
                 Self::RegularResult {
                     table,
                     declared,
@@ -220,7 +242,7 @@ impl ExecutionOutcome {
                     |table| {
                         (
                             regular_completion(table.row_count()),
-                            Some(BindingTableDescriptor::from_schema(table.schema())),
+                            Some(BindingTableDescriptor::from_table(table)),
                         )
                     },
                 );

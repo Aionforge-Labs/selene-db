@@ -116,6 +116,9 @@ impl PropertyDiff {
         removed: impl IntoIterator<Item = DbString>,
     ) -> CoreResult<Self> {
         let mut set: SmallVec<[(DbString, Value); 4]> = set.into_iter().collect();
+        for (_, value) in &set {
+            crate::StoredValue::validate(value)?;
+        }
         if set.len() > 1 && !set.windows(2).all(|pair| pair[0].0 < pair[1].0) {
             set.sort_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
             let mut deduped = SmallVec::new();
@@ -145,6 +148,14 @@ impl PropertyDiff {
     pub fn is_empty(&self) -> bool {
         self.set.is_empty() && self.removed.is_empty()
     }
+
+    /// Validate directly constructed legacy diff payloads before mutation.
+    pub fn validate_stored_values(&self) -> CoreResult<()> {
+        for (_, value) in &self.set {
+            crate::StoredValue::validate(value)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -164,6 +175,8 @@ impl Serialize for PropertyDiff {
     where
         S: Serializer,
     {
+        self.validate_stored_values()
+            .map_err(serde::ser::Error::custom)?;
         // Canonicalize on serialize. `PropertyDiff::new` already sorts, so this
         // is a no-op (byte-identical) for constructed diffs. The fields are
         // public, so direct construction still emits canonical wire.
@@ -192,6 +205,9 @@ impl<'de> Deserialize<'de> for PropertyDiff {
         // strictly-ascending removed, disjoint) rather than re-sorting; a
         // non-canonical payload is rejected as malformed.
         let wire = PropertyDiffWire::deserialize(deserializer)?;
+        for (_, value) in &wire.set {
+            crate::StoredValue::validate(value).map_err(serde::de::Error::custom)?;
+        }
         for window in wire.set.windows(2) {
             if window[0].0 >= window[1].0 {
                 return Err(serde::de::Error::custom(

@@ -4,7 +4,6 @@ use std::fmt;
 
 use selene_core::{
     Change, DbString, EdgeId, LabelSet, NodeId, PropertyMap, PropertyValueType, Value,
-    byte_string_fits_type, character_string_fits_type, decimal_fits_type,
 };
 
 use crate::error::{GraphError, GraphResult};
@@ -151,6 +150,20 @@ pub enum TypeViolation {
         property: DbString,
         /// Node or edge type that declares the property.
         declared_in: DbString,
+    },
+
+    /// UNIQUE values do not share a selected comparison domain.
+    #[error("{entity_id} property {property} declared in {declared_in}: {source}")]
+    #[diagnostic(code(SLENE_G_039))]
+    UniquePropertyComparison {
+        /// Entity whose value cannot be compared in the constraint domain.
+        entity_id: EntityId,
+        /// Unique property name.
+        property: DbString,
+        /// Node or edge type declaring the constraint.
+        declared_in: DbString,
+        /// Comparison failure, distinct from duplicate and assignment failures.
+        source: selene_core::ValueComparisonError,
     },
 }
 
@@ -532,6 +545,7 @@ pub(crate) fn validate_property_default(declaration: &PropertyTypeDef) -> GraphR
         return Ok(());
     };
     let value = default.to_value()?;
+    selene_core::StoredValue::validate(&value)?;
     if matches!(value, Value::Null) {
         if declaration.required {
             return Err(GraphError::Inconsistent {
@@ -557,54 +571,9 @@ pub(crate) fn validate_property_default(declaration: &PropertyTypeDef) -> GraphR
 }
 
 fn property_value_matches(declaration: &PropertyTypeDef, value: &Value) -> bool {
-    match declaration.value_type {
-        PropertyValueType::List => {
-            let Some(element_type) = declaration.list_element_type.as_ref() else {
-                return matches!(value, Value::List(_));
-            };
-            match value {
-                Value::List(values) => values.iter().all(|value| element_type.matches(value)),
-                _ => false,
-            }
-        }
-        // A RECORD-typed property accepts either record value form — the open
-        // `Value::Record` (the `RECORD{...}` constructor / by-name form) or the positional
-        // `Value::RecordTyped` — because the constructor always yields the open form
-        // regardless of the declared type. Structural conformance against a closed
-        // descriptor (or permissive acceptance for an open/bare `None` descriptor) is then
-        // decided by [`RecordFieldTypes::matches`].
-        // Why: closed/typed RECORD conformance per ISO 39075:2024 §4.15.4 (a closed record
-        // value must have the same field-name set as the descriptor and each field must
-        // match) → graph type violation G2000 (§4.13.2.1).
-        PropertyValueType::Record | PropertyValueType::RecordTyped => {
-            if !matches!(value, Value::Record(_) | Value::RecordTyped(_)) {
-                return false;
-            }
-            match declaration.record_field_types.as_ref() {
-                Some(fields) => fields.matches(value),
-                None => true,
-            }
-        }
-        PropertyValueType::Decimal => match declaration.decimal_type {
-            Some(decimal_type) => {
-                matches!(value, Value::Decimal(value) if decimal_fits_type(*value, decimal_type))
-            }
-            None => declaration.value_type.matches(value),
-        },
-        PropertyValueType::String => match declaration.character_string_type {
-            Some(character_string_type) => {
-                matches!(value, Value::String(value) if character_string_fits_type(value, character_string_type))
-            }
-            None => declaration.value_type.matches(value),
-        },
-        PropertyValueType::Bytes => match declaration.byte_string_type {
-            Some(byte_string_type) => {
-                matches!(value, Value::Bytes(value) if byte_string_fits_type(value, byte_string_type))
-            }
-            None => declaration.value_type.matches(value),
-        },
-        _ => declaration.value_type.matches(value),
-    }
+    declaration
+        .structural_type()
+        .is_ok_and(|ty| ty.matches(value))
 }
 
 #[cfg(test)]

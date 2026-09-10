@@ -8,7 +8,7 @@ use selene_gql::{
     EdgeDirection, EmptyProcedureRegistry, ExecutionPlan, ExecutorError, GqlStatus, GqlType,
     MutationOp, PipelineOp, TxContext, analyze, execute_pattern, execute_pipeline, parse, plan,
 };
-use selene_graph::{CommitOutcome, GraphError, SharedGraph};
+use selene_graph::{CommitOutcome, SharedGraph};
 
 use exec_common::{column_values, db_string, props};
 

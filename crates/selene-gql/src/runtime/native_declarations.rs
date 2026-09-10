@@ -85,7 +85,7 @@ pub(super) fn descriptor(
 }
 
 fn native_type(ty: &GqlType) -> NativeType {
-    match ty {
+    let native = match ty {
         GqlType::Any => NativeType::Any,
         GqlType::AnyProperty => NativeType::AnyProperty,
         GqlType::Boolean => NativeType::Boolean,
@@ -103,5 +103,11 @@ fn native_type(ty: &GqlType) -> NativeType {
         GqlType::Record(crate::RecordType::Open) => NativeType::OpenRecord,
         GqlType::List(element) => NativeType::List(Box::new(native_type(element))),
         _ => panic!("native inventory requires a storage-neutral representation for {ty:?}"),
-    }
+    };
+    assert_eq!(
+        native.structural_type().expect("valid native descriptor"),
+        crate::normalize_value_type(ty).expect("supported native source type"),
+        "native signature and runtime structural meaning must agree"
+    );
+    native
 }

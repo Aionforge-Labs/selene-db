@@ -29,6 +29,9 @@ fn construct_path(
     span: SourceSpan,
     ctx: &EvalCtx<'_, '_, '_, '_>,
 ) -> Result<Value, ExecutorError> {
+    for value in &values {
+        super::require_live_referent(value, span, ctx)?;
+    }
     if values.is_empty() || values.len().is_multiple_of(2) {
         return malformed_path(
             "PATH constructor requires node, edge, node, ... elements",

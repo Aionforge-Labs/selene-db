@@ -180,17 +180,17 @@ fn large_integer_in_list_is_exact() {
 }
 
 #[test]
-fn lossy_integer_float_ordering_is_data_exception() {
+fn integer_float_ordering_compares_exact_values_without_a_lossy_cast() {
     let expr = ValueExpr::BinaryOp {
         op: BinaryOp::Gt,
         lhs: Box::new(int_lit(9_007_199_254_740_993)),
         rhs: Box::new(float_lit(9_007_199_254_740_992.0)),
         span: span(),
     };
-    let err = eval_result(&expr).expect_err("lossy comparison errors");
-
-    assert!(matches!(err, ExecutorError::DataException { .. }));
-    assert_eq!(err.gqlstatus().as_str(), "22G04");
+    // ISO §19.3 compares numeric values. The exact successor of 2^53 is
+    // greater than the exactly representable binary value 2^53, even though
+    // converting that successor to f64 would erase the difference.
+    assert_eq!(eval_result(&expr).unwrap(), Value::Bool(true));
 }
 
 #[test]

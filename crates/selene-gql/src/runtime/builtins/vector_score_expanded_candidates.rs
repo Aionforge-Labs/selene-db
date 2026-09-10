@@ -73,7 +73,7 @@ pub(super) fn execute(
 
     let property = string_arg(PROC_NAME, &args[0], "property")?;
     let query = query_arg(PROC_NAME, &args[1])?;
-    let roots = candidate_set_arg(PROC_NAME, &args[2], "roots")?;
+    let roots = candidate_set_arg(ctx.snapshot(), PROC_NAME, &args[2], "roots")?;
     let edge_label = string_arg(PROC_NAME, &args[3], "edge_label")?;
     let k = cardinality_arg(PROC_NAME, &args[4], "k")?;
     let direction = args

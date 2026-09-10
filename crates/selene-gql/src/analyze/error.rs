@@ -35,6 +35,16 @@ use crate::{
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[non_exhaustive]
 pub enum AnalysisError {
+    /// An inferred or supplied type has no valid normalized structural form.
+    #[error("invalid structural type: {source}")]
+    #[diagnostic(code(SLENE_A_STRUCTURAL_TYPE))]
+    StructuralType {
+        /// Exact normalization failure, retained in the source chain.
+        source: selene_core::StructuralTypeError,
+        /// Original expression or declaration span.
+        #[label("invalid value type")]
+        span: SourceSpan,
+    },
     /// A request would access a second graph under unsupported GT03.
     #[error("accessing multiple graphs is not supported: {first:?} then {requested:?}")]
     #[diagnostic(code(SLENE_GQL_25G04))]
@@ -533,6 +543,19 @@ impl AnalysisError {
     #[must_use]
     pub const fn gqlstatus(&self) -> GqlStatus {
         match self {
+            Self::StructuralType {
+                source: selene_core::StructuralTypeError::Unsupported(_),
+                ..
+            } => GqlStatus::FEATURE_NOT_SUPPORTED,
+            Self::StructuralType {
+                source: selene_core::StructuralTypeError::DepthLimit,
+                ..
+            } => GqlStatus::PROGRAM_LIMIT_EXCEEDED,
+            Self::StructuralType {
+                source: selene_core::StructuralTypeError::DuplicateField(_),
+                ..
+            } => GqlStatus::RECORD_DATA_FIELD_UNASSIGNABLE,
+            Self::StructuralType { .. } => GqlStatus::DATATYPE_MISMATCH,
             Self::MultipleGraphs { .. } => GqlStatus::MULTIPLE_GRAPHS_NOT_SUPPORTED,
             Self::UndefinedReference { .. } => GqlStatus::UNDEFINED_REFERENCE,
             Self::Shadow { .. }

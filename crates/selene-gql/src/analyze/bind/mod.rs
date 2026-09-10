@@ -36,11 +36,12 @@ pub(crate) fn bind_statement(
     stmt: std::sync::Arc<Statement>,
     registry: &dyn ProcedureRegistry,
     environment: Option<super::catalog::CatalogEnvironment>,
+    supplied: &std::collections::BTreeMap<DbString, selene_core::StructuralType>,
 ) -> Result<AnalyzedStatement, AnalysisError> {
     let parameters = parameters::collect_statement_parameters(&stmt)?;
     let mut ctx = BindContext::new(stmt.span(), registry);
     ctx.catalog = environment.map(super::catalog::CatalogResolver::new);
-    ctx.expr_ids.set_parameter_types(&parameters);
+    ctx.expr_ids.set_parameter_types(&parameters, supplied);
     let bind_result = (|| -> Result<(), AnalysisError> {
         match stmt.as_ref() {
             Statement::Query(pipeline) => query::bind_query_pipeline(&mut ctx, pipeline)?,
@@ -394,8 +395,18 @@ impl<'ctx> BindContext<'ctx> {
         result
     }
 
-    pub(crate) fn allocate_expr(&mut self, expr: &ValueExpr, ty: AnalyzedType) -> ExprId {
-        let id = self.expr_types.push(ty);
+    pub(crate) fn allocate_expr(
+        &mut self,
+        expr: &ValueExpr,
+        ty: AnalyzedType,
+    ) -> Result<ExprId, AnalysisError> {
+        let id = self
+            .expr_types
+            .push(ty)
+            .map_err(|source| AnalysisError::StructuralType {
+                source,
+                span: expr.span(),
+            })?;
         let binding = if let ValueExpr::Variable { name, .. } = expr {
             self.scopes.resolve(self.current, name.clone())
         } else {
@@ -410,7 +421,7 @@ impl<'ctx> BindContext<'ctx> {
                 &self.expr_ids,
             ));
         self.expr_ids.insert(expr, id);
-        id
+        Ok(id)
     }
 
     pub(crate) fn expr_type(&self, id: ExprId) -> &AnalyzedType {

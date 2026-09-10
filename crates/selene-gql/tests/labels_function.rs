@@ -124,19 +124,17 @@ fn labels_propagates_null_and_rejects_non_elements() {
 }
 
 #[test]
-fn labels_returns_empty_for_unknown_element_reference() {
+fn labels_rejects_absent_element_references() {
     let graph = SharedGraph::new(GraphId::new(61_004));
     let mut session = Session::new(&graph);
-
-    session.bind_parameter(db_string("node"), Value::NodeRef(NodeId::new(999)));
-    assert_eq!(
-        single_value(&mut session, "RETURN LABELS($node) AS \"labels\""),
-        Value::List(Vec::new())
-    );
-
-    session.bind_parameter(db_string("edge"), Value::EdgeRef(EdgeId::new(999)));
-    assert_eq!(
-        single_value(&mut session, "RETURN LABELS($edge) AS \"labels\""),
-        Value::List(Vec::new())
-    );
+    for value in [
+        Value::NodeRef(NodeId::new(999)),
+        Value::EdgeRef(EdgeId::new(999)),
+    ] {
+        session.bind_parameter(db_string("element"), value);
+        let error = session
+            .execute_source("RETURN LABELS($element)", &EmptyProcedureRegistry)
+            .unwrap_err();
+        assert_eq!(error.gqlstatus().as_str(), "22G11");
+    }
 }

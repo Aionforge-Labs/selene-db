@@ -110,6 +110,7 @@ impl PartialEq for Binding {
 pub struct BindingTable {
     schema: BindingTableSchema,
     rows: Vec<Binding>,
+    ordering: Vec<selene_core::ResultOrderKey>,
 }
 
 impl BindingTable {
@@ -119,6 +120,7 @@ impl BindingTable {
         Self {
             schema,
             rows: Vec::new(),
+            ordering: Vec::new(),
         }
     }
 
@@ -130,19 +132,34 @@ impl BindingTable {
                 columns: Vec::new(),
             },
             rows: vec![Binding::empty()],
+            ordering: Vec::new(),
         }
     }
 
     /// Construct a table from a schema and row vector.
     #[must_use]
     pub fn new(schema: BindingTableSchema, rows: Vec<Binding>) -> Self {
-        Self { schema, rows }
+        Self {
+            schema,
+            rows,
+            ordering: Vec::new(),
+        }
     }
 
     /// Borrow the table schema.
     #[must_use]
     pub const fn schema(&self) -> &BindingTableSchema {
         &self.schema
+    }
+
+    /// Declared global result ordering, retained independently of row count.
+    #[must_use]
+    pub fn ordering(&self) -> &[selene_core::ResultOrderKey] {
+        &self.ordering
+    }
+
+    pub(crate) fn declare_result_order(&mut self, plan: &crate::ExecutionPlan) {
+        self.ordering = super::result_order::for_plan(plan, &self.schema);
     }
 
     /// Borrow all rows.

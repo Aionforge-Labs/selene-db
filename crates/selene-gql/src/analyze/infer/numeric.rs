@@ -25,21 +25,16 @@ pub(crate) fn is_numeric(ty: &GqlType) -> bool {
 
 /// Return true if `arg_ty` can flow into a procedure parameter of `param_ty`.
 pub(crate) fn argument_assignable(arg_ty: &GqlType, param_ty: &GqlType, nullable: bool) -> bool {
-    if matches!(param_ty, GqlType::NotNull(_)) && matches!(arg_ty, GqlType::Null) {
-        return false;
-    }
-    if matches!(arg_ty, GqlType::Null) {
-        return nullable;
-    }
-    let arg_ty = arg_ty.strip_not_null();
-    let param_ty = param_ty.strip_not_null();
-    if arg_ty == param_ty {
-        return true;
-    }
-    let (Some(arg), Some(param)) = (numeric_kind(arg_ty), numeric_kind(param_ty)) else {
+    let (Ok(source), Ok(target)) = (
+        crate::normalize_value_type(arg_ty),
+        crate::normalize_value_type(param_ty),
+    ) else {
         return false;
     };
-    numeric_assignable(arg, param)
+    let accepts_null = nullable && target.is_nullable();
+    target
+        .with_nullability(accepts_null)
+        .assignment_compatible(&source)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,29 +105,6 @@ fn numeric_kind(ty: &GqlType) -> Option<NumericKind> {
         GqlType::Float64 | GqlType::Double => NumericKind::Float(FloatKind::F64),
         _ => return None,
     })
-}
-
-fn numeric_assignable(arg: NumericKind, param: NumericKind) -> bool {
-    match (arg, param) {
-        (NumericKind::Integer(arg), NumericKind::Integer(param)) => integer_assignable(arg, param),
-        (NumericKind::Integer(_), NumericKind::Decimal | NumericKind::Float(_)) => true,
-        (NumericKind::Decimal, NumericKind::Decimal | NumericKind::Float(_)) => true,
-        (NumericKind::Float(arg), NumericKind::Float(param)) => float_assignable(arg, param),
-        (NumericKind::Decimal | NumericKind::Float(_), NumericKind::Integer(_))
-        | (NumericKind::Float(_), NumericKind::Decimal) => false,
-    }
-}
-
-fn float_assignable(arg: FloatKind, param: FloatKind) -> bool {
-    matches!(arg, FloatKind::Unsized) || matches!(param, FloatKind::Unsized) || arg <= param
-}
-
-fn integer_assignable(arg: IntegerKind, param: IntegerKind) -> bool {
-    match (arg.signed, param.signed) {
-        (true, true) | (false, false) => arg.width <= param.width,
-        (true, false) => false,
-        (false, true) => param.width > arg.width,
-    }
 }
 
 fn integer_result(lhs: IntegerKind, rhs: IntegerKind) -> GqlType {

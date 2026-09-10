@@ -7,6 +7,33 @@ use serde::{
 
 use crate::NativeType;
 
+impl NativeType {
+    /// Resolve catalog signature metadata through the shared structural type
+    /// service. Catalog encoding is not the semantic type authority.
+    pub fn structural_type(
+        &self,
+    ) -> Result<selene_core::StructuralType, selene_core::StructuralTypeError> {
+        use selene_core::{ScalarType as S, StructuralType as T, TypeKind as K};
+        Ok(match self {
+            Self::Any => T::DYNAMIC,
+            Self::AnyProperty => T::new(K::Property, true)?,
+            Self::Boolean => T::BOOLEAN,
+            Self::Integer | Self::Int64 => T::INT64,
+            Self::Uint64 => T::UINT64,
+            Self::Float => T::from_scalar(S::Float)?,
+            Self::Float64 => T::FLOAT64,
+            Self::String => T::STRING,
+            Self::Vector => T::VECTOR,
+            Self::Json => T::JSON,
+            Self::NodeRef => T::NODE,
+            Self::EdgeRef => T::EDGE,
+            Self::GraphRef => T::new(K::GraphRef, true)?,
+            Self::OpenRecord => T::new(K::Record(None), true)?,
+            Self::List(element) => T::list(element.structural_type()?, None)?,
+        })
+    }
+}
+
 pub(crate) const MAX_NATIVE_TYPE_DEPTH: u8 = 64;
 
 #[derive(Deserialize)]

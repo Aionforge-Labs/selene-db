@@ -34,12 +34,12 @@ Paths are navigation, not a closed edit inventory. New modules are implementatio
 
 ## Acceptance and concrete regression cases
 
-- [ ] Null comparison produces Unknown where required, but two nulls are not distinct for duplicate/grouping purposes; omitted result is neither of these.
-- [ ] Equivalent selected structural type descriptions normalize identically; unsupported types fail rather than widening to an untyped catch-all.
-- [ ] Record field names, list element types, reference provenance and nullable variants survive parameters → execution → typed result.
-- [ ] Foreign handles with matching numeric IDs are rejected, and deleted referents produce the required invalid-reference diagnostic when accessed.
-- [ ] Numeric equality/grouping/hash compatibility covers mixed selected exact numeric forms, signed zero and documented floating-point edge cases.
-- [ ] Stored-value tests reject ephemeral references/candidates or encode only explicitly supported durable semantic reference forms; no descriptor arena index becomes an on-disk type ID.
+- [x] Null comparison produces Unknown where required, but two nulls are not distinct for duplicate/grouping purposes; omitted result is neither of these.
+- [x] Equivalent selected structural type descriptions normalize identically; unsupported types fail rather than widening to an untyped catch-all.
+- [x] Record field names, list element types, reference provenance and nullable variants survive parameters → execution → typed result.
+- [x] Foreign handles with matching numeric IDs are rejected, and deleted referents produce the required invalid-reference diagnostic when accessed.
+- [x] Numeric equality/grouping/hash compatibility covers mixed selected exact numeric forms, signed zero and documented floating-point edge cases.
+- [x] Stored-value tests reject ephemeral references/candidates or encode only explicitly supported durable semantic reference forms; no descriptor arena index becomes an on-disk type ID.
 
 ## Validation and performance
 
@@ -56,6 +56,80 @@ No all-optional-type expansion, universal comparison feature by accident, typed 
 ## Bridge/deletion boundary
 
 The public lower Value/GqlType bridge ends here. Old encoded variants may remain only in isolated legacy persistence code until F02-PR08; temporary semantic lowering is deleted in F03-PR04.
+
+## Owner decision and structural contract
+
+The owner selected **query-only references** for IV011. Node and edge references,
+paths, graph/table references, candidate tokens and process-local identities are
+not property data. The restriction applies recursively to lists/records,
+defaults, native mutation and logical property payloads. There is no durable
+reference representation or StoreId serialization decision in this work item.
+Scalars, native JSON/vectors and supported named recursive containers remain
+storable. A positional `RecordTypeId` is not a substitute for semantic field
+names in a stored record.
+
+`selene-core::StructuralType` owns normalized nullability, scalar envelopes,
+list element/bound metadata, named record fields and explicit analysis/reference
+families. It uses owned structure with shared record field sets, not an immortal
+intern pool. The facade's `Type` is this documented structural contract, not an
+AST alias. `ExprTypeTable` retains the authoritative descriptor and lazily derives
+its current-planner view through `type_adapter`; F03-PR04 deletes that view.
+Request parameter descriptors enter analysis separately from immutable source,
+including catalog re-preparation. Result schema and ordering are declared even
+when execution returns zero rows.
+
+The selected/admitted GV66/GV67 spellings have existing bounded membership and
+cast behavior. Closed unions retain their component descriptors, flattened and
+deduplicated with nullability carried once; they do not widen to `Dynamic`.
+Preserving this tested subset does not change the profile's unsupported status
+for the complete dynamic-union capability.
+
+`StoredValue` is the checked semantic value boundary. It intentionally implements
+neither serde nor rkyv: F02-PR03 owns its explicit byte encoding. Current property
+map/diff codecs remain legacy adapters, with forbidden values rejected rather
+than encoded as a process-local reference. This contract does not claim format-2
+query durability. The facade exposes its own query `Value`, opaque
+ownership-bearing reference values and validated paths. Lower runtime carriers
+are private conversion inputs: `RecordTyped`, `Extended` and table references
+have no facade value variant. Legacy serialized carriers remain isolated until
+F02-PR08; F03-PR04 owns current-planner type lowering.
+
+Annex D label corrections do not select capabilities: GA04 is universal
+comparison, GA09 is path comparison, and GV70–GV72 describe immaterial/null/empty
+value types. Null values remain supported independently of optional null-type
+syntax. GQ01/GP16 bounded status, unsupported GT03 and `release_claimable=false`
+remain unchanged. IV002 selects lexicographic constructed-value and stable
+reference ordering; IV008 selects the owned structural normal form. IV010 is
+inapplicable while GA04 is outside the selected closure. Dynamic noncomparable
+families fail with `22G04`; paths support distinctness and ordering by their
+element lists, while equality still requires unsupported GA09.
+
+Duration comparison uses exact total months within the year/month group and
+total nanoseconds within the day/time group. Equivalent units share predicate,
+grouping, UNIQUE and index identity; zero belongs to either group. Mixed
+nonzero groups fail comparability, including indexed probes. Canonical keys are
+transient and leave the existing duration serialization unchanged.
+Zoned temporal UNIQUE keys use timestamp identity, matching runtime equality
+across zone spellings while preserving zone information in stored values.
+Incremental and complete-state UNIQUE validation share the runtime's recursive
+comparison-domain authority, independently per entity kind, declared type and
+property. Incompatible domains fail before publication with `22G04`.
+
+Foreign database/graph references fail before execution, even when raw IDs
+collide. A deleted reference can be copied as an identity; property, label, path
+construction, native graph procedure and mutation access reports `22G11`.
+Repeated deletion of an already invalidated referent remains idempotent.
+Detached transactions share graph-scoped monotonic allocation counters across
+rollback, failure, overlapping drafts and runtime replacement. Issued reference
+identities remain consumed even when their transaction does not publish.
+Lexical `USE` results retain the graph selected for that statement, including
+cached execution, without changing the ambient session. Focused-write syntax
+retains its existing `42N01` rejection.
+
+Shape admission is bounded before recursive matching/conversion. Native defaults,
+legacy serde defaults and archived graph types reject query-only values and
+excessive nesting before publication or replay. These checks preserve existing
+legacy tags and framing; F02-PR03 owns the new stored-value byte format.
 
 ## Standards and reviewer focus
 

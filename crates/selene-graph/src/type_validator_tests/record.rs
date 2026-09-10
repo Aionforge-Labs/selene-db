@@ -227,25 +227,25 @@ fn nested_open_record_field_accepts_any_record_shape() {
 }
 
 #[test]
-fn closed_record_validates_recordtyped_positionally() {
+fn closed_record_rejects_positional_legacy_records() {
     let declaration = closed_record_declaration();
-    // Positional [host=String, port=Int] conforms.
+    // Even matching positional slots have no semantic field names.
     let conforming = Value::RecordTyped(Box::new(RecordTyped {
         type_id: RecordTypeId::new(1),
         values: [Some(Value::String(db_string("h"))), Some(Value::Int(80))]
             .into_iter()
             .collect(),
     }));
-    assert!(property_value_matches(&declaration, &conforming));
+    assert!(!property_value_matches(&declaration, &conforming));
 
-    // Nullable port represented as positional NULL conforms.
+    // Positional NULL does not supply a semantic descriptor.
     let optional_omitted = Value::RecordTyped(Box::new(RecordTyped {
         type_id: RecordTypeId::new(1),
         values: [Some(Value::String(db_string("h"))), None]
             .into_iter()
             .collect(),
     }));
-    assert!(property_value_matches(&declaration, &optional_omitted));
+    assert!(!property_value_matches(&declaration, &optional_omitted));
 
     // Required host omitted (None at position 0) is rejected.
     let required_omitted = Value::RecordTyped(Box::new(RecordTyped {
@@ -280,14 +280,14 @@ fn closed_record_optional_field_accepts_explicit_null() {
     let host_null = open_record(&[("host", Value::Null), ("port", Value::Int(80))]);
     assert!(!property_value_matches(&declaration, &host_null));
 
-    // Positional form: optional `port` slot = Some(NULL) conforms.
+    // Positional form still lacks named-field semantics.
     let positional_null = Value::RecordTyped(Box::new(RecordTyped {
         type_id: RecordTypeId::new(1),
         values: [Some(Value::String(db_string("h"))), Some(Value::Null)]
             .into_iter()
             .collect(),
     }));
-    assert!(property_value_matches(&declaration, &positional_null));
+    assert!(!property_value_matches(&declaration, &positional_null));
 }
 
 #[test]

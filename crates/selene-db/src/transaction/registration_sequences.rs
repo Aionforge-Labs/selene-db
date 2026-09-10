@@ -191,7 +191,7 @@ fn all_family_drops_preserve_unbound_alternatives_and_canonical_names() {
             panic!("diagnostic rows")
         };
         for row in rows.rows() {
-            let Value::String(name) = &row.values()[0] else {
+            let selene_core::Value::String(name) = &row.values()[0] else {
                 panic!("name")
             };
             observed.insert(name.to_string());
@@ -207,7 +207,7 @@ fn all_family_drops_preserve_unbound_alternatives_and_canonical_names() {
     // Preserve the current SHOW surface (scalar-node and vector), not invent a
     // new edge/composite/text SHOW grammar/surface as part of a binding repair.
     for row in show.rows() {
-        let Value::String(name) = &row.values()[0] else {
+        let selene_core::Value::String(name) = &row.values()[0] else {
             panic!("name")
         };
         assert!(declared.contains(name.as_str()));

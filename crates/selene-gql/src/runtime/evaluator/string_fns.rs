@@ -488,7 +488,7 @@ pub(super) fn eval_coalesce(
 pub(super) fn eval_nullif(mut args: Vec<Value>, span: SourceSpan) -> Result<Value, ExecutorError> {
     // Borrow both operands for the equality test; only the lhs is ever returned
     // (by value, via swap_remove), so neither clone is needed.
-    let equal = eval_equality(BinaryOp::Eq, &args[0], &args[1])?;
+    let equal = eval_equality(BinaryOp::Eq, &args[0], &args[1], span)?;
     match equal {
         Value::Bool(true) => Ok(Value::Null),
         Value::Bool(false) | Value::Null => Ok(args.swap_remove(0)),

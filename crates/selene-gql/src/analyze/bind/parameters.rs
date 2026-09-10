@@ -12,7 +12,7 @@ use crate::{
     analyze::{ParameterUse, error::AnalysisError},
 };
 
-pub(super) type DeclarationMap = BTreeMap<DbString, (GqlType, SourceSpan)>;
+pub(super) type DeclarationMap = BTreeMap<DbString, (selene_core::StructuralType, SourceSpan)>;
 
 #[derive(Default)]
 struct ParameterCollector {
@@ -32,7 +32,7 @@ pub(crate) fn collect_statement_parameters(
     for parameter in &mut uses {
         parameter.declared_type = declarations
             .get(&parameter.name)
-            .map(|(declared_type, _)| declared_type.clone());
+            .map(|(declared_type, _)| crate::lower_value_type(declared_type));
     }
     uses.sort_by_key(|parameter| (parameter.span.byte_offset, parameter.span.byte_len));
     Ok(uses)
@@ -442,18 +442,20 @@ fn record_parameter_declaration(
     declared_type: &GqlType,
     span: SourceSpan,
 ) -> Result<(), AnalysisError> {
+    let semantic = crate::normalize_value_type(declared_type)
+        .map_err(|source| AnalysisError::StructuralType { source, span })?;
     if let Some((prior_type, prior_span)) = declarations.get(&name) {
-        if prior_type != declared_type {
+        if prior_type != &semantic {
             return Err(AnalysisError::ConflictingParameterTypes {
                 name,
                 declarations: vec![
-                    (prior_type.clone(), *prior_span),
+                    (crate::lower_value_type(prior_type), *prior_span),
                     (declared_type.clone(), span),
                 ],
             });
         }
     } else {
-        declarations.insert(name, (declared_type.clone(), span));
+        declarations.insert(name, (semantic, span));
     }
     Ok(())
 }

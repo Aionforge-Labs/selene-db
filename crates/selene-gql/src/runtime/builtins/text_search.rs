@@ -21,7 +21,7 @@ use super::vector_candidate_state_common::{
 };
 use super::vector_common::{
     BatchMismatch, candidate_set_arg, candidate_sets_arg, cardinality_arg, expansion_direction_arg,
-    invalid_arg, node_list_arg, node_list_sets_arg, query_index_too_large, string_arg,
+    invalid_arg, live_node_list_arg, live_node_list_sets_arg, query_index_too_large, string_arg,
     vector_search_error,
 };
 use crate::procedure_registry::ProcedureError;
@@ -274,7 +274,7 @@ pub(super) fn execute_score(
     let label = string_arg(SCORE_PROC_NAME, &args[0], "label")?;
     let property = string_arg(SCORE_PROC_NAME, &args[1], "property")?;
     let query = query_arg(SCORE_PROC_NAME, &args[2])?;
-    let nodes = node_list_arg(SCORE_PROC_NAME, &args[3], "nodes")?;
+    let nodes = live_node_list_arg(ctx.snapshot(), SCORE_PROC_NAME, &args[3], "nodes")?;
     let k = cardinality_arg(SCORE_PROC_NAME, &args[4], "k")?;
 
     let snapshot = ctx.snapshot();
@@ -310,7 +310,8 @@ pub(super) fn execute_score_batch(
     let label = string_arg(SCORE_BATCH_PROC_NAME, &args[0], "label")?;
     let property = string_arg(SCORE_BATCH_PROC_NAME, &args[1], "property")?;
     let queries = query_list_arg(SCORE_BATCH_PROC_NAME, &args[2])?;
-    let node_sets = node_list_sets_arg(SCORE_BATCH_PROC_NAME, &args[3], "nodes")?;
+    let node_sets =
+        live_node_list_sets_arg(ctx.snapshot(), SCORE_BATCH_PROC_NAME, &args[3], "nodes")?;
     if queries.len() != node_sets.len() {
         return Err(invalid_arg(format!(
             "{SCORE_BATCH_PROC_NAME} queries and nodes must have the same length"
@@ -397,7 +398,12 @@ pub(super) fn execute_score_state_nodes(
     let property = string_arg(SCORE_STATE_NODES_PROC_NAME, &args[1], "property")?;
     let query = query_arg(SCORE_STATE_NODES_PROC_NAME, &args[2])?;
     let state_name = string_arg(SCORE_STATE_NODES_PROC_NAME, &args[3], "state_name")?;
-    let nodes = candidate_set_arg(SCORE_STATE_NODES_PROC_NAME, &args[4], "nodes")?;
+    let nodes = candidate_set_arg(
+        ctx.snapshot(),
+        SCORE_STATE_NODES_PROC_NAME,
+        &args[4],
+        "nodes",
+    )?;
     let k = cardinality_arg(SCORE_STATE_NODES_PROC_NAME, &args[5], "k")?;
     let operation = args
         .get(6)
@@ -441,7 +447,12 @@ pub(super) fn execute_score_state_expanded_batch(
     let property = string_arg(SCORE_STATE_EXPANDED_BATCH_PROC_NAME, &args[1], "property")?;
     let queries = query_list_arg(SCORE_STATE_EXPANDED_BATCH_PROC_NAME, &args[2])?;
     let state_name = string_arg(SCORE_STATE_EXPANDED_BATCH_PROC_NAME, &args[3], "state_name")?;
-    let root_sets = candidate_sets_arg(SCORE_STATE_EXPANDED_BATCH_PROC_NAME, &args[4], "roots")?;
+    let root_sets = candidate_sets_arg(
+        ctx.snapshot(),
+        SCORE_STATE_EXPANDED_BATCH_PROC_NAME,
+        &args[4],
+        "roots",
+    )?;
     if queries.len() != root_sets.len() {
         return Err(invalid_arg(format!(
             "{SCORE_STATE_EXPANDED_BATCH_PROC_NAME} queries and roots must have the same length"

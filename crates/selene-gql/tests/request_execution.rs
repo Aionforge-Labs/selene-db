@@ -245,7 +245,7 @@ fn inline_type_failure_precedes_insert_transaction_and_publication() {
 
     let reference_error = execute(
         &graph,
-        "INSERT (:Bad) FINISH",
+        "INSERT (:Bad {value: $stale.value}) FINISH",
         input(
             [(
                 "stale",
@@ -259,7 +259,7 @@ fn inline_type_failure_precedes_insert_transaction_and_publication() {
         ),
     )
     .unwrap_err();
-    assert_eq!(reference_error.gqlstatus().as_str(), "42002");
+    assert_eq!(reference_error.gqlstatus().as_str(), "22G11");
     let after_reference = graph.read();
     assert_eq!(after_reference.meta.generation, generation);
     assert_eq!(after_reference.node_count(), 0);

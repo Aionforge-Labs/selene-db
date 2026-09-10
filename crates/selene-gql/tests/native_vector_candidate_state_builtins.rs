@@ -513,6 +513,7 @@ fn vector_score_candidate_state_nodes_surfaces_stale_provider_generation() {
         .expect("graph builds");
     let registry = BuiltinProcedureRegistry::new();
     let mut session = Session::new(&graph);
+    session.execute_source("INSERT (:Doc)", &registry).unwrap();
     session.bind_parameter(db_string("query"), Value::Vector(vector(&[0.0, 0.0])));
     session.bind_parameter(db_string("nodes"), node_list(&[NodeId::new(1)]));
 
@@ -543,6 +544,7 @@ fn vector_score_candidate_state_expanded_surfaces_stale_provider_generation() {
         .expect("graph builds");
     let registry = BuiltinProcedureRegistry::new();
     let mut session = Session::new(&graph);
+    session.execute_source("INSERT (:Doc)", &registry).unwrap();
     session.bind_parameter(db_string("query"), Value::Vector(vector(&[0.0, 0.0])));
     session.bind_parameter(db_string("roots"), node_list(&[NodeId::new(1)]));
 
@@ -573,6 +575,7 @@ fn vector_score_candidate_state_expanded_batch_surfaces_stale_provider_generatio
         .expect("graph builds");
     let registry = BuiltinProcedureRegistry::new();
     let mut session = Session::new(&graph);
+    session.execute_source("INSERT (:Doc)", &registry).unwrap();
     session.bind_parameter(
         db_string("queries"),
         Value::List(vec![Value::Vector(vector(&[0.0, 0.0]))]),

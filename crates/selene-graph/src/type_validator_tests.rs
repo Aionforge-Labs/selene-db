@@ -8,6 +8,9 @@ use crate::{GraphError, SharedGraph};
 #[path = "type_validator_tests/unique.rs"]
 mod unique;
 
+#[path = "type_validator_tests/unique_domains.rs"]
+mod unique_domains;
+
 #[path = "type_validator_tests/change.rs"]
 mod change;
 
@@ -315,28 +318,20 @@ fn vector_declaration_matches_only_vector_values() {
 }
 
 #[test]
-fn rejects_extension_value() {
-    let shared = SharedGraph::builder(GraphId::new(6)).build().unwrap();
-    let mut txn = shared.begin_write();
-    {
-        let mut mutator = txn.mutator();
-        mutator
-            .create_node(
-                LabelSet::single(db_string("Person")),
-                prop(
-                    "name",
-                    Value::Extended {
-                        type_id: ExtensionTypeId(0x100),
-                        payload: Arc::from([1_u8]),
-                    },
-                ),
-            )
-            .unwrap();
-    }
-    txn.commit().unwrap();
+fn rejects_extension_value_before_property_admission() {
+    let error = PropertyMap::from_pairs([(
+        db_string("name"),
+        Value::Extended {
+            type_id: ExtensionTypeId(0x100),
+            payload: Arc::from([1_u8]),
+        },
+    )])
+    .unwrap_err();
     assert!(matches!(
-        validate_entity_state(shared.read().as_ref(), &graph_type()),
-        Err(TypeViolation::ExtensionValueRejected { property, .. }) if property == db_string("name")
+        error,
+        selene_core::CoreError::StoredValue(selene_core::StoredValueError::QueryOnly {
+            family: "Extended"
+        })
     ));
 }
 

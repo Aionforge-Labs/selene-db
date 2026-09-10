@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use selene_core::{DbString, EdgeDirection, Path, Record, Value};
+use selene_core::{DbString, GraphId, Record, Value};
 use selene_graph::SeleneGraph;
 
 use crate::{GqlType, SourceSpan, analyze::ParameterUse};
@@ -42,6 +42,7 @@ impl RequestParameter {
 /// Explicit lower-runtime input for one facade request.
 #[doc(hidden)]
 pub struct RequestExecutionInput {
+    reference_graph: Option<GraphId>,
     pub(crate) parameters: BTreeMap<DbString, RequestParameter>,
     pub(crate) timestamp: jiff::Timestamp,
     pub(crate) time_zone: jiff::tz::TimeZone,
@@ -49,6 +50,26 @@ pub struct RequestExecutionInput {
 }
 
 impl RequestExecutionInput {
+    /// Copy normalized parameter descriptors into semantic analysis without
+    /// borrowing runtime values or modifying the immutable source tree.
+    #[doc(hidden)]
+    pub fn parameter_types(
+        &self,
+    ) -> Result<BTreeMap<DbString, selene_core::StructuralType>, ExecutorError> {
+        self.parameters
+            .iter()
+            .map(|(name, parameter)| {
+                crate::normalize_value_type(parameter.declared_type())
+                    .map(|ty| (name.clone(), ty))
+                    .map_err(|source| ExecutorError::Analysis {
+                        source: crate::AnalysisError::StructuralType {
+                            source,
+                            span: SourceSpan::default(),
+                        },
+                    })
+            })
+            .collect()
+    }
     /// Construct lower request input from a facade-owned immutable snapshot.
     #[must_use]
     pub fn new(
@@ -74,6 +95,7 @@ impl RequestExecutionInput {
         runtime: RequestRuntimeHandle,
     ) -> Self {
         Self {
+            reference_graph: None,
             parameters,
             timestamp,
             time_zone,
@@ -84,6 +106,28 @@ impl RequestExecutionInput {
     pub(crate) fn runtime(&self) -> Arc<RequestRuntime> {
         Arc::clone(&self.runtime)
     }
+
+    /// Attach the graph provenance checked by the owning facade before lowering
+    /// opaque references into this graph-scoped row execution context.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_reference_graph(mut self, graph: Option<GraphId>) -> Self {
+        self.reference_graph = graph;
+        self
+    }
+
+    fn validate_domain(&self, graph: &SeleneGraph) -> Result<(), ExecutorError> {
+        if self
+            .reference_graph
+            .is_some_and(|id| id != graph.graph_id())
+        {
+            return Err(ExecutorError::InvalidReference {
+                name: "parameter reference belongs to another graph".to_owned(),
+                span: SourceSpan::default(),
+            });
+        }
+        Ok(())
+    }
 }
 
 pub(super) fn validate(
@@ -91,6 +135,7 @@ pub(super) fn validate(
     uses: &[ParameterUse],
     graph: &SeleneGraph,
 ) -> Result<(), ExecutorError> {
+    request.validate_domain(graph)?;
     let binding_tables = request.runtime.binding_tables();
     for (name, parameter) in &request.parameters {
         parameter_type::validate_declared_type(
@@ -130,6 +175,7 @@ pub(super) fn validate_references(
     request: &RequestExecutionInput,
     graph: &SeleneGraph,
 ) -> Result<(), ExecutorError> {
+    request.validate_domain(graph)?;
     let binding_tables = request.runtime.binding_tables();
     for (name, parameter) in &request.parameters {
         validate_value_references(
@@ -160,13 +206,9 @@ fn validate_value_references(
                     span,
                 ));
             }
-            Value::NodeRef(node_id) if !graph.is_node_alive(*node_id) => {
-                return Err(invalid_reference(name, "node reference is not alive", span));
+            Value::Path(path) if path.graph != graph.graph_id() => {
+                return Err(invalid_reference(name, "path selects another graph", span));
             }
-            Value::EdgeRef(edge_id) if !graph.is_edge_alive(*edge_id) => {
-                return Err(invalid_reference(name, "edge reference is not alive", span));
-            }
-            Value::Path(path) => validate_path(name, path, graph, span)?,
             Value::TableRef(id) => {
                 if let Err(error) = binding_tables.resolve(*id) {
                     return Err(invalid_reference(name, &error.to_string(), span));
@@ -181,63 +223,6 @@ fn validate_value_references(
             Value::RecordTyped(record) => pending.extend(record.values.iter().flatten()),
             _ => {}
         }
-    }
-    Ok(())
-}
-
-fn validate_path(
-    name: &DbString,
-    path: &Path,
-    graph: &SeleneGraph,
-    span: SourceSpan,
-) -> Result<(), ExecutorError> {
-    if path.graph != graph.graph_id() {
-        return Err(invalid_reference(name, "path selects another graph", span));
-    }
-    if !graph.is_node_alive(path.start) {
-        return Err(invalid_reference(
-            name,
-            "path start node is not alive",
-            span,
-        ));
-    }
-    let mut current = path.start;
-    for segment in &path.segments {
-        if !graph.is_node_alive(segment.node) || !graph.is_edge_alive(segment.edge) {
-            return Err(invalid_reference(
-                name,
-                "path contains a stale element",
-                span,
-            ));
-        }
-        let Some((source, target)) = graph.edge_endpoints(segment.edge) else {
-            return Err(invalid_reference(
-                name,
-                "path edge has no live endpoints",
-                span,
-            ));
-        };
-        let connected = match (graph.edge_directionality(segment.edge), segment.direction) {
-            (Some(selene_core::EdgeDirectionality::Directed), EdgeDirection::Outgoing) => {
-                source == current && target == segment.node
-            }
-            (Some(selene_core::EdgeDirectionality::Directed), EdgeDirection::Incoming) => {
-                target == current && source == segment.node
-            }
-            (Some(selene_core::EdgeDirectionality::Undirected), EdgeDirection::Undirected) => {
-                (source == current && target == segment.node)
-                    || (target == current && source == segment.node)
-            }
-            _ => false,
-        };
-        if !connected {
-            return Err(invalid_reference(
-                name,
-                "path traversal is not connected",
-                span,
-            ));
-        }
-        current = segment.node;
     }
     Ok(())
 }

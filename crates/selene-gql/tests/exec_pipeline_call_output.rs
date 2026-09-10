@@ -194,3 +194,42 @@ fn procedure_output_null_is_allowed_for_nullable_columns() {
 
     assert_eq!(column_values(&table, "out"), vec![Value::Null]);
 }
+
+#[test]
+fn procedure_any_output_rejects_legacy_families_before_runtime_operations() {
+    let legacy = [
+        Value::RecordTyped(Box::new(selene_core::RecordTyped {
+            type_id: selene_core::RecordTypeId::new(1),
+            values: smallvec![Some(Value::Int(1))],
+        })),
+        Value::Extended {
+            type_id: selene_core::ExtensionTypeId::FIRST_PARTY_MIN,
+            payload: std::sync::Arc::from([1_u8]),
+        },
+    ];
+    for value in legacy {
+        for value in [value.clone(), Value::List(vec![value])] {
+            assert!(selene_gql::validate_parameter_value(&value, &GqlType::Any).is_err());
+            for suffix in [
+                "RETURN out",
+                "RETURN out = out",
+                "RETURN DISTINCT out",
+                "RETURN out ORDER BY out",
+                "RETURN count(DISTINCT out)",
+            ] {
+                let registry = OutputRegistry::new(
+                    vec![output("out", GqlType::Any)],
+                    vec![vec![value.clone()]],
+                );
+                assert_wrong_output_type(
+                    execute(
+                        &format!("CALL pkg.out() YIELD out {suffix}"),
+                        &graph(),
+                        &registry,
+                    )
+                    .unwrap_err(),
+                );
+            }
+        }
+    }
+}

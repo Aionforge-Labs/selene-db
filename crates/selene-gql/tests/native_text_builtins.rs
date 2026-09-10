@@ -287,7 +287,6 @@ fn text_score_nodes_reranks_explicit_candidates_with_index() {
             Value::NodeRef(ids[2]),
             Value::NodeRef(ids[2]),
             Value::NodeRef(ids[3]),
-            Value::NodeRef(NodeId::new(999)),
             Value::NodeRef(ids[4]),
         ]),
     );
@@ -308,6 +307,9 @@ fn text_score_nodes_requires_registered_text_index() {
     let graph = graph(431_108);
     let registry = BuiltinProcedureRegistry::new();
     let mut session = Session::new(&graph);
+    session
+        .execute_source("INSERT (:TextDoc)", &registry)
+        .unwrap();
     session.bind_parameter(db_string("nodes"), node_list(&[NodeId::new(1)]));
 
     let err = session
@@ -457,6 +459,9 @@ fn text_score_nodes_batch_rejects_mismatched_batch_lengths() {
     let graph = graph(431_112);
     let registry = BuiltinProcedureRegistry::new();
     let mut session = Session::new(&graph);
+    session
+        .execute_source("INSERT (:TextDoc)", &registry)
+        .unwrap();
     session.bind_parameter(
         db_string("queries"),
         Value::List(vec![
@@ -490,6 +495,9 @@ fn text_score_nodes_batch_requires_registered_text_index() {
     let graph = graph(431_113);
     let registry = BuiltinProcedureRegistry::new();
     let mut session = Session::new(&graph);
+    session
+        .execute_source("INSERT (:TextDoc)", &registry)
+        .unwrap();
     session.bind_parameter(
         db_string("queries"),
         Value::List(vec![Value::String(db_string("graph"))]),

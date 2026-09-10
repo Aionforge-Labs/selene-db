@@ -100,8 +100,6 @@ fn typed_predicates_treat_unspecified_value_types_as_nullable() {
         ("RETURN NULL IS TYPED STRING AS ok", true),
         ("RETURN NULL IS TYPED STRING NOT NULL AS ok", false),
         ("RETURN NULL IS NOT TYPED STRING NOT NULL AS ok", true),
-        ("RETURN NULL IS TYPED NULL AS ok", true),
-        ("RETURN NULL IS TYPED NOTHING AS ok", false),
         ("RETURN [NULL] IS TYPED LIST<INTEGER> AS ok", true),
         ("RETURN [NULL] IS TYPED LIST<INTEGER NOT NULL> AS ok", false),
         ("RETURN {a: NULL} IS TYPED RECORD{a :: INTEGER} AS ok", true),
@@ -112,6 +110,14 @@ fn typed_predicates_treat_unspecified_value_types_as_nullable() {
     ];
     for (source, expected) in cases {
         assert_eq!(one_value(source), Value::Bool(expected), "{source}");
+    }
+    for source in [
+        "RETURN NULL IS TYPED NULL AS ok",
+        "RETURN NULL IS TYPED NOTHING AS ok",
+    ] {
+        let error =
+            parse(source).expect_err("optional immaterial type syntax is not runtime-supported");
+        assert_eq!(error.gqlstatus(), GqlStatus::FEATURE_NOT_SUPPORTED);
     }
 }
 

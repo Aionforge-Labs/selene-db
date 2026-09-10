@@ -33,6 +33,9 @@ impl RecoveryState {
     /// `SCHEMA_CHANGE_INTENT` in this module's tests; new variants must update
     /// both this match and that table.
     pub(crate) fn apply_change(&mut self, change: &Change) -> Result<(), ProviderError> {
+        change
+            .validate_stored_values()
+            .map_err(|error| inconsistent(error.to_string()))?;
         // Schema records are the only changes that name their authoring graph,
         // which makes them the sole on-disk identity of a WAL-only directory.
         // Recorded here rather than in the arm below so the identity is captured

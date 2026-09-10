@@ -312,6 +312,9 @@ fn text_score_candidate_state_expanded_batch_rejects_mismatched_roots() {
     let graph = graph(431_602);
     let registry = BuiltinProcedureRegistry::new();
     let mut session = Session::new(&graph);
+    session
+        .execute_source("INSERT (:TextDoc)", &registry)
+        .unwrap();
     session.bind_parameter(
         db_string("queries"),
         Value::List(vec![

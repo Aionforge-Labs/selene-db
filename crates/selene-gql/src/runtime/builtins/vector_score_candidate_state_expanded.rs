@@ -81,7 +81,7 @@ pub(super) fn execute(
     let property = string_arg(PROC_NAME, &args[0], "property")?;
     let query = query_arg(PROC_NAME, &args[1])?;
     let state_name = string_arg(PROC_NAME, &args[2], "state_name")?;
-    let roots = candidate_set_arg(PROC_NAME, &args[3], "roots")?;
+    let roots = candidate_set_arg(ctx.snapshot(), PROC_NAME, &args[3], "roots")?;
     let edge_label = string_arg(PROC_NAME, &args[4], "edge_label")?;
     let k = cardinality_arg(PROC_NAME, &args[5], "k")?;
     let operation = args

@@ -2,8 +2,8 @@
 //!
 //! `DistinctRowKey` is variant-strict and follows `Value::PartialEq`.
 //! `RuntimeEqKey` follows the runtime row-key comparator used by pattern joins:
-//! cross-type `Int`/`Uint`/`Float`/`Float32` values compare by lossless numeric
-//! equality, and strings compare by contents. Both hash
+//! cross-type numbers use the core's exact numeric grouping keys, and strings
+//! compare by contents. Both hash
 //! paths normalize signed zero and NaN payloads so any values that compare equal
 //! under their key regime hash identically.
 
@@ -209,7 +209,6 @@ fn hash_record<H: Hasher>(record: &Record, state: &mut H) {
 
 fn hash_path_segment<H: Hasher>(segment: &PathSegment, state: &mut H) {
     segment.edge.hash(state);
-    segment.direction.hash(state);
     segment.node.hash(state);
 }
 
@@ -234,166 +233,13 @@ fn hash_f32_canonical<H: Hasher>(value: f32, state: &mut H) {
 }
 
 fn hash_runtime_numeric<H: Hasher>(value: &Value, state: &mut H) -> bool {
-    match value {
-        Value::Int(value) => {
-            "runtime-number".hash(state);
-            hash_binary_number(
-                value.is_negative(),
-                u128::from(value.unsigned_abs()),
-                0,
-                state,
-            );
-            true
-        }
-        Value::Uint(value) => {
-            "runtime-number".hash(state);
-            hash_binary_number(false, u128::from(*value), 0, state);
-            true
-        }
-        Value::Float(value) => {
-            "runtime-number".hash(state);
-            hash_f64_runtime_numeric(*value, state);
-            true
-        }
-        Value::Float32(value) => {
-            "runtime-number".hash(state);
-            hash_f32_runtime_numeric(*value, state);
-            true
-        }
-        Value::Int128(value) => {
-            "runtime-number".hash(state);
-            hash_binary_number(value.is_negative(), value.unsigned_abs(), 0, state);
-            true
-        }
-        Value::Uint128(value) => {
-            "runtime-number".hash(state);
-            hash_binary_number(false, *value, 0, state);
-            true
-        }
-        Value::Decimal(value) => {
-            "runtime-number".hash(state);
-            hash_decimal_runtime_numeric(value, state);
-            true
-        }
-        _ => false,
-    }
-}
-
-/// Hash a [`rust_decimal::Decimal`] under the runtime-numeric key regime.
-///
-/// A Decimal that is a *dyadic rational* (finite base-2 expansion) can be
-/// runtime-equal to a binary float or an integer, so it must route through the
-/// shared [`hash_binary_number`] canonical form. A non-dyadic Decimal (e.g.
-/// `0.1`) cannot equal any binary float or integer, so it hashes on a distinct
-/// decimal-only path keyed on its normalized base-10 mantissa/scale — keeping
-/// the parity invariant `runtime_values_equal ⟹ equal hash` intact in both
-/// directions.
-fn hash_decimal_runtime_numeric<H: Hasher>(value: &rust_decimal::Decimal, state: &mut H) {
-    let normalized = value.normalize();
-    if let Some((negative, significand, exponent)) = decimal_as_dyadic(&normalized) {
-        hash_binary_number(negative, significand, exponent, state);
+    if let Some(key) = selene_core::NumericKey::of(value) {
+        "runtime-number".hash(state);
+        key.hash(state);
+        true
     } else {
-        // Non-dyadic: cannot collide with any integer or binary float. Key on
-        // the normalized decimal form so equal decimals still hash equal.
-        "decimal".hash(state);
-        normalized.is_sign_negative().hash(state);
-        normalized.mantissa().unsigned_abs().hash(state);
-        normalized.scale().hash(state);
+        false
     }
-}
-
-/// Decompose a normalized Decimal into the base-2 `(negative, significand,
-/// exponent)` triple shared with integer/float hashing, or `None` if the value
-/// is not a dyadic rational.
-///
-/// A Decimal `m / 10^s = m / (2^s · 5^s)` is dyadic iff `m` is divisible by
-/// `5^s`; the quotient is then `significand / 2^s`, i.e. exponent `-s`.
-fn decimal_as_dyadic(value: &rust_decimal::Decimal) -> Option<(bool, u128, i32)> {
-    let negative = value.is_sign_negative();
-    let mut mag = value.mantissa().unsigned_abs();
-    let scale = value.scale();
-    for _ in 0..scale {
-        if !mag.is_multiple_of(5) {
-            return None;
-        }
-        mag /= 5;
-    }
-    Some((negative, mag, -(scale as i32)))
-}
-
-fn hash_f64_runtime_numeric<H: Hasher>(value: f64, state: &mut H) {
-    if value == 0.0 {
-        hash_binary_number(false, 0, 0, state);
-        return;
-    }
-    let bits = value.to_bits();
-    let negative = (bits >> 63) != 0;
-    let exponent = ((bits >> 52) & 0x7ff) as i32;
-    let fraction = bits & ((1_u64 << 52) - 1);
-    if exponent == 0x7ff {
-        if fraction == 0 {
-            "infinity".hash(state);
-            negative.hash(state);
-        } else {
-            "nan".hash(state);
-        }
-    } else if exponent == 0 {
-        hash_binary_number(negative, u128::from(fraction), 1 - 1023 - 52, state);
-    } else {
-        hash_binary_number(
-            negative,
-            u128::from((1_u64 << 52) | fraction),
-            exponent - 1023 - 52,
-            state,
-        );
-    }
-}
-
-fn hash_f32_runtime_numeric<H: Hasher>(value: f32, state: &mut H) {
-    if value == 0.0 {
-        hash_binary_number(false, 0, 0, state);
-        return;
-    }
-    let bits = value.to_bits();
-    let negative = (bits >> 31) != 0;
-    let exponent = ((bits >> 23) & 0xff) as i32;
-    let fraction = bits & ((1_u32 << 23) - 1);
-    if exponent == 0xff {
-        if fraction == 0 {
-            "infinity".hash(state);
-            negative.hash(state);
-        } else {
-            "nan".hash(state);
-        }
-    } else if exponent == 0 {
-        hash_binary_number(negative, u128::from(fraction), 1 - 127 - 23, state);
-    } else {
-        hash_binary_number(
-            negative,
-            u128::from((1_u32 << 23) | fraction),
-            exponent - 127 - 23,
-            state,
-        );
-    }
-}
-
-fn hash_binary_number<H: Hasher>(
-    negative: bool,
-    mut significand: u128,
-    mut exponent: i32,
-    state: &mut H,
-) {
-    if significand == 0 {
-        "zero".hash(state);
-        return;
-    }
-    let shift = significand.trailing_zeros();
-    significand >>= shift;
-    exponent += shift as i32;
-    "finite".hash(state);
-    negative.hash(state);
-    significand.hash(state);
-    exponent.hash(state);
 }
 
 #[cfg(test)]

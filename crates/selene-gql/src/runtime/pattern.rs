@@ -488,24 +488,33 @@ pub(crate) fn key_values_at(row: &Binding, indexes: &[usize]) -> Option<Vec<Valu
     Some(values)
 }
 
-pub(crate) fn key_values_equal(lhs: &[Value], rhs: &[Value]) -> bool {
-    lhs.len() == rhs.len()
-        && lhs
-            .iter()
-            .zip(rhs)
-            .all(|(lhs, rhs)| value_compare::equal_non_null(lhs, rhs))
+pub(crate) fn key_values_equal(lhs: &[Value], rhs: &[Value]) -> Result<bool, ExecutorError> {
+    for (lhs, rhs) in lhs.iter().zip(rhs) {
+        super::comparison_domain::ensure_pair(
+            lhs,
+            rhs,
+            selene_core::ComparisonMode::PredicateEquality,
+            crate::SourceSpan::default(),
+        )?;
+    }
+    Ok(lhs.len() == rhs.len()
+        && lhs.iter().zip(rhs).all(|(lhs, rhs)| {
+            !matches!(lhs, Value::Null)
+                && !matches!(rhs, Value::Null)
+                && value_compare::gql_equal_non_null(lhs, rhs) == Some(true)
+        }))
 }
 
 pub(crate) fn rows_match_on_resolved_key(
     left: &Binding,
     right: &Binding,
     indexes: &[usize],
-) -> bool {
+) -> Result<bool, ExecutorError> {
     let Some(left_key) = key_values_at(left, indexes) else {
-        return false;
+        return Ok(false);
     };
     let Some(right_key) = key_values_at(right, indexes) else {
-        return false;
+        return Ok(false);
     };
     key_values_equal(&left_key, &right_key)
 }

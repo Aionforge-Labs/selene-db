@@ -1,9 +1,9 @@
 //! Public facade GQL insertion, matching and path-request integration.
 
-use selene_core::{EdgeDirection, EdgeId, GraphId, NodeId, Path, PathSegment, Value};
+use selene_core::{EdgeDirection, EdgeId, NodeId};
 use selene_db::{
-    CreatePolicy, Database, GeneralParameter, GqlType, ObjectPath, Request, RequestOutcome,
-    RequestParams, SchemaPath,
+    CreatePolicy, Database, GeneralParameter, ObjectPath, Request, RequestOutcome, RequestParams,
+    SchemaPath, Type, Value, ValuePathSegment,
 };
 
 fn session() -> selene_db::Session {
@@ -74,7 +74,6 @@ fn facade_path_request_requires_intrinsic_direction_and_accepts_both_directed_lo
     let s = session();
     s.execute("INSERT (a:A)~[:E]~(b:B), (c:C)-[:D]->(c) FINISH")
         .unwrap();
-    let graph = GraphId::new(s.context().dependencies().current_graph().get());
     for (edge, start, end, direction, valid) in [
         (1, 1, 2, EdgeDirection::Undirected, true),
         (1, 2, 1, EdgeDirection::Undirected, true),
@@ -84,35 +83,29 @@ fn facade_path_request_requires_intrinsic_direction_and_accepts_both_directed_lo
         (2, 3, 3, EdgeDirection::Incoming, true),
         (2, 3, 3, EdgeDirection::Undirected, false),
     ] {
-        let path = Path {
-            graph,
-            start: NodeId::new(start),
-            segments: [PathSegment {
-                edge: EdgeId::new(edge),
-                node: NodeId::new(end),
+        let path = s.path_reference(
+            s.node_reference(NodeId::new(start)).unwrap(),
+            vec![ValuePathSegment::new(
+                s.edge_reference(EdgeId::new(edge)).unwrap(),
                 direction,
-            }]
-            .into_iter()
-            .collect(),
-        };
+                s.node_reference(NodeId::new(end)).unwrap(),
+            )],
+        );
+        if !valid {
+            assert_eq!(path.unwrap_err().gqlstatus().unwrap().as_str(), "42002");
+            continue;
+        }
         let mut params = RequestParams::new();
         params
             .insert(
                 "p",
-                GeneralParameter::new(GqlType::Path, Value::Path(Box::new(path))).unwrap(),
+                GeneralParameter::new(Type::PATH, Value::Path(Box::new(path.unwrap()))).unwrap(),
             )
             .unwrap();
         let outcome = s.execute_request(Request::with_params("RETURN $p", params));
-        if valid {
-            assert!(
-                matches!(outcome, RequestOutcome::Succeeded { .. }),
-                "{outcome:?}"
-            );
-        } else {
-            assert_eq!(
-                outcome.error().unwrap().gqlstatus().unwrap().as_str(),
-                "42002"
-            );
-        }
+        assert!(
+            matches!(outcome, RequestOutcome::Succeeded { .. }),
+            "{outcome:?}"
+        );
     }
 }

@@ -1,9 +1,10 @@
 //! In-memory GQL value representation per spec 02 section 3.
 //!
-//! The [`Value`] variant order is canonical and append-only. Reordering,
-//! removing, or inserting variants in the middle is a major-version and
-//! durability-format change. The serde/postcard and rkyv serialization
-//! derives are part of the same durability contract.
+//! [`Value`] is a runtime carrier. Its isolated legacy serde adapter preserves
+//! established enum tags until deletion by F02-PR08; that compatibility adapter
+//! is not the format-2 stored-value encoding. New WAL framing belongs to F02-PR03.
+//! Durable admission uses [`crate::StoredValue`], which excludes query references
+//! and process-local identities recursively.
 
 use std::sync::Arc;
 
@@ -34,7 +35,7 @@ pub const MAX_VECTOR_DIMENSION: usize = u16::MAX as usize;
 /// used by `PropertyMap` serde round-trip and snapshot diffs. The GQL `=`
 /// operator is intercepted at the runtime layer (`runtime::value_compare`)
 /// and preserves ISO 3VL semantics — `NaN = NaN` returns NULL there.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum Value {
     /// Boolean value.
@@ -44,15 +45,15 @@ pub enum Value {
     /// Unsigned integer up to 64 bits.
     Uint(u64),
     /// Signed 128-bit integer.
-    Int128(#[serde(with = "serde_i128_le")] i128),
+    Int128(i128),
     /// Unsigned 128-bit integer.
-    Uint128(#[serde(with = "serde_u128_le")] u128),
+    Uint128(u128),
     /// Default floating-point value.
     Float(f64),
     /// Distinct 32-bit floating-point value.
     Float32(f32),
     /// Fixed-precision decimal value.
-    Decimal(#[serde(with = "serde_decimal_str")] rust_decimal::Decimal),
+    Decimal(rust_decimal::Decimal),
     /// String value.
     String(DbString),
     /// Byte-string value.
@@ -131,6 +132,9 @@ pub enum Value {
 /// regrows the enum; box the offending payload or lift the ceiling
 /// deliberately.
 const _: () = assert!(core::mem::size_of::<Value>() <= 32);
+
+#[path = "value/legacy_serde.rs"]
+mod legacy_serde;
 
 impl Value {
     /// Factory table with one sample value for each [`Value`] variant.

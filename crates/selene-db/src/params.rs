@@ -4,15 +4,15 @@ use std::collections::BTreeMap;
 
 use selene_core::DbString;
 
-use crate::{Error, GqlType, Result, Value};
+use crate::{Error, Result, Type, Value};
 
 /// One explicitly declared GQL parameter value.
 ///
-/// Construction uses the lower runtime's structural type matcher. The same
-/// matcher checks inline source declarations during request preflight.
+/// Construction and runtime declarations use the core structural type service.
+/// The descriptor is owned and independent of compiler/source arenas.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeneralParameter {
-    declared_type: GqlType,
+    declared_type: Type,
     value: Value,
 }
 
@@ -22,8 +22,20 @@ impl GeneralParameter {
     /// # Errors
     ///
     /// Returns `22G03` when `value` does not satisfy `declared_type`.
-    pub fn new(declared_type: GqlType, value: Value) -> Result<Self> {
-        selene_gql::validate_parameter_value(&value, &declared_type).map_err(Error::from_engine)?;
+    pub fn new(declared_type: Type, value: Value) -> Result<Self> {
+        validate_parameter_type(&declared_type)?;
+        Self::from_session_value(declared_type, value)
+    }
+
+    // Source session declarations can retain inferred analysis types. External
+    // callers must supply a supported explicit declaration through `new`.
+    pub(crate) fn from_session_value(declared_type: Type, value: Value) -> Result<Self> {
+        value.validate_shape()?;
+        selene_gql::validate_parameter_value(
+            &value.to_lower(),
+            &selene_gql::lower_value_type(&declared_type),
+        )
+        .map_err(Error::from_engine)?;
         Ok(Self {
             declared_type,
             value,
@@ -32,7 +44,7 @@ impl GeneralParameter {
 
     /// Borrow the parameter's explicit declaration.
     #[must_use]
-    pub const fn declared_type(&self) -> &GqlType {
+    pub const fn declared_type(&self) -> &Type {
         &self.declared_type
     }
 
@@ -43,8 +55,43 @@ impl GeneralParameter {
     }
 
     pub(crate) fn to_lower(&self) -> selene_gql::RequestParameter {
-        selene_gql::RequestParameter::new(self.declared_type.clone(), self.value.clone())
+        selene_gql::RequestParameter::new(
+            selene_gql::lower_value_type(&self.declared_type),
+            self.value.to_lower(),
+        )
     }
+}
+
+fn validate_parameter_type(ty: &Type) -> Result<()> {
+    use crate::TypeKind;
+    match ty.kind() {
+        TypeKind::Dynamic
+        | TypeKind::Property
+        | TypeKind::Null
+        | TypeKind::Empty
+        | TypeKind::TableRef(_) => {
+            return Err(Error::from_engine(
+                selene_gql::ExecutorError::DataException {
+                    subclass: selene_gql::DataExceptionSubclass::InvalidValueType,
+                    message: "parameter declaration is not a supported facade value type".into(),
+                    span: selene_gql::SourceSpan::default(),
+                },
+            ));
+        }
+        TypeKind::List { element, .. } => validate_parameter_type(element)?,
+        TypeKind::Record(Some(fields)) => {
+            for (_, field) in fields.iter() {
+                validate_parameter_type(field)?;
+            }
+        }
+        TypeKind::Union(members) => {
+            for member in members.iter() {
+                validate_parameter_type(member)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Deterministic exact-name request parameter dictionary.
@@ -117,6 +164,24 @@ impl RequestParams {
             .iter()
             .map(|(name, parameter)| (name.clone(), parameter.to_lower()))
             .collect()
+    }
+
+    pub(crate) fn reference_graph(
+        &self,
+        database: crate::DatabaseId,
+    ) -> Result<Option<crate::GraphId>> {
+        let mut domain = None;
+        for (_, parameter) in self.iter() {
+            if let Some(graph) = parameter.value.reference_graph(database)? {
+                if domain.is_some_and(|previous| previous != graph) {
+                    return Err(Error::invalid_runtime_reference(
+                        "reference belongs to another graph",
+                    ));
+                }
+                domain = Some(graph);
+            }
+        }
+        Ok(domain)
     }
 }
 

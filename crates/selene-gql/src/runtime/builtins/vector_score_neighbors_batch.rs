@@ -9,8 +9,8 @@ use selene_graph::{VectorNeighborDirection, VectorNeighborSearchOptions};
 
 use super::meta::{StaticOutputColumn, StaticParameter};
 use super::vector_common::{
-    BatchMismatch, cardinality_arg, invalid_arg, metric_arg, neighbor_direction_arg, node_list_arg,
-    queries_arg, query_index_too_large, string_arg, vector_search_error,
+    BatchMismatch, cardinality_arg, invalid_arg, live_node_list_arg, metric_arg,
+    neighbor_direction_arg, queries_arg, query_index_too_large, string_arg, vector_search_error,
 };
 use crate::procedure_registry::ProcedureError;
 use crate::{
@@ -74,7 +74,7 @@ pub(super) fn execute(
 
     let property = string_arg(PROC_NAME, &args[0], "property")?;
     let queries = queries_arg(PROC_NAME, &args[1])?;
-    let anchors = node_list_arg(PROC_NAME, &args[2], "anchors")?;
+    let anchors = live_node_list_arg(ctx.snapshot(), PROC_NAME, &args[2], "anchors")?;
     if queries.len() != anchors.len() {
         return Err(invalid_arg(format!(
             "{PROC_NAME} queries and anchors must have the same length"

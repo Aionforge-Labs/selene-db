@@ -67,19 +67,18 @@ fn bind_value_expr_inner(ctx: &mut BindContext, expr: &ValueExpr) -> Result<Expr
                 infer::list_literal(&item_types)?
             }
             ValueExpr::RecordLiteral { fields, .. } => {
-                for (_, value) in fields {
-                    bind_value_expr(ctx, value)?;
+                let mut field_types = Vec::with_capacity(fields.len());
+                for (name, value) in fields {
+                    let id = bind_value_expr(ctx, value)?;
+                    let ty = match ctx.expr_type(id) {
+                        AnalyzedType::Resolved(ty) => ty.clone(),
+                        AnalyzedType::Dynamic => crate::GqlType::Any,
+                    };
+                    field_types.push((name.clone(), ty));
                 }
-                // An open `RECORD{...}` value literal resolves to the open
-                // record type. `RecordType::Open` carries no per-field types, so
-                // this is a pure tag (no field inference). Resolving it (vs
-                // `Dynamic`) routes closed-graph (GG02) RECORD property writes
-                // through the declared property-type compatibility check instead
-                // of bypassing it via the `Dynamic` fast-path. The value form is
-                // ISO feature GV45 (`<record constructor>`, clause 20.18);
-                // typed/closed RECORD *type* expressions (GV46-GV48) stay
-                // deferred to the typed-RECORD brief.
-                AnalyzedType::Resolved(crate::GqlType::Record(crate::RecordType::Open))
+                AnalyzedType::Resolved(crate::GqlType::Record(crate::RecordType::Closed(
+                    field_types,
+                )))
             }
             ValueExpr::PathConstructor { elements, span } => {
                 bind_path_constructor(ctx, elements, *span)?;
@@ -209,7 +208,7 @@ fn bind_value_expr_inner(ctx: &mut BindContext, expr: &ValueExpr) -> Result<Expr
                 infer::cast(target_type)?
             }
         };
-        Ok(ctx.allocate_expr(expr, ty))
+        ctx.allocate_expr(expr, ty)
     })
 }
 

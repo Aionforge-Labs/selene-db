@@ -17,6 +17,11 @@ pub struct IdAllocator {
 }
 
 impl IdAllocator {
+    pub(crate) fn raise_to(&mut self, floor: &Self) {
+        self.next_node_id = self.next_node_id.max(floor.next_node_id);
+        self.next_edge_id = self.next_edge_id.max(floor.next_edge_id);
+    }
+
     /// Construct an allocator at the v1.0 initial checkpoint.
     #[must_use]
     pub const fn new() -> Self {

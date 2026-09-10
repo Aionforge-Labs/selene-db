@@ -307,6 +307,7 @@ pub(super) fn property_access(
     span: SourceSpan,
     ctx: &EvalCtx<'_, '_, '_, '_>,
 ) -> Result<Value, ExecutorError> {
+    require_live_referent(target, span, ctx)?;
     match target {
         Value::Null => Ok(Value::Null),
         Value::NodeRef(id) => Ok(property_from_node(*id, &key, ctx)),
@@ -333,6 +334,7 @@ fn property_list_access(
 ) -> Result<Value, ExecutorError> {
     let mut values = Vec::with_capacity(items.len());
     for item in items {
+        require_live_referent(item, span, ctx)?;
         let value = match item {
             Value::Null => Value::Null,
             Value::NodeRef(id) => property_from_node(*id, key, ctx),
@@ -349,6 +351,28 @@ fn property_list_access(
         values.push(value);
     }
     Ok(Value::List(values))
+}
+
+/// Check only operations which access graph state; copying and identity tests
+/// do not access referents and may retain deleted references (ISO 4.4.4).
+pub(crate) fn require_live_referent(
+    value: &Value,
+    span: SourceSpan,
+    ctx: &EvalCtx<'_, '_, '_, '_>,
+) -> Result<(), ExecutorError> {
+    let alive = match value {
+        Value::NodeRef(id) => ctx.tx.snapshot().is_node_alive(*id),
+        Value::EdgeRef(id) => ctx.tx.snapshot().is_edge_alive(*id),
+        _ => true,
+    };
+    if !alive {
+        return Err(ExecutorError::data_exception(
+            crate::runtime::DataExceptionSubclass::InvalidReferenceValue,
+            "referenced graph element has been deleted".to_owned(),
+            span,
+        ));
+    }
+    Ok(())
 }
 
 fn property_from_node(

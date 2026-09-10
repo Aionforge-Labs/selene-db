@@ -7,7 +7,7 @@ use selene_core::Value;
 use selene_graph::{GraphError, ReachabilityDirection, ReachabilityError};
 
 use super::meta::{StaticOutputColumn, StaticParameter};
-use super::vector_common::{cardinality_arg, invalid_arg, node_list_arg, string_arg};
+use super::vector_common::{cardinality_arg, invalid_arg, live_node_list_arg, string_arg};
 use crate::procedure_registry::ProcedureError;
 use crate::{
     GqlType, GraphContext, ProcedureDefaultValue, ProcedureOutputColumn, ProcedureParameter,
@@ -58,7 +58,7 @@ pub(super) fn execute(
             "{PROC_NAME} expects 3, 4, or 5 arguments"
         )));
     }
-    let roots = node_list_arg(PROC_NAME, &args[0], "roots")?;
+    let roots = live_node_list_arg(ctx.snapshot(), PROC_NAME, &args[0], "roots")?;
     let edge_label = string_arg(PROC_NAME, &args[1], "edge_label")?;
     let k = cardinality_arg(PROC_NAME, &args[2], "k")?;
     let max_depth = args.get(3).map(max_depth_arg).transpose()?.flatten();

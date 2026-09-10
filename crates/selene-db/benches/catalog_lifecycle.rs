@@ -10,9 +10,9 @@ use std::{hint::black_box, sync::Arc, time::Duration};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use selene_db::{
     AllowAllAuthorizationPolicy, AuthHookError, AuthorizationId, CreatePolicy, Database,
-    DropPolicy, EdgeId, ExecutionOutcome, GeneralParameter, GqlType, NodeId, ObjectPath, Principal,
+    DropPolicy, EdgeId, ExecutionOutcome, GeneralParameter, NodeId, ObjectPath, Principal,
     PrincipalId, PrincipalProvider, Request, RequestParams, SchemaPath, SessionOptions,
-    TransactionAccessMode, Value,
+    TransactionAccessMode, Type, Value,
 };
 
 const OMITTED: ExecutionOutcome = ExecutionOutcome::SUCCESSFUL_OMITTED;
@@ -551,7 +551,7 @@ fn bench_catalog_lifecycle(c: &mut Criterion) {
             parameters
                 .insert(
                     &format!("parameter_{index:04}"),
-                    GeneralParameter::new(GqlType::Integer, Value::Int(index as i64))
+                    GeneralParameter::new(Type::INT64, Value::Int(index as i64))
                         .expect("benchmark parameter type is valid"),
                 )
                 .expect("benchmark parameter name is unique and valid");

@@ -23,6 +23,9 @@ use crate::index_provider::{IndexProvider, ProviderTag};
 use crate::vector_index::{VectorIndexMaintenancePolicy, VectorIndexRebuildReport};
 use crate::write_txn::WriteTxn;
 
+mod allocation;
+pub use allocation::GraphAllocationAuthority;
+
 /// Per-graph shared runtime state.
 ///
 /// Since v1.2 (BRIEF 1) every snapshot publish is funneled through a single
@@ -283,6 +286,14 @@ impl SharedGraph {
         snapshot: Arc<ArcSwap<SeleneGraph>>,
         batching: CommitBatching,
     ) -> GraphResult<Self> {
+        for properties in graph
+            .node_store
+            .properties
+            .iter()
+            .chain(graph.edge_store.properties.iter())
+        {
+            properties.validate_stored_values()?;
+        }
         validate_unique_provider_tags(&providers)?;
         // Freeze the registry into one shared allocation: the committer and
         // every `begin_write` transaction clone the `Arc`, not the `Vec`.

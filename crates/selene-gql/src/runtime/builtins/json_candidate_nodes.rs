@@ -10,7 +10,7 @@ use selene_graph::JsonPathContainmentCandidateOptions;
 
 use super::json_path_common::{json_search_error, path_arg};
 use super::meta::{StaticOutputColumn, StaticParameter};
-use super::vector_common::{cardinality_arg, invalid_arg, node_list_arg, string_arg};
+use super::vector_common::{cardinality_arg, invalid_arg, live_node_list_arg, string_arg};
 use crate::procedure_registry::ProcedureError;
 use crate::{GqlType, GraphContext, ProcedureOutputColumn, ProcedureParameter, ProcedureResult};
 
@@ -127,7 +127,7 @@ pub(super) fn execute_contains(
             "{CONTAINS_PROC_NAME} candidate must be JSON"
         )));
     };
-    let nodes = node_list_arg(CONTAINS_PROC_NAME, &args[3], "nodes")?;
+    let nodes = live_node_list_arg(ctx.snapshot(), CONTAINS_PROC_NAME, &args[3], "nodes")?;
     let k = cardinality_arg(CONTAINS_PROC_NAME, &args[4], "k")?;
 
     let hits = ctx
@@ -157,7 +157,7 @@ pub(super) fn execute_path_exists(
     let label = string_arg(PATH_EXISTS_PROC_NAME, &args[0], "label")?;
     let property = string_arg(PATH_EXISTS_PROC_NAME, &args[1], "property")?;
     let path = path_arg(PATH_EXISTS_PROC_NAME, &args[2])?;
-    let nodes = node_list_arg(PATH_EXISTS_PROC_NAME, &args[3], "nodes")?;
+    let nodes = live_node_list_arg(ctx.snapshot(), PATH_EXISTS_PROC_NAME, &args[3], "nodes")?;
     let k = cardinality_arg(PATH_EXISTS_PROC_NAME, &args[4], "k")?;
 
     let hits = ctx
@@ -192,7 +192,7 @@ pub(super) fn execute_path_contains(
             "{PATH_CONTAINS_PROC_NAME} candidate must be JSON"
         )));
     };
-    let nodes = node_list_arg(PATH_CONTAINS_PROC_NAME, &args[4], "nodes")?;
+    let nodes = live_node_list_arg(ctx.snapshot(), PATH_CONTAINS_PROC_NAME, &args[4], "nodes")?;
     let k = cardinality_arg(PATH_CONTAINS_PROC_NAME, &args[5], "k")?;
 
     let hits = ctx
@@ -220,7 +220,7 @@ pub(super) fn execute_path_value(
     let label = string_arg(PATH_VALUE_PROC_NAME, &args[0], "label")?;
     let property = string_arg(PATH_VALUE_PROC_NAME, &args[1], "property")?;
     let path = path_arg(PATH_VALUE_PROC_NAME, &args[2])?;
-    let nodes = node_list_arg(PATH_VALUE_PROC_NAME, &args[3], "nodes")?;
+    let nodes = live_node_list_arg(ctx.snapshot(), PATH_VALUE_PROC_NAME, &args[3], "nodes")?;
     let k = cardinality_arg(PATH_VALUE_PROC_NAME, &args[4], "k")?;
 
     let hits = ctx

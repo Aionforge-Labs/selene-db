@@ -1,16 +1,13 @@
 //! Stable row-bearing, write, and omitted execution outcomes.
 
-use crate::{DiagnosticBundle, GqlStatus, GqlStatusObject, GqlType, Value};
+use crate::{DiagnosticBundle, GqlStatus, GqlStatusObject, Type, Value};
 
-/// Temporary typed adapter for one analyzer-inferred result field.
-///
-/// M05 replaces this adapter with the unified semantic type descriptor. It is
-/// intentionally typed rather than rendered as a free-form string.
+/// One analyzer-inferred result field, with explicit inference uncertainty.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum DeclaredType {
     /// The analyzer resolved one concrete GQL type.
-    Resolved(GqlType),
+    Resolved(Type),
     /// Static inference deliberately retained a dynamic type cell.
     Dynamic,
 }
@@ -40,6 +37,8 @@ impl ResultField {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResultDescriptor {
     fields: Vec<ResultField>,
+    ordering: Vec<crate::ResultOrderKey>,
+    preferred_columns: Vec<usize>,
 }
 
 impl ResultDescriptor {
@@ -49,22 +48,42 @@ impl ResultDescriptor {
         &self.fields
     }
 
-    fn from_engine(descriptor: &selene_gql::BindingTableDescriptor) -> Self {
-        Self {
+    /// Declared global result ordering, including resolved null placement.
+    #[must_use]
+    pub fn ordering(&self) -> &[crate::ResultOrderKey] {
+        &self.ordering
+    }
+
+    /// Preferred output column order, including for a zero-row result.
+    #[must_use]
+    pub fn preferred_columns(&self) -> &[usize] {
+        &self.preferred_columns
+    }
+
+    fn from_engine(descriptor: &selene_gql::BindingTableDescriptor) -> crate::Result<Self> {
+        Ok(Self {
+            ordering: descriptor.ordering().to_vec(),
+            preferred_columns: descriptor.preferred_columns().to_vec(),
             fields: descriptor
                 .fields()
                 .iter()
-                .map(|field| ResultField {
-                    name: field.name().map(str::to_owned),
-                    declared_type: match field.declared_type() {
-                        selene_gql::AnalyzedType::Resolved(ty) => {
-                            DeclaredType::Resolved(ty.clone())
-                        }
-                        selene_gql::AnalyzedType::Dynamic => DeclaredType::Dynamic,
-                    },
+                .map(|field| {
+                    Ok(ResultField {
+                        name: field.name().map(str::to_owned),
+                        declared_type: match field.declared_type() {
+                            selene_gql::AnalyzedType::Resolved(ty) => DeclaredType::Resolved(
+                                selene_gql::normalize_value_type(ty).map_err(|_| {
+                                    crate::Error::catalog_invariant(
+                                        "unsupported result type descriptor",
+                                    )
+                                })?,
+                            ),
+                            selene_gql::AnalyzedType::Dynamic => DeclaredType::Dynamic,
+                        },
+                    })
                 })
-                .collect(),
-        }
+                .collect::<crate::Result<_>>()?,
+        })
     }
 }
 
@@ -111,17 +130,24 @@ impl RegularResult {
     fn from_engine(
         table: &selene_gql::BindingTable,
         declared: &selene_gql::BindingTableDescriptor,
-    ) -> Self {
-        Self {
-            descriptor: ResultDescriptor::from_engine(declared),
+        graph: crate::GraphRef,
+    ) -> crate::Result<Self> {
+        Ok(Self {
+            descriptor: ResultDescriptor::from_engine(declared)?,
             rows: table
                 .rows()
                 .iter()
-                .map(|row| ResultRow {
-                    values: row.values().to_vec(),
+                .map(|row| {
+                    Ok(ResultRow {
+                        values: row
+                            .values()
+                            .iter()
+                            .map(|value| Value::from_lower(value, graph))
+                            .collect::<crate::Result<_>>()?,
+                    })
                 })
-                .collect(),
-        }
+                .collect::<crate::Result<_>>()?,
+        })
     }
 }
 
@@ -175,14 +201,17 @@ impl ExecutionOutcome {
         ),
     };
 
-    pub(crate) fn from_engine(output: selene_gql::ExecutionOutcome) -> crate::Result<Self> {
+    pub(crate) fn from_engine(
+        output: selene_gql::ExecutionOutcome,
+        graph: crate::GraphRef,
+    ) -> crate::Result<Self> {
         match output {
             selene_gql::ExecutionOutcome::RegularResult {
                 table,
                 declared,
                 diagnostics,
             } => Ok(Self::Rows {
-                result: RegularResult::from_engine(&table, &declared),
+                result: RegularResult::from_engine(&table, &declared, graph)?,
                 diagnostics: DiagnosticBundle::from_engine(&diagnostics),
             }),
             selene_gql::ExecutionOutcome::OmittedResult { diagnostics } => {
@@ -197,7 +226,7 @@ impl ExecutionOutcome {
             } => {
                 let result = match (write.rows.as_ref(), declared.as_ref()) {
                     (Some(table), Some(declared)) => {
-                        Some(RegularResult::from_engine(table, declared))
+                        Some(RegularResult::from_engine(table, declared, graph)?)
                     }
                     (None, None) => None,
                     _ => return Err(crate::Error::unsupported_engine_outcome()),
@@ -285,7 +314,11 @@ mod tests {
     #[test]
     fn lower_omitted_output_does_not_fabricate_a_descriptor() {
         let lower = selene_gql::ExecutionOutcome::successful_omitted();
-        let mapped = ExecutionOutcome::from_engine(lower).unwrap();
+        let mapped = ExecutionOutcome::from_engine(
+            lower,
+            crate::GraphRef::new(crate::DatabaseId::from_raw(1), crate::GraphId(1)),
+        )
+        .unwrap();
         assert!(matches!(mapped, ExecutionOutcome::OmittedResult { .. }));
         assert_eq!(
             mapped.diagnostics().primary().status(),

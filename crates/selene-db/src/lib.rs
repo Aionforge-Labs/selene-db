@@ -123,6 +123,7 @@ mod request;
 mod session;
 mod session_context;
 mod transaction;
+mod value;
 
 pub use auth::{
     AllowAllAuthorizationPolicy, AuthHookError, AuthorizationDecision, AuthorizationId,
@@ -152,24 +153,23 @@ pub use request::{Request, RequestContext, RequestOutcome, RequestTimestamp};
 pub use selene_core::EdgeId;
 /// Stable lower graph node identity intentionally exposed for facade references.
 pub use selene_core::NodeId;
-/// Durable lower-engine value type retained as a compatibility bridge.
+/// Stable, owned result-order metadata; it contains no executable AST or arena ID.
+pub use selene_core::{NullPlacement, ResultOrderKey, SortDirection};
+/// Owned normalized structural types supported by facade parameters and results.
+/// These descriptors contain no AST spelling or process-local type identifier.
 ///
-/// Its bare-ID `GraphRef`, `NodeRef`, and `EdgeRef` variants are not the
-/// database-scoped facade handle types with those names. M05-PR03 owns runtime
-/// carrier migration; M09-PR08 owns deletion of the legacy encoded variants and
-/// codecs. Conversion to facade handles always requires explicit facade
-/// issuance and validation.
-pub use selene_core::Value;
-/// Parsed GQL type intentionally re-exported for typed request parameters.
-///
-/// M05 owns replacing this temporary lower semantic bridge.
-pub use selene_gql::GqlType;
+/// ```compile_fail
+/// use selene_db::GqlType; // Source AST types are not facade parameter types.
+/// ```
+pub use selene_core::{ScalarType, StructuralType as Type, StructuralTypeError, TypeKind};
 pub use session::Session;
 pub use session_context::{
     ProfileIdentity, RequestSlotState, SessionContext, SessionDependencySummary, SessionParameters,
     SessionTerminationState, TimeZoneDisplacement, TransactionSlotState,
 };
 pub use transaction::{Transaction, TransactionAccessMode, TransactionId, TransactionState};
+/// Owned query values with database- and graph-scoped reference carriers.
+pub use value::{Path, PathSegment as ValuePathSegment, Record, Value};
 
 /// Result type returned by facade operations.
 pub type Result<T> = std::result::Result<T, Error>;

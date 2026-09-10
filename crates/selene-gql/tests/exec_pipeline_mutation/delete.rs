@@ -58,10 +58,10 @@ fn set_after_delete_of_same_binding_errors_atomically() {
 
     assert!(matches!(
         err,
-        ExecutorError::GraphMutation {
-            source: GraphError::NodeNotAlive { id },
+        ExecutorError::DataException {
+            subclass: selene_gql::DataExceptionSubclass::InvalidReferenceValue,
             ..
-        } if id == NodeId::new(1)
+        }
     ));
     let snapshot = graph.read();
     assert!(snapshot.is_node_alive(NodeId::new(1)));

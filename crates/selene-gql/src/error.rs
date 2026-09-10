@@ -124,6 +124,8 @@ impl GqlStatus {
     pub const INVALID_DURATION_FORMAT: Self = Self(*b"22G0H");
     /// Maps to GQLSTATUS 22G10 per ISO/IEC 39075:2024 section 23.1 Table 8.
     pub const PATH_DATA_RIGHT_TRUNCATION: Self = Self(*b"22G10");
+    /// Access to the referent of a deleted reference (ISO section 4.4.4).
+    pub const INVALID_REFERENCE_VALUE: Self = Self(*b"22G11");
     /// Maps to GQLSTATUS 22G14 per ISO/IEC 39075:2024 section 23.1 Table 8.
     pub const INCOMPATIBLE_TEMPORAL_INSTANT_UNIT_GROUPS: Self = Self(*b"22G14");
     /// Maps to GQLSTATUS 22G0M per ISO/IEC 39075:2024 section 23.1 Table 8.

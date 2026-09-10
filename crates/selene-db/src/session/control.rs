@@ -96,6 +96,7 @@ impl Session {
         self.validate_context_snapshot(&snapshot)?;
         let generation = snapshot.generation();
         let resolved = resolve_catalog_control(
+            crate::GraphRef::new(self.database_id(), self.context.current_graph().id),
             &snapshot,
             &self.context.current_schema(),
             &self.context.reset_schema_target(),
@@ -153,6 +154,7 @@ impl Session {
         };
         let generation = snapshot.generation();
         let resolved = resolve_catalog_control(
+            crate::GraphRef::new(self.database_id(), self.context.current_graph().id),
             &snapshot,
             &self.context.current_schema(),
             &self.context.reset_schema_target(),
@@ -212,6 +214,7 @@ fn resolve_on_graph(
 }
 
 fn resolve_catalog_control(
+    graph: crate::GraphRef,
     snapshot: &CatalogReadSnapshot,
     current_schema: &SchemaDescriptor,
     reset_schema: &SchemaDescriptor,
@@ -226,7 +229,17 @@ fn resolve_catalog_control(
             value,
         } => ResolvedSessionControl::SetValue {
             name: param,
-            parameter: GeneralParameter::new(declared_type, value)?,
+            parameter: GeneralParameter::from_session_value(
+                selene_gql::normalize_value_type(&declared_type).map_err(|source| {
+                    Error::from_engine(selene_gql::ExecutorError::Analysis {
+                        source: selene_gql::AnalysisError::StructuralType {
+                            source,
+                            span: selene_gql::SourceSpan::default(),
+                        },
+                    })
+                })?,
+                crate::Value::from_lower(&value, graph)?,
+            )?,
         },
         PreparedSessionControl::SetTimeZone {
             zone,

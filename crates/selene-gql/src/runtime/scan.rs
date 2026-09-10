@@ -171,7 +171,7 @@ fn linear_entities(
     }
 }
 
-fn label_index_entities(
+pub(super) fn label_index_entities(
     scan: &NodeOrEdgeScan,
     ctx: &EvalCtx<'_, '_, '_, '_>,
 ) -> Result<Vec<ScanEntityId>, ExecutorError> {
@@ -205,6 +205,7 @@ fn typed_index_entities(
     let Some(resolved) = resolve_bounds(bounds, kind, ctx)? else {
         return Ok(Vec::new());
     };
+    super::scan_duration::validate_bounds(scan, property, &resolved, ctx)?;
     if !range_satisfiable_runtime(&resolved) {
         return Ok(Vec::new());
     }
@@ -350,6 +351,12 @@ fn bitmap_union_entities(
     if resolved_keys.is_empty() && !keys.is_empty() {
         return Ok(Vec::new());
     }
+    super::scan_duration::validate(
+        scan,
+        property,
+        &resolved_keys.iter().collect::<Vec<_>>(),
+        ctx,
+    )?;
     let Some(label) = single_label(&scan.label_predicate) else {
         return Ok(linear_entities(scan.kind, ctx)?
             .into_iter()
@@ -386,6 +393,7 @@ fn composite_lookup_entities(
     let Some(resolved_values) = resolve_composite_values(properties, keys, ctx)? else {
         return Ok(Vec::new());
     };
+    super::scan_duration::validate_composite(scan, properties, &resolved_values, ctx)?;
     if scan.kind != ScanKind::Node {
         return Ok(linear_entities(scan.kind, ctx)?
             .into_iter()
@@ -665,7 +673,7 @@ pub(crate) fn label_matches_edge(expr: &LabelExpr, label: &DbString) -> bool {
     }
 }
 
-fn single_label(label: &Option<LabelExpr>) -> Option<&DbString> {
+pub(super) fn single_label(label: &Option<LabelExpr>) -> Option<&DbString> {
     match label {
         Some(LabelExpr::Single(label)) => Some(label),
         _ => None,

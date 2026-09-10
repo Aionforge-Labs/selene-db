@@ -93,7 +93,7 @@ fn checked_in_seed_pins_static_boundary_and_pending_ownership() {
     );
     assert_eq!(
         registry.evidence_hash(),
-        "9928a43e9b3eec47134e94527de94533652087a28a40fe9f9fc1e6e8cbb21dd3"
+        "b54db3e45c97a61bfbe02846010547e0a81417473f2db1822df956c7c6714213"
     );
     assert!(!profile.profile().release_claimable);
 

@@ -353,25 +353,6 @@ fn expect_string(
     }
 }
 
-fn expect_comparable(
-    ty: &AnalyzedType,
-    span: SourceSpan,
-    context: TypeMismatchContext,
-) -> Result<(), AnalysisError> {
-    match ty {
-        // A NULL operand is accepted: an ordered comparison against NULL yields
-        // NULL under three-valued logic, not a type error (runtime parity).
-        AnalyzedType::Dynamic | AnalyzedType::Resolved(GqlType::Null) => Ok(()),
-        AnalyzedType::Resolved(found) if comparable_family(found).is_some() => Ok(()),
-        AnalyzedType::Resolved(found) => Err(type_mismatch(
-            context,
-            ExpectedType::Comparable,
-            found.clone(),
-            span,
-        )),
-    }
-}
-
 fn expect_concat_operand(
     ty: &AnalyzedType,
     span: SourceSpan,
@@ -402,30 +383,6 @@ fn expect_concat_operand(
     }
 }
 
-fn ensure_same_comparable_family(
-    lhs: &AnalyzedType,
-    rhs: &AnalyzedType,
-    rhs_span: SourceSpan,
-    context: TypeMismatchContext,
-) -> Result<(), AnalysisError> {
-    if let (AnalyzedType::Resolved(lhs_ty), AnalyzedType::Resolved(rhs_ty)) = (lhs, rhs)
-        // A NULL operand has no comparable family and never forms a mismatch:
-        // the comparison evaluates to NULL under three-valued logic regardless
-        // of the other side's family (e.g. `NULL < 5` is valid, yields NULL).
-        && !matches!(lhs_ty, GqlType::Null)
-        && !matches!(rhs_ty, GqlType::Null)
-        && comparable_family(lhs_ty) != comparable_family(rhs_ty)
-    {
-        return Err(type_mismatch(
-            context,
-            ExpectedType::Specific(lhs_ty.clone()),
-            rhs_ty.clone(),
-            rhs_span,
-        ));
-    }
-    Ok(())
-}
-
 fn meet_gql_types(lhs: &GqlType, rhs: &GqlType) -> Option<GqlType> {
     if lhs == rhs {
         return Some(lhs.clone());
@@ -449,6 +406,14 @@ fn meet_gql_types(lhs: &GqlType, rhs: &GqlType) -> Option<GqlType> {
                 lhs_base.clone()
             },
         );
+    }
+    if matches!(
+        (lhs_base, rhs_base),
+        (GqlType::Record(_), GqlType::Record(_))
+    ) {
+        // Distinct named shapes still share the supported open RECORD family.
+        // This is type unification, not permission to compare their field sets.
+        return Some(GqlType::Record(crate::RecordType::Open));
     }
     list_union_type(lhs_base, rhs_base, meet_gql_types)
 }
@@ -476,41 +441,6 @@ fn is_character_string(ty: &GqlType) -> bool {
         ty.strip_not_null(),
         GqlType::String | GqlType::CharacterString(_)
     )
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ComparableFamily {
-    Boolean,
-    Numeric,
-    String,
-    Bytes,
-    Temporal,
-    Uuid,
-    NodeRef,
-    EdgeRef,
-}
-
-fn comparable_family(ty: &GqlType) -> Option<ComparableFamily> {
-    if is_numeric(ty) {
-        return Some(ComparableFamily::Numeric);
-    }
-    Some(match ty.strip_not_null() {
-        GqlType::Boolean => ComparableFamily::Boolean,
-        GqlType::String | GqlType::CharacterString(_) => ComparableFamily::String,
-        GqlType::Bytes | GqlType::ByteString(_) => ComparableFamily::Bytes,
-        GqlType::Uuid => ComparableFamily::Uuid,
-        GqlType::NodeRef => ComparableFamily::NodeRef,
-        GqlType::EdgeRef => ComparableFamily::EdgeRef,
-        GqlType::ZonedDateTime
-        | GqlType::LocalDateTime
-        | GqlType::Date
-        | GqlType::ZonedTime
-        | GqlType::LocalTime
-        | GqlType::Duration
-        | GqlType::DurationYearToMonth
-        | GqlType::DurationDayToSecond => ComparableFamily::Temporal,
-        _ => return None,
-    })
 }
 
 trait SpanMax {
