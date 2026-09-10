@@ -1,7 +1,7 @@
 //! Atomic snapshot envelope writer.
 
 use std::collections::HashSet;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -10,7 +10,6 @@ use rayon::prelude::*;
 use selene_core::metrics;
 
 use crate::compression::compress_zstd;
-use crate::manifest::sync_dir;
 use crate::section::{
     MAX_SECTION_COUNT, SECTION_TABLE_ROW_LEN, SectionEntry, body_hash, section_table_bytes,
     validate_section_payload_len,
@@ -75,6 +74,7 @@ impl Default for SnapshotConfig {
 /// Builder for one snapshot envelope.
 #[derive(Debug)]
 pub struct SnapshotBuilder {
+    directory: crate::StoreDirectory,
     config: SnapshotConfig,
     sections: Vec<RawSection>,
     seen: HashSet<([u8; 4], [u8; 4])>,
@@ -104,10 +104,21 @@ pub struct SnapshotFinalizeOutcome {
 }
 
 impl SnapshotBuilder {
-    /// Construct an empty snapshot builder.
+    /// Anchor the configured directory and construct an empty snapshot builder.
+    ///
+    /// # Errors
+    /// Returns directory-open or unsupported-platform errors.
+    pub fn new(config: SnapshotConfig) -> PersistResult<Self> {
+        let dir = crate::StoreDirectory::open(&config.dir)?;
+        Ok(Self::new_in(&dir, config))
+    }
+
+    /// Construct a snapshot builder using retained authority; the config path is diagnostic.
     #[must_use]
-    pub fn new(config: SnapshotConfig) -> Self {
+    pub fn new_in(dir: &crate::StoreDirectory, mut config: SnapshotConfig) -> Self {
+        config.dir = dir.locator().to_path_buf();
         Self {
+            directory: dir.clone(),
             config,
             sections: Vec::new(),
             seen: HashSet::new(),
@@ -124,6 +135,12 @@ impl SnapshotBuilder {
     #[must_use]
     pub fn dir(&self) -> &Path {
         &self.config.dir
+    }
+
+    /// Retained publication directory. [`Self::dir`] is only a locator.
+    #[must_use]
+    pub fn directory(&self) -> &crate::StoreDirectory {
+        &self.directory
     }
 
     /// Add one opaque section payload.
@@ -174,42 +191,71 @@ impl SnapshotBuilder {
     ///
     /// # Errors
     ///
-    /// Returns cap, compression, hash/header construction, or I/O errors,
+    /// Returns writer contention, cap, compression, hash/header construction, or I/O errors,
     /// including `Io(AlreadyExists)` when the final snapshot path is taken.
     /// MANIFEST rotation uses a crate-private companion that accepts only an
     /// exact byte-for-byte match at that path; standalone callers retain this
     /// fail-on-collision contract.
     pub fn finalize(self) -> PersistResult<SnapshotFinalizeOutcome> {
-        self.finalize_inner(false, false)
+        let authority = crate::StoreWriter::acquire(&self.directory)?;
+        self.finalize_with_authority(&authority)
+    }
+
+    /// Publish with an existing writer lease for this builder's retained directory.
+    ///
+    /// Directory identity is checked before acquiring the epoch or creating files.
+    /// The lease is shared explicitly; `LOCK` is never reacquired here.
+    ///
+    /// # Errors
+    /// Returns directory mismatch, epoch-lock, or the same errors as [`Self::finalize`].
+    pub fn finalize_with_authority(
+        self,
+        authority: &crate::StoreWriter,
+    ) -> PersistResult<SnapshotFinalizeOutcome> {
+        self.validate_directory(authority.directory())?;
+        let guard = crate::manifest_lock::ManifestEpochGuard::acquire(authority)?;
+        self.finalize_inner(&guard, false, false)
     }
 
     /// Finalize for MANIFEST rotation, accepting only a byte-identical final
     /// snapshot left by an earlier attempt. When `require_existing` is true,
     /// absence is an identity failure and this method never publishes the temp.
     pub(crate) fn finalize_for_rotation(
-        mut self,
-        publish_dir: &Path,
+        self,
+        guard: &crate::manifest_lock::ManifestEpochGuard,
         require_existing: bool,
     ) -> PersistResult<SnapshotFinalizeOutcome> {
-        // The caller already verified the configured directory resolves to its
-        // WAL anchor. Consume only that anchor so a later alias retarget cannot
-        // redirect temporary or final snapshot publication.
-        self.config.dir = publish_dir.to_path_buf();
-        self.finalize_inner(true, require_existing)
+        self.validate_directory(guard.directory())?;
+        self.finalize_inner(guard, true, require_existing)
+    }
+
+    fn validate_directory(&self, publish_dir: &crate::StoreDirectory) -> PersistResult<()> {
+        // Compare opened physical directory identities, never re-resolve the
+        // builder's original locator. Both handles survive parent replacement.
+        if !self.directory.same_directory(publish_dir)? {
+            return Err(PersistError::WalRotationDirectoryMismatch {
+                snapshot_dir: self.config.dir.clone(),
+                wal_dir: publish_dir.locator().to_path_buf(),
+            });
+        }
+        Ok(())
     }
 
     #[tracing::instrument(
         name = "selene.persist.snapshot.finalize",
-        skip(self),
+        skip(self, guard),
         fields(snapshot_seq = self.config.sequence, section_count = self.sections.len())
     )]
     fn finalize_inner(
         self,
+        guard: &crate::manifest_lock::ManifestEpochGuard,
         accept_identical_existing: bool,
         require_existing: bool,
     ) -> PersistResult<SnapshotFinalizeOutcome> {
         let started = Instant::now();
-        let final_path = snapshot_path(&self.config.dir, self.config.sequence);
+        let dir = guard.directory();
+        dir.require_legacy()?;
+        let final_path = snapshot_path(Path::new(""), self.config.sequence);
         let prepared = prepare_sections(self.sections, self.config.compression)?;
         let entries: Vec<_> = prepared.iter().map(|section| section.entry).collect();
         let table = section_table_bytes(&entries)?;
@@ -222,7 +268,7 @@ impl SnapshotBuilder {
             SectionCompression::PerSection { .. } => FLAG_SECTION_COMPRESSED,
         };
         let header = SnapshotFileHeader::new(flags, entries.len(), hash)?;
-        let (tmp_path, file) = create_snapshot_tmp(&self.config.dir, self.config.sequence)?;
+        let (tmp_path, file) = create_snapshot_tmp(dir, self.config.sequence)?;
         let result = (|| -> PersistResult<SnapshotFinalizeOutcome> {
             let mut writer = BufWriter::new(file);
             header.write_to(&mut writer)?;
@@ -236,30 +282,35 @@ impl SnapshotBuilder {
             }
             drop(writer);
             let published = if require_existing {
-                crate::artifact_identity::require_identical_regular_files(&tmp_path, &final_path)?;
+                crate::artifact_identity::require_identical_regular_files(
+                    dir,
+                    &tmp_path,
+                    &final_path,
+                )?;
                 false
             } else {
-                match std::fs::hard_link(&tmp_path, &final_path) {
+                match dir.hard_link(&tmp_path, &final_path) {
                     Ok(()) => true,
-                    Err(error)
+                    Err(PersistError::Io(error))
                         if accept_identical_existing
                             && error.kind() == std::io::ErrorKind::AlreadyExists =>
                     {
                         crate::artifact_identity::require_identical_regular_files(
+                            dir,
                             &tmp_path,
                             &final_path,
                         )?;
                         false
                     }
-                    Err(error) => return Err(error.into()),
+                    Err(error) => return Err(error),
                 }
             };
-            let _ = std::fs::remove_file(&tmp_path);
+            let _ = dir.remove(&tmp_path);
             // Make the new directory entry durable AFTER the publish (the
             // file's own sync_data above precedes it). Gated on config.fsync
             // so the no-fsync benchmark/offline path stays barrier-free.
             if self.config.fsync && published {
-                sync_dir(&self.config.dir)?;
+                dir.sync()?;
             }
             if published {
                 metrics::counter_inc(metrics::SNAPSHOTS_TOTAL);
@@ -275,14 +326,17 @@ impl SnapshotBuilder {
             })
         })();
         if result.is_err() {
-            let _ = std::fs::remove_file(&tmp_path);
+            let _ = dir.remove(&tmp_path);
         }
         result
     }
 }
 
-fn create_snapshot_tmp(dir: &std::path::Path, sequence: u64) -> PersistResult<(PathBuf, File)> {
-    let base = snapshot_tmp_path(dir, sequence);
+fn create_snapshot_tmp(
+    dir: &crate::StoreDirectory,
+    sequence: u64,
+) -> PersistResult<(PathBuf, File)> {
+    let base = snapshot_tmp_path(Path::new(""), sequence);
     for attempt in 0..128_u8 {
         let mut name = base
             .file_name()
@@ -290,10 +344,12 @@ fn create_snapshot_tmp(dir: &std::path::Path, sequence: u64) -> PersistResult<(P
             .to_os_string();
         name.push(format!(".{}.{attempt}", std::process::id()));
         let path = base.with_file_name(name);
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
+        match dir.create_new(&path) {
             Ok(file) => return Ok((path, file)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
+            Err(PersistError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                continue;
+            }
+            Err(error) => return Err(error),
         }
     }
     Err(std::io::Error::new(

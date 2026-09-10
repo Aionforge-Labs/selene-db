@@ -30,7 +30,8 @@ fn finalize_returns_snapshot_metadata_matching_reader_hash() {
         sequence: 9,
         compression: SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     builder
         .add_section(*b"CORE", *b"META", b"metadata".to_vec())
         .expect("first section adds");

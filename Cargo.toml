@@ -45,6 +45,7 @@ print_stdout = "warn"
 # Workspace-level dependency versions go here as crates are added. Keeping
 # them centralized means a single line bumps the version everywhere.
 [workspace.dependencies]
+rustix = { version = "=1.1.4", features = ["fs"] }
 thiserror = "2.0.20"
 miette = { version = "7.6.0", features = ["derive"] }
 pest = "2.9.0"

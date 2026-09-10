@@ -4,7 +4,7 @@ mod recovery_state;
 mod sections;
 
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -82,10 +82,12 @@ pub struct CoreProvider {
 }
 
 /// WAL-owned target for one ordered graph checkpoint.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct CheckpointTarget {
     /// Directory that owns `wal.log`, snapshots, archives, and the MANIFEST.
     pub(crate) dir: PathBuf,
+    /// Retained authority; `dir` is only the outcome locator.
+    pub(crate) directory: selene_persist::StoreDirectory,
     /// Current durable WAL high-water sequence.
     pub(crate) sequence: u64,
 }
@@ -109,7 +111,8 @@ enum CoreInner {
 pub struct DurableState {
     writer: Mutex<WalWriter>,
     next_hlc: AtomicU64,
-    audit: Option<Mutex<AuditLog>>,
+    // Keep optional audit authority off the common WAL-only CoreInner layout.
+    audit: Option<Box<Mutex<AuditLog>>>,
 }
 
 impl DurableState {
@@ -134,10 +137,21 @@ impl DurableState {
     /// pre-Item-7 WAL-only behavior rather than losing the event. Per the donor
     /// lesson "audit lag is recoverable, fiction is not," the audit can only lag
     /// the WAL, never lead it.
-    #[must_use]
-    pub fn with_audit_log(mut self, audit: AuditLog) -> Self {
-        self.audit = Some(Mutex::new(audit));
-        self
+    /// # Errors
+    /// Rejects an audit component owned by another physical store directory.
+    pub fn with_audit_log(mut self, audit: AuditLog) -> GraphResult<Self> {
+        if !self
+            .writer
+            .get_mut()
+            .directory()
+            .same_directory(audit.authority().directory())?
+        {
+            return Err(GraphError::Inconsistent {
+                reason: "WAL and audit must share store writer authority".into(),
+            });
+        }
+        self.audit = Some(Box::new(Mutex::new(audit)));
+        Ok(self)
     }
 
     /// Append one engine-owned event to the attached audit log, if any.
@@ -381,15 +395,13 @@ fn checkpoint_target_for_writer(writer: &WalWriter) -> GraphResult<CheckpointTar
         )));
     }
     let sequence = writer.last_sequence();
-    let dir = checkpoint_dir(writer.path());
-    Ok(CheckpointTarget { dir, sequence })
-}
-
-fn checkpoint_dir(wal_path: &Path) -> PathBuf {
-    wal_path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+    let directory = writer.directory().clone();
+    let dir = directory.locator().to_path_buf();
+    Ok(CheckpointTarget {
+        dir,
+        directory,
+        sequence,
+    })
 }
 
 fn checkpoint_unavailable(reason: impl Into<String>) -> GraphError {

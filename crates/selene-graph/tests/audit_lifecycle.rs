@@ -96,13 +96,13 @@ fn audit_log_survives_restart_and_recovery_reattaches() {
     let dir = temp_dir("survive-recover");
     let graph_id = GraphId::new(202);
 
-    // Build a graph with an audit log attached, write one event through the
-    // persist API, then drop (releasing the WAL lock).
+    // Seed through the standalone persist writer, then attach the graph's
+    // composite WAL/audit owner. An independent audit writer may not coexist.
     {
-        let _shared = build_with_audit(&dir, graph_id);
         let mut log = AuditLog::open(&audit_path(&dir)).unwrap();
         log.append(&sample_record(1)).unwrap();
     }
+    drop(build_with_audit(&dir, graph_id));
     assert_eq!(AuditLog::read_all(&audit_path(&dir)).unwrap().len(), 1);
 
     // Recover: the historical event persists, and recovery reattaches the
@@ -122,10 +122,10 @@ fn recovery_truncates_torn_audit_tail() {
     let graph_id = GraphId::new(205);
 
     {
-        let _shared = build_with_audit(&dir, graph_id);
         let mut log = AuditLog::open(&audit_path(&dir)).unwrap();
         log.append(&sample_record(1)).unwrap();
     }
+    drop(build_with_audit(&dir, graph_id));
     // Simulate a crash mid-append: garbage shorter than a record header on the
     // end of audit.log.
     {

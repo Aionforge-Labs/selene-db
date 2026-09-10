@@ -31,6 +31,7 @@ fn config(dir: PathBuf, sequence: u64, compression: SectionCompression) -> Snaps
 fn empty_snapshot_round_trips() {
     let dir = temp_dir("empty");
     let outcome = SnapshotBuilder::new(config(dir.clone(), 1, SectionCompression::None))
+        .unwrap()
         .finalize()
         .unwrap();
     assert_eq!(outcome.snapshot_seq, 1);
@@ -48,7 +49,8 @@ fn single_section_round_trips_per_section_compressed() {
         dir.clone(),
         2,
         SectionCompression::PerSection { level: 1 },
-    ));
+    ))
+    .unwrap();
     builder
         .add_section(*b"CORE", *b"META", vec![7_u8; 1024])
         .unwrap();
@@ -67,7 +69,8 @@ fn single_section_round_trips_per_section_compressed() {
 #[test]
 fn single_section_round_trips_uncompressed() {
     let dir = temp_dir("raw");
-    let mut builder = SnapshotBuilder::new(config(dir.clone(), 3, SectionCompression::None));
+    let mut builder =
+        SnapshotBuilder::new(config(dir.clone(), 3, SectionCompression::None)).unwrap();
     builder
         .add_section(*b"CORE", *b"NODE", b"nodes".to_vec())
         .unwrap();
@@ -89,7 +92,8 @@ fn single_section_round_trips_uncompressed() {
 #[test]
 fn duplicate_provider_sub_is_rejected() {
     let dir = temp_dir("dup");
-    let mut builder = SnapshotBuilder::new(config(dir.clone(), 4, SectionCompression::None));
+    let mut builder =
+        SnapshotBuilder::new(config(dir.clone(), 4, SectionCompression::None)).unwrap();
     builder.add_section(*b"CORE", *b"META", vec![]).unwrap();
     assert!(matches!(
         builder.add_section(*b"CORE", *b"META", vec![]),
@@ -151,6 +155,7 @@ fn stale_fixed_tmp_does_not_prevent_snapshot_retry() {
     let dir = temp_dir("stale-tmp");
     fs::write(snapshot_tmp_path(&dir, 5), b"partial").unwrap();
     let outcome = SnapshotBuilder::new(config(dir.clone(), 5, SectionCompression::None))
+        .unwrap()
         .finalize()
         .unwrap();
     assert_eq!(outcome.snapshot_seq, 5);
@@ -165,6 +170,7 @@ fn final_snapshot_path_already_exists_is_rejected_atomically() {
     let dir = temp_dir("final-exists");
     fs::write(snapshot_path(&dir, 6), b"existing").unwrap();
     let err = SnapshotBuilder::new(config(dir.clone(), 6, SectionCompression::None))
+        .unwrap()
         .finalize()
         .unwrap_err();
     assert!(matches!(
@@ -181,20 +187,23 @@ fn snapshot_finalize_same_sequence_is_race_safe() {
     use std::sync::{Arc as StdArc, Barrier};
 
     let dir = StdArc::new(temp_dir("same-seq-race"));
+    let owner = crate::StoreWriter::acquire(&crate::StoreDirectory::open(&dir).unwrap()).unwrap();
     const THREADS: usize = 6;
     let barrier = StdArc::new(Barrier::new(THREADS));
     let handles: Vec<_> = (0..THREADS)
         .map(|i| {
             let dir = StdArc::clone(&dir);
             let barrier = StdArc::clone(&barrier);
+            let authority = owner.clone();
             std::thread::spawn(move || {
                 let mut builder =
-                    SnapshotBuilder::new(config((*dir).clone(), 20, SectionCompression::None));
+                    SnapshotBuilder::new(config((*dir).clone(), 20, SectionCompression::None))
+                        .unwrap();
                 builder
                     .add_section(*b"CORE", *b"META", vec![i as u8; 64])
                     .unwrap();
                 barrier.wait();
-                match builder.finalize() {
+                match builder.finalize_with_authority(&authority) {
                     Ok(_) => true,
                     Err(PersistError::Io(error))
                         if error.kind() == std::io::ErrorKind::AlreadyExists =>
@@ -233,7 +242,7 @@ fn byte_identical_uncompressed_writes() {
     let dir = temp_dir("identical");
     for sequence in [7, 8] {
         let mut builder =
-            SnapshotBuilder::new(config(dir.clone(), sequence, SectionCompression::None));
+            SnapshotBuilder::new(config(dir.clone(), sequence, SectionCompression::None)).unwrap();
         builder
             .add_section(*b"CORE", *b"META", b"meta".to_vec())
             .unwrap();
@@ -262,7 +271,8 @@ fn snapshot_par_iter_roundtrip() {
         dir.clone(),
         9,
         SectionCompression::PerSection { level: 1 },
-    ));
+    ))
+    .unwrap();
     for (provider, sub, payload) in &sections {
         builder
             .add_section(*provider, *sub, payload.clone())

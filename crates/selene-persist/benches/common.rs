@@ -253,7 +253,8 @@ pub(crate) fn write_snapshot_with_compression(
         sequence,
         compression,
         fsync: false,
-    });
+    })
+    .expect("snapshot directory opens");
     let section_tags = [*b"DAT0", *b"DAT1", *b"DAT2", *b"DAT3", *b"DAT4"];
     let base_len = bytes / section_tags.len();
     let mut remaining = bytes % section_tags.len();

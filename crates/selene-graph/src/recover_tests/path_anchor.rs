@@ -83,3 +83,85 @@ fn recovery_alias_retarget_cannot_redirect_the_reopened_writer() {
 
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn retained_capability_drives_graph_builder_checkpoint_prune_audit_and_recovery() {
+    use selene_persist::{PersistenceReadGuard, RetentionPolicy, StoreDirectory};
+    let fixture = selene_testing::PersistenceTestPath::new();
+    let original = fixture.parent().unwrap().join("store");
+    let retained = original.with_file_name("retained");
+    fs::create_dir(&original).unwrap();
+    let cap = StoreDirectory::from_file(fs::File::open(&original).unwrap(), &original).unwrap();
+    let builder = SharedGraph::builder(GraphId::new(7))
+        .with_wal_in(&cap, Path::new(DEFAULT_WAL_FILE_NAME), WalConfig::default())
+        .unwrap();
+    fs::rename(&original, &retained).unwrap();
+    fs::create_dir(&original).unwrap();
+    let graph = builder
+        .with_audit_log(original.join(DEFAULT_AUDIT_FILE_NAME))
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut txn = graph.begin_write();
+    let node = txn
+        .mutator()
+        .create_node(LabelSet::new(), PropertyMap::new())
+        .unwrap();
+    txn.commit().unwrap();
+    graph
+        .checkpoint(crate::CheckpointConfig::default())
+        .unwrap();
+    drop(graph);
+    let guard = PersistenceReadGuard::acquire_in(&cap).unwrap();
+    assert_eq!(guard.read_manifest().unwrap().unwrap().live_snapshot_seq, 2);
+    drop(guard);
+    selene_persist::retention::prune_in(
+        &cap,
+        &RetentionPolicy {
+            keep_n_wal_archives: 0,
+            ..RetentionPolicy::default()
+        },
+    )
+    .unwrap();
+    let graph = SharedGraph::recover_in(&cap, GraphId::new(7)).unwrap();
+    assert!(graph.read().is_node_alive(node));
+    graph
+        .checkpoint(crate::CheckpointConfig::default())
+        .unwrap();
+    assert!(
+        AuditLog::read_all_in(&cap, Path::new(DEFAULT_AUDIT_FILE_NAME))
+            .unwrap()
+            .is_empty()
+    );
+    drop(graph);
+    assert_eq!(fs::read_dir(&original).unwrap().count(), 0);
+    assert!(retained.join("snapshot.3.snap").is_file());
+    assert!(retained.join(DEFAULT_AUDIT_FILE_NAME).is_file());
+    let graph = SharedGraph::recover_in(&cap, GraphId::new(7)).unwrap();
+    assert_eq!(graph.read().node_count(), 1);
+    assert!(graph.read().is_node_alive(node));
+}
+
+#[test]
+fn real_parent_replacement_during_recovery_cannot_redirect_audit_reattachment() {
+    let fixture = selene_testing::PersistenceTestPath::new();
+    let original = fixture.parent().unwrap().join("store");
+    let retained = original.with_file_name("retained");
+    fs::create_dir(&original).unwrap();
+    append_wal(&original, 0, &[node_created(49)]);
+    drop(AuditLog::open(&original.join(DEFAULT_AUDIT_FILE_NAME)).unwrap());
+    let hook_original = original.clone();
+    let hook_retained = retained.clone();
+    super::super::set_after_persist_recovery_hook(move || {
+        fs::rename(&hook_original, &hook_retained).unwrap();
+        fs::create_dir(&hook_original).unwrap();
+    });
+    let graph = SharedGraph::recover(&original, GraphId::new(7)).unwrap();
+    assert!(graph.read().is_node_alive(NodeId::new(49)));
+    graph
+        .checkpoint(crate::CheckpointConfig::default())
+        .unwrap();
+    drop(graph);
+    assert_eq!(fs::read_dir(original).unwrap().count(), 0);
+    assert!(retained.join("snapshot.2.snap").is_file());
+}

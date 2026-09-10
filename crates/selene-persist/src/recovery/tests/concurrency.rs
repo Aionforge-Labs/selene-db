@@ -58,7 +58,8 @@ fn builder(dir: &std::path::Path, sequence: u64, bytes: &[u8]) -> SnapshotBuilde
         sequence,
         compression: SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     builder
         .add_section(*b"CORE", *b"META", bytes.to_vec())
         .unwrap();
@@ -168,7 +169,10 @@ fn recovery_lock_obstruction_fails_before_provider_callbacks() {
 
     let error = recover(&dir, &registry(std::slice::from_ref(&core))).unwrap_err();
 
-    assert!(matches!(error, PersistError::Io(_)));
+    assert!(matches!(
+        error,
+        PersistError::Directory(crate::DirectoryError::NotRegular(_))
+    ));
     assert!(core.events().is_empty());
     std::fs::remove_dir_all(dir).unwrap();
 }

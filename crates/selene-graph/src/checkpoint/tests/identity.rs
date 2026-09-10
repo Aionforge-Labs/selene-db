@@ -56,15 +56,20 @@ fn manifest_ahead_checkpoint_error_poisons_stale_graph_writer() {
     let graph_id = GraphId::new(91_013);
     let shared = wal_graph(&dir, graph_id);
     commit_node(&shared, "BeforeManifestAhead");
-    Manifest {
+    let ahead = Manifest {
         live_snapshot_seq: 2,
         active_wal_header_seq: 2,
         compaction_epoch: 0,
         active_wal: DEFAULT_WAL_FILE_NAME.to_owned(),
         archived_wal_seqs: vec![2],
-    }
-    .write_atomic(&dir)
-    .expect("ahead MANIFEST publishes for the stale-writer fixture");
+    };
+    // Deliberate out-of-protocol corruption: the public standalone publisher
+    // now correctly refuses the live graph's owned writer lease.
+    std::fs::write(
+        dir.join(selene_persist::MANIFEST_FILE_NAME),
+        ahead.encode().unwrap(),
+    )
+    .expect("ahead MANIFEST corruption fixture writes");
 
     let error = shared
         .checkpoint(CheckpointConfig::default())
@@ -109,16 +114,26 @@ fn next_target_collision_consumes_marker_without_poisoning_graph() {
     let graph_id = GraphId::new(91_015);
     let shared = wal_graph(&dir, graph_id);
     let before = commit_node(&shared, "BeforeTargetCollision");
+    let foreign_fixture = selene_testing::PersistenceTestPath::new();
+    let foreign_dir = foreign_fixture.parent().unwrap();
     let mut foreign = SnapshotBuilder::new(SnapshotConfig {
-        dir: dir.clone(),
+        dir: foreign_dir.to_path_buf(),
         sequence: 2,
         compression: SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     foreign
         .add_section(*b"TEST", *b"DATA", b"foreign-target".to_vec())
         .expect("foreign section adds");
     foreign.finalize().expect("foreign target publishes");
+    // Inject an independently valid foreign artifact, not a second managed
+    // publisher bypassing the live graph's writer proof.
+    std::fs::copy(
+        selene_persist::snapshot_path(foreign_dir, 2),
+        selene_persist::snapshot_path(&dir, 2),
+    )
+    .unwrap();
 
     let error = shared
         .checkpoint(CheckpointConfig::default())

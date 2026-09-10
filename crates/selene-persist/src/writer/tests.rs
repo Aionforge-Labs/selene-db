@@ -2,7 +2,6 @@ use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::io::Write;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use selene_core::{Change, NodeId, Origin, PropertyMap, Value, db_string};
 
@@ -10,15 +9,8 @@ use super::*;
 use crate::writer::append::WAL_RECORD_BUFFER_RETAIN_LIMIT;
 use crate::{MAX_PRINCIPAL_BYTES, WAL_FILE_HEADER_LEN, WalReader};
 
-fn temp_path(name: &str) -> std::path::PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "selene-persist-{name}-{}-{nanos}.wal",
-        std::process::id()
-    ))
+fn temp_path(_name: &str) -> selene_testing::PersistenceTestPath {
+    selene_testing::PersistenceTestPath::new()
 }
 
 fn changes() -> Vec<Change> {
@@ -114,7 +106,8 @@ fn relative_writer_path_stays_bound_across_cwd_change() {
         sequence: 1,
         compression: crate::SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     builder
         .add_section(*b"TEST", *b"BODY", b"stable".to_vec())
         .unwrap();
@@ -174,12 +167,13 @@ fn relative_snapshot_directory_preflight_is_cwd_safe() {
         sequence: 1,
         compression: crate::SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     same_writer.rotate_with_manifest(same_builder).unwrap();
     drop(same_writer);
 
-    // Retaining a relative builder across a CWD change is rejected before the
-    // pending group-commit entry is flushed or either directory gains artifacts.
+    // The builder anchors at construction: a later CWD change cannot redirect
+    // publication, and the retained matching directory remains usable.
     std::env::set_current_dir(&open_dir).unwrap();
     let mut moved_writer = WalWriter::open(
         Path::new(DEFAULT_WAL_FILE_NAME),
@@ -197,14 +191,12 @@ fn relative_snapshot_directory_preflight_is_cwd_safe() {
         sequence: 1,
         compression: crate::SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     std::env::set_current_dir(&later_dir).unwrap();
-    assert!(matches!(
-        moved_writer.rotate_with_manifest(moved_builder),
-        Err(PersistError::WalRotationDirectoryMismatch { .. })
-    ));
-    assert_eq!(moved_writer.entries_since_fsync(), 1);
-    assert!(!open_dir.join(crate::MANIFEST_FILE_NAME).exists());
+    moved_writer.rotate_with_manifest(moved_builder).unwrap();
+    assert_eq!(moved_writer.entries_since_fsync(), 0);
+    assert!(open_dir.join(crate::MANIFEST_FILE_NAME).exists());
     assert!(!later_dir.join(crate::MANIFEST_FILE_NAME).exists());
     drop(moved_writer);
 

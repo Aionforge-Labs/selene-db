@@ -162,7 +162,8 @@ fn snapshot_envelope_open_and_decode_agree() {
             sequence,
             compression,
             fsync: true,
-        });
+        })
+        .unwrap();
         builder
             .add_section(*b"CORE", *b"META", vec![1_u8; 100])
             .unwrap();

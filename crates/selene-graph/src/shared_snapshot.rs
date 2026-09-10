@@ -1,6 +1,5 @@
 //! Snapshot writing facade for [`SharedGraph`](crate::SharedGraph).
 
-use std::path::Path;
 use std::sync::Arc;
 
 use selene_persist::{
@@ -28,13 +27,13 @@ use crate::{GraphError, GraphResult, SharedGraph};
 /// looks for `wal.log` (`recover.rs`) and `checkpoint` refuses any other name
 /// (`core_provider.rs`) — so such a directory cannot be recovered or
 /// checkpointed either way.
-fn reject_managed_directory(dir: &Path) -> GraphResult<()> {
+fn reject_managed_directory(dir: &selene_persist::StoreDirectory) -> GraphResult<()> {
     for (name, evidence) in [
         (MANIFEST_FILE_NAME, ExistingStoreEvidence::PublishedManifest),
         (DEFAULT_WAL_FILE_NAME, ExistingStoreEvidence::ActiveWal),
     ] {
-        let path = dir.join(name);
-        if path.exists() {
+        let path = dir.locator().join(name);
+        if dir.contains(name)? {
             return Err(GraphError::ExistingStore { path, evidence });
         }
     }
@@ -86,7 +85,12 @@ impl SharedGraph {
     /// thread, matching every other maintenance entry point.
     pub fn write_snapshot(&self, config: SnapshotConfig) -> GraphResult<SnapshotFinalizeOutcome> {
         crate::shared::reject_provider_callback_reentry("SharedGraph::write_snapshot()");
-        reject_managed_directory(&config.dir)?;
+        let directory = selene_persist::StoreDirectory::open(&config.dir)?;
+        reject_managed_directory(&directory)?;
+        let writer = selene_persist::StoreWriter::acquire(&directory)?;
+        // Close the check/acquire gap with a fresh check under owned authority.
+        // Keep that ownership through provider encoding and final publication.
+        reject_managed_directory(&directory)?;
 
         // Pin the *published* graph, never the write-locked one: `seal` bumps
         // the generation under the write lock before the committer publishes,
@@ -94,7 +98,7 @@ impl SharedGraph {
         let pinned = self.read();
         let generation = pinned.meta.generation;
 
-        let mut builder = SnapshotBuilder::new(config);
+        let mut builder = SnapshotBuilder::new_in(&directory, config);
         {
             let _fanout = crate::reentry::FanoutGuard::enter();
             for provider in self.index_providers() {
@@ -124,7 +128,7 @@ impl SharedGraph {
                 ),
             });
         }
-        builder.finalize().map_err(Into::into)
+        builder.finalize_with_authority(&writer).map_err(Into::into)
     }
 }
 

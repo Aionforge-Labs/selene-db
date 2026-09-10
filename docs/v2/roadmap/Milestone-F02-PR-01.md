@@ -28,16 +28,27 @@ Paths are navigation, not a closed edit inventory. New modules are implementatio
 
 1. Implement a StoreDirectory boundary that owns managed artifact open/create/rename/remove/sync operations for the lifetime of an opened store. Validate child names and reject traversal, absolute names and unsupported link behavior.
 2. Reuse a maintained safe capability API when std cannot express the required relative operations. The workspace forbids unsafe code: do not add hand-written syscall wrappers to avoid one justified dependency. A supported-platform gap must be exposed, not silently replaced by path re-resolution.
-3. Bind the store-wide lock to the anchored store. Distinguish durable StoreId/epoch from the process-local facade DatabaseId; reopening preserves the former and reissues the latter.
+3. Bind the store-wide lock to the anchored store. Persistence-control reopen preserves durable StoreId/epoch. Facade durable open and fresh process-local DatabaseId/handle binding belong to F02-PR05, not this empty-control API.
 4. Define CURRENT and immutable manifest generation selection, format/profile/collation identity and artifact lineage. Empty-store creation stages and synchronizes files and directory entries before advertising the store.
 5. Route all persistence entry points through this boundary, including legacy-internal callers that remain until F02-PR08. Do not claim complete directory safety while checkpoint/prune still re-resolve user paths.
+
+Owner-directed pre-commit refinements: every managed publication/prune requires
+the same owned StoreWriter proof, including standalone MANIFEST/snapshot/prune
+conveniences; online components pass their existing lease without reacquiring
+it. Read guards stay independent. Empty-control reopen completely validates
+CURRENT and its self-contained selected manifest only. The adjacent parent link
+is publication provenance, not a requirement to keep or decode ancestor files.
+Unselected history may be removed; namespace validation still scans directory
+entries, so bounded payload reads do not imply constant-time overall open.
 
 ## Acceptance and concrete regression cases
 
 - [ ] Renaming or replacing the parent pathname after opening does not redirect WAL, snapshot, manifest or prune operations into an attacker-controlled replacement directory.
 - [ ] Two aliases to the same opened directory cannot obtain independent writer authority; a second writer fails deterministically.
+- [ ] Standalone publication/prune cannot bypass an existing StoreWriter; explicit owned-lease calls succeed and preserve epoch/read ordering without deadlock.
+- [ ] Missing or corrupt unselected ancestor payloads do not prevent reopen/publication; selected-state integrity and compatibility checks still fail closed. Payload reads remain two across retained/pruned histories.
 - [ ] Child path traversal, an unexpected final symlink and cross-store artifacts fail before mutation.
-- [ ] Empty create/reopen preserves StoreId and epoch; a fresh facade instance does not accept old process-local handles.
+- [ ] Persistence-control empty create/reopen preserves StoreId and epoch without advertising durable facade sessions or query commits. F02-PR05 owns fresh facade DatabaseId/handle validation across durable reopen.
 - [ ] Fault injection at staged create, file sync, rename and directory sync selects either the prior complete control state or the complete new state, never a fabricated mix.
 - [ ] Unsupported native filesystem guarantees produce an explicit open/configuration error or a clearly documented supported-mode restriction.
 
@@ -52,6 +63,21 @@ Use the shared [validation guide](05-VALIDATION-AND-RELEASE.md) for runner mecha
 ## Keep out of this PR
 
 No arbitrary external file access, 1.x migration, custom unsafe shim, weaker durability fallback or assumption that canonicalization solves parent replacement.
+
+The owner explicitly requires genuine handle-relative prevention, superseding
+the older detection-only ruling on #1088. Native filesystem mode initially
+supports Linux/macOS, with typed `UnsupportedPlatform` elsewhere; pure codecs
+and in-memory operation are unaffected. The approved backend is existing
+`rustix 1.1.4` safe APIs with validated single-component child names. The
+investigated cap-std/cap-fs-ext 4.0.3 graph failed the unchanged duplicate-version
+bans policy and is not retained. The detailed directory/control API contract is
+tracked at `docs/store-directory-control.md` in the repository.
+
+`DatabaseBuilder::build` and production facade sessions remain unchanged and
+in-memory. Durable facade creation/opening, catalog/graph recovery, transaction
+commits, and reissued handle binding are explicitly deferred to F02-PR05 and its
+owning prerequisites. Empty control does not wrap an ephemeral Database to
+simulate those outcomes.
 
 ## Bridge/deletion boundary
 

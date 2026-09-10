@@ -6,6 +6,11 @@ direct acceptance evidence.
 
 <a id="issue-1088"></a>
 - [#1088](https://github.com/jscott3201/selene-db/issues/1088) → [F02-PR01](roadmap/Milestone-F02-PR-01.md): anchored persistence directory capability.
+  The [current owner ruling](https://github.com/jscott3201/selene-db/issues/1088#issuecomment-5610433175)
+  requires retained handle-relative prevention after real parent/root replacement,
+  not detection followed by pathname I/O. Initial native support is Linux/macOS;
+  dependency policy remains unchanged. Closure still requires the owning native
+  lifecycle evidence, independent review and exact-head CI/merge verification.
 <a id="issue-1092"></a>
 - [#1092](https://github.com/jscott3201/selene-db/issues/1092) → [F05-PR05](roadmap/Milestone-F05-PR-05.md): named composite unique and key constraints.
 <a id="issue-1093"></a>

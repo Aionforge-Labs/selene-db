@@ -57,6 +57,11 @@ No migration tool, forced downstream upgrade, production-ready label, unapproved
 
 Format-1 code and old encoded-value bridges are deleted. Temporary query/compiler adapters remain explicitly owned by F03-PR04/F04-PR09, not persistence.
 
+Useful thin path constructors may remain when they anchor once and acquire the
+required writer proof. Delete obsolete format/authority bypasses, not ergonomic
+constructors solely because they accept a path. Preserve selected-state-only
+control validation; unselected ancestor files are not a hidden reopen dependency.
+
 ## Standards and reviewer focus
 
 §24 claims policy; product format/version policy is separate from ISO language conformance.

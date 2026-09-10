@@ -151,12 +151,15 @@ fn prepare(
                 last_sequence: target.sequence,
             })?;
     let final_snapshot_path = snapshot_path(&target.dir, snapshot_sequence);
-    let mut builder = SnapshotBuilder::new(SnapshotConfig {
-        dir: target.dir,
-        sequence: snapshot_sequence,
-        compression: config.compression,
-        fsync: true,
-    });
+    let mut builder = SnapshotBuilder::new_in(
+        &target.directory,
+        SnapshotConfig {
+            dir: target.dir,
+            sequence: snapshot_sequence,
+            compression: config.compression,
+            fsync: true,
+        },
+    );
     let _callback_guard = crate::reentry::FanoutGuard::enter();
     for provider in providers {
         let provider_tag = provider.provider_tag();

@@ -27,7 +27,8 @@ fn builder(dir: &std::path::Path, sequence: u64) -> SnapshotBuilder {
         sequence,
         compression: SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     builder
         .add_section(*b"CORE", *b"META", b"empty-graph".to_vec())
         .unwrap();
@@ -107,7 +108,7 @@ fn checkpoint_rejects_ahead_manifest_before_appending_watermark() {
         active_wal: DEFAULT_WAL_FILE_NAME.to_owned(),
         archived_wal_seqs: vec![2],
     }
-    .write_atomic(&dir)
+    .write_atomic_with_authority(writer.authority())
     .unwrap();
     let len_before = std::fs::metadata(&active).unwrap().len();
 

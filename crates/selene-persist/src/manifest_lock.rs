@@ -3,17 +3,16 @@
 //! Cooperating handles and processes on a supported local filesystem use one
 //! persistent lock-file inode. Recovery and backup-style readers take a shared
 //! lock while rotation, prune, and direct MANIFEST publication take an
-//! exclusive lock. A writer's lock order is its lifetime `wal.log` lock, then
-//! this epoch lock, then any replacement-WAL temporary lock. The directory is
-//! canonicalized before the lock opens, so retargeting a caller alias cannot
-//! redirect an operation after acquisition. The resolved directory and its
-//! real ancestors must not be renamed or replaced while an operation is live.
+//! exclusive lock. A writer's lock order is store `LOCK`, lifetime `wal.log`,
+//! then this epoch lock, then any replacement-WAL temporary lock. All lock-file
+//! opens are relative to the retained StoreDirectory handle; renaming the real
+//! directory or its ancestors cannot redirect an acquired capability.
 
-use std::fs::{File, OpenOptions};
-use std::path::{Path, PathBuf};
+use std::fs::File;
+use std::path::Path;
 
 use crate::manifest::Manifest;
-use crate::{PersistError, PersistResult};
+use crate::{PersistError, PersistResult, StoreDirectory, StoreWriter};
 
 /// Filename of the persistent lock that serializes MANIFEST epoch operations.
 ///
@@ -40,7 +39,7 @@ pub const MANIFEST_LOCK_FILE_NAME: &str = "MANIFEST.lock";
 /// acquire that writer first, then this guard.
 #[must_use = "dropping the guard releases the persistence epoch lease"]
 pub struct PersistenceReadGuard {
-    dir: PathBuf,
+    dir: StoreDirectory,
     _file: File,
 }
 
@@ -48,7 +47,7 @@ impl PersistenceReadGuard {
     /// Acquire a shared epoch lock for `dir`, blocking behind an in-flight
     /// rotation, prune, or direct MANIFEST publication.
     ///
-    /// The directory is canonicalized before opening the persistent lock file.
+    /// The directory is anchored before opening the persistent lock file.
     /// Acquiring a guard can therefore create `MANIFEST.lock` even for an empty
     /// or legacy MANIFEST-less directory; the file is coordination state and
     /// must not be copied into a backup.
@@ -58,7 +57,15 @@ impl PersistenceReadGuard {
     /// Returns directory-resolution, lock-file open, or platform file-locking
     /// errors.
     pub fn acquire(dir: &Path) -> PersistResult<Self> {
-        let (dir, file) = open_lock_file(dir)?;
+        Self::acquire_in(&StoreDirectory::open(dir)?)
+    }
+
+    /// Acquire an epoch lease relative to a retained directory capability.
+    ///
+    /// # Errors
+    /// Returns lock-file validation, open, or locking errors.
+    pub fn acquire_in(dir: &StoreDirectory) -> PersistResult<Self> {
+        let file = open_lock_file(dir)?;
         match file.try_lock_shared() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
@@ -70,13 +77,16 @@ impl PersistenceReadGuard {
                 return Err(PersistError::Io(error));
             }
         }
-        Ok(Self { dir, _file: file })
+        Ok(Self {
+            dir: dir.clone(),
+            _file: file,
+        })
     }
 
-    /// Canonical persistence directory protected by this guard.
+    /// Diagnostic locator only; use [`Self::directory`] for retained authority.
     #[must_use]
     pub fn dir(&self) -> &Path {
-        &self.dir
+        self.dir.locator()
     }
 
     /// Read the authoritative MANIFEST while this guard pins its artifact set.
@@ -85,21 +95,29 @@ impl PersistenceReadGuard {
     ///
     /// Returns MANIFEST I/O, format, or checksum errors.
     pub fn read_manifest(&self) -> PersistResult<Option<Manifest>> {
-        Manifest::read(&self.dir)
+        Manifest::read_in(&self.dir)
+    }
+
+    /// Retained directory protected by this lease; `dir()` is only a locator.
+    #[must_use]
+    pub fn directory(&self) -> &StoreDirectory {
+        &self.dir
     }
 }
 
-/// Exclusive RAII guard for one persistence directory's MANIFEST epoch.
+/// Exclusive epoch plus retained writer proof. There is no directory-only
+/// constructor: mutation callers must already own the store writer lease.
 pub(crate) struct ManifestEpochGuard {
-    dir: PathBuf,
+    // Release the epoch before releasing the last writer-lease reference.
     _file: File,
+    authority: StoreWriter,
 }
 
 impl ManifestEpochGuard {
     /// Acquire the directory's stable epoch lock, blocking behind another
     /// cooperating reader, rotation, prune, or direct MANIFEST publication.
-    pub(crate) fn acquire(dir: &Path) -> PersistResult<Self> {
-        let (dir, file) = open_lock_file(dir)?;
+    pub(crate) fn acquire(authority: &StoreWriter) -> PersistResult<Self> {
+        let file = open_lock_file(authority.directory())?;
         match file.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
@@ -111,38 +129,25 @@ impl ManifestEpochGuard {
                 return Err(PersistError::Io(error));
             }
         }
-        Ok(Self { dir, _file: file })
+        Ok(Self {
+            _file: file,
+            authority: authority.clone(),
+        })
     }
 
     /// Canonical directory path protected by this guard.
+    #[cfg(test)]
     pub(crate) fn dir(&self) -> &Path {
-        &self.dir
+        self.directory().locator()
+    }
+
+    pub(crate) fn directory(&self) -> &StoreDirectory {
+        self.authority.directory()
     }
 }
 
-fn open_lock_file(dir: &Path) -> PersistResult<(PathBuf, File)> {
-    let dir = canonical_directory_path(dir)?;
-    let path = dir.join(MANIFEST_LOCK_FILE_NAME);
-    let file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&path)?;
-    Ok((dir, file))
-}
-
-fn cwd_independent_directory_path(path: &Path) -> std::io::Result<PathBuf> {
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        Ok(std::env::current_dir()?.join(path))
-    }
-}
-
-/// Resolve one existing directory independently of CWD and symlink aliases.
-pub(crate) fn canonical_directory_path(path: &Path) -> std::io::Result<PathBuf> {
-    std::fs::canonicalize(cwd_independent_directory_path(path)?)
+fn open_lock_file(dir: &StoreDirectory) -> PersistResult<File> {
+    dir.open_or_create(Path::new(MANIFEST_LOCK_FILE_NAME))
 }
 
 #[cfg(test)]

@@ -63,7 +63,7 @@ use std::time::{Duration, SystemTime};
 
 use crate::PersistResult;
 use crate::manifest::Manifest;
-use crate::manifest_lock::{ManifestEpochGuard, canonical_directory_path};
+use crate::manifest_lock::ManifestEpochGuard;
 use crate::snapshot_path::parse_snapshot_filename;
 use crate::writer_rotation::parse_wal_archive_filename;
 
@@ -150,7 +150,7 @@ struct FileEntry {
 ///
 /// # Errors
 ///
-/// Returns I/O errors opening/acquiring the exclusive epoch lock, scanning the
+/// Returns writer contention or I/O errors acquiring the writer/exclusive epoch, scanning the
 /// directory, or committing the rewritten MANIFEST, or any [`Manifest::decode`]
 /// error from a corrupt committed MANIFEST. Acquisition waits for active
 /// [`crate::PersistenceReadGuard`] readers. Best-effort file deletion runs
@@ -158,21 +158,37 @@ struct FileEntry {
 /// already-reclaimed, so post-commit deletion does not fail the prune (a
 /// residual orphan is reclaimed by the next prune).
 pub fn prune(dir: &Path, policy: &RetentionPolicy) -> PersistResult<PruneOutcome> {
-    let dir = match canonical_directory_path(dir) {
+    let dir = match crate::StoreDirectory::open(dir) {
         Ok(dir) => dir,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(crate::PersistError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(PruneOutcome::default());
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(error),
     };
-    // Preserve the no-MANIFEST no-op contract without creating coordination
-    // state. If a first rotation commits immediately after this read, this
-    // no-op linearizes before it and remains safe. A present MANIFEST is read
-    // again authoritatively after acquiring the lock below.
-    if Manifest::read(&dir)?.is_none() {
-        return Ok(PruneOutcome::default());
-    }
-    let mut guard = ManifestEpochGuard::acquire(&dir)?;
+    prune_in(&dir, policy)
+}
+
+/// Acquire standalone writer ownership, then prune through one exclusive epoch.
+///
+/// # Errors
+/// Returns the same selection, validation and publication errors as [`prune`].
+pub fn prune_in(
+    dir: &crate::StoreDirectory,
+    policy: &RetentionPolicy,
+) -> PersistResult<PruneOutcome> {
+    let authority = crate::StoreWriter::acquire(dir)?;
+    prune_with_authority(&authority, policy)
+}
+
+/// Prune using an existing store writer lease, without reacquiring `LOCK`.
+///
+/// # Errors
+/// Returns epoch-lock, selection, validation, and publication errors.
+pub fn prune_with_authority(
+    authority: &crate::StoreWriter,
+    policy: &RetentionPolicy,
+) -> PersistResult<PruneOutcome> {
+    let mut guard = ManifestEpochGuard::acquire(authority)?;
     prune_locked(&mut guard, policy)
 }
 
@@ -181,9 +197,9 @@ pub(crate) fn prune_locked(
     guard: &mut ManifestEpochGuard,
     policy: &RetentionPolicy,
 ) -> PersistResult<PruneOutcome> {
-    let dir = guard.dir().to_path_buf();
-    let dir = dir.as_path();
-    let Some(manifest) = Manifest::read(dir)? else {
+    let cap = guard.directory().clone();
+    let dir = &cap;
+    let Some(manifest) = Manifest::read_in(dir)? else {
         return Ok(PruneOutcome::default());
     };
     let live = manifest.live_snapshot_seq;
@@ -249,7 +265,7 @@ pub(crate) fn prune_locked(
     // with seq > live left by a crashed rotation — recovery ignores them).
     for entry in &snapshots {
         if !retained_snaps.contains(&entry.seq) {
-            outcome.bytes_reclaimed += delete_file(&entry.path, entry.size);
+            outcome.bytes_reclaimed += delete_file(dir, &entry.path, entry.size);
             outcome.deleted_snapshots.push(entry.seq);
         }
     }
@@ -262,7 +278,7 @@ pub(crate) fn prune_locked(
         let retained = retained_archs.contains(&entry.seq);
         let superseded_orphan = !tracked && entry.seq < live;
         if (tracked && !retained) || superseded_orphan {
-            outcome.bytes_reclaimed += delete_file(&entry.path, entry.size);
+            outcome.bytes_reclaimed += delete_file(dir, &entry.path, entry.size);
             outcome.deleted_wal_archives.push(entry.seq);
         }
     }
@@ -405,22 +421,26 @@ fn is_older_than(entries: &[FileEntry], seq: u64, cutoff: SystemTime) -> bool {
 
 /// Scan `dir` for regular files whose name parses via `parse`, capturing size +
 /// mtime. Non-files (directories, symlinks) and unparsable names are ignored.
-fn scan(dir: &Path, parse: fn(&std::ffi::OsStr) -> Option<u64>) -> PersistResult<Vec<FileEntry>> {
+fn scan(
+    dir: &crate::StoreDirectory,
+    parse: fn(&std::ffi::OsStr) -> Option<u64>,
+) -> PersistResult<Vec<FileEntry>> {
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let Some(seq) = parse(&entry.file_name()) else {
+    for name in dir.entries()? {
+        let Some(seq) = parse(&name) else {
             continue;
         };
-        let metadata = entry.metadata()?;
-        if !metadata.is_file() {
+        let Some(metadata) = dir.metadata(Path::new(&name))? else {
+            continue;
+        };
+        if !metadata.regular || !metadata.single_link {
             continue;
         }
         out.push(FileEntry {
             seq,
-            path: entry.path(),
-            size: metadata.len(),
-            modified: metadata.modified().ok(),
+            path: PathBuf::from(name),
+            size: metadata.len,
+            modified: metadata.modified,
         });
     }
     Ok(out)
@@ -428,10 +448,10 @@ fn scan(dir: &Path, parse: fn(&std::ffi::OsStr) -> Option<u64>) -> PersistResult
 
 /// Delete `path`, returning the bytes reclaimed (`size` on success, `0` on a
 /// missing file or other I/O error — best-effort post-commit cleanup).
-fn delete_file(path: &Path, size: u64) -> u64 {
-    match std::fs::remove_file(path) {
+fn delete_file(dir: &crate::StoreDirectory, path: &Path, size: u64) -> u64 {
+    match dir.remove(path) {
         Ok(()) => size,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(crate::PersistError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => 0,
         Err(error) => {
             tracing::warn!(%error, path = %path.display(), "retention: best-effort delete failed");
             0

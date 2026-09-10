@@ -32,7 +32,17 @@ impl SnapshotReader {
     ///
     /// Returns I/O, header, section-table, or cap validation errors.
     pub fn open(path: &Path) -> PersistResult<Self> {
-        let mut file = File::open(path)?;
+        let (dir, name) = crate::StoreDirectory::for_file(path)?;
+        Self::open_in(&dir, &name)
+    }
+
+    /// Open a snapshot relative to a retained capability.
+    ///
+    /// # Errors
+    /// Returns protocol, file-open, header, section-table, or layout errors.
+    pub fn open_in(dir: &crate::StoreDirectory, name: &Path) -> PersistResult<Self> {
+        dir.require_legacy()?;
+        let mut file = dir.open_read(name)?;
         let header = SnapshotFileHeader::read_from(&mut file)?;
         let sections = read_section_table(&mut file, usize::from(header.section_count))?;
         validate_unique_tags(&sections)?;
@@ -263,7 +273,8 @@ mod tests {
             sequence,
             compression,
             fsync: true,
-        });
+        })
+        .unwrap();
         for (provider, sub, payload) in sections {
             builder
                 .add_section(*provider, *sub, payload.clone())

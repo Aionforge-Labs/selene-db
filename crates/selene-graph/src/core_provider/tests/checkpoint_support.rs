@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -8,11 +7,14 @@ use selene_persist::{DEFAULT_WAL_FILE_NAME, WalConfig, WalWriter};
 use super::*;
 
 #[test]
-fn bare_relative_wal_uses_current_directory_as_checkpoint_target() {
-    assert_eq!(
-        checkpoint_dir(Path::new(DEFAULT_WAL_FILE_NAME)),
-        Path::new(".")
-    );
+fn checkpoint_target_retains_the_writer_directory_capability() {
+    let path = temp_wal_path("checkpoint-capability");
+    let writer = WalWriter::open(&path, WalConfig::default()).unwrap();
+    let target = checkpoint_target_for_writer(&writer).unwrap();
+    assert!(target.directory.same_directory(writer.directory()).unwrap());
+    assert_eq!(target.dir, writer.directory().locator());
+    drop(writer);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
 #[test]
@@ -55,6 +57,7 @@ fn checkpoint_target_requires_live_default_wal_and_accepts_zero_base() {
         .checkpoint_target()
         .expect("watermark can advance a zero-sequence WAL");
     assert_eq!(zero_target.sequence, 0);
+    drop(zero);
 
     let custom_path = zero_path.parent().unwrap().join("custom-checkpoint.wal");
     let custom_writer = WalWriter::open(

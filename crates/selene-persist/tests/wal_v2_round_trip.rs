@@ -1,22 +1,13 @@
 //! Public writer/reader round-trip coverage for the WAL v2 entry format.
 
 use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use selene_core::{Change, HlcTimestamp, LabelSet, NodeId, Origin, PropertyMap, Value, db_string};
 use selene_persist::{SyncPolicy, WalConfig, WalWriter};
 
-fn temp_path(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "selene-persist-{name}-{}-{nanos}.wal",
-        std::process::id()
-    ))
+fn temp_path(_name: &str) -> selene_testing::PersistenceTestPath {
+    selene_testing::PersistenceTestPath::new()
 }
 
 fn principal(index: usize) -> Option<Arc<[u8]>> {

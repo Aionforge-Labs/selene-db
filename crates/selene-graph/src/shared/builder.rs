@@ -1,12 +1,12 @@
 //! Shared graph construction helpers.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use selene_core::GraphId;
 use selene_persist::{
-    AuditLog, MANIFEST_FILE_NAME, SyncPolicy, WAL_FILE_HEADER_LEN, WalConfig, WalWriter,
-    find_latest_snapshot,
+    AuditLog, MANIFEST_FILE_NAME, StoreDirectory, SyncPolicy, WAL_FILE_HEADER_LEN, WalConfig,
+    WalWriter, find_latest_snapshot_in,
 };
 
 use super::SharedGraph;
@@ -58,6 +58,10 @@ pub(super) fn open_fresh_wal(path: &Path, mut config: WalConfig) -> GraphResult<
     // for existing .unwrap() call sites.
     config.sync_policy = SyncPolicy::OnFlushOnly;
     let writer = WalWriter::open(path, config)?;
+    validate_fresh_wal(writer)
+}
+
+fn validate_fresh_wal(writer: WalWriter) -> GraphResult<WalWriter> {
     let refuse = |evidence| {
         Err(GraphError::ExistingStore {
             path: writer.path().to_path_buf(),
@@ -69,13 +73,13 @@ pub(super) fn open_fresh_wal(path: &Path, mut config: WalConfig) -> GraphResult<
     }
     // `parent` is empty for a bare relative filename, which resolves against the
     // cwd exactly as the WAL path itself did.
-    let dir = path.parent().unwrap_or_else(|| Path::new(""));
-    if dir.join(MANIFEST_FILE_NAME).exists() {
+    let dir = writer.directory();
+    if dir.contains(MANIFEST_FILE_NAME)? {
         return refuse(ExistingStoreEvidence::PublishedManifest);
     }
     // Ask the same question recovery asks, with the same helper, so the two
     // cannot disagree about whether this directory already holds a dataset.
-    if find_latest_snapshot(dir)?.is_some() {
+    if find_latest_snapshot_in(dir)?.is_some() {
         return refuse(ExistingStoreEvidence::StandaloneSnapshot);
     }
     Ok(writer)
@@ -87,6 +91,7 @@ pub struct SharedGraphBuilder {
     providers: Vec<Arc<dyn IndexProvider>>,
     wal_writer: Option<WalWriter>,
     audit_log: Option<AuditLog>,
+    input_dir: Option<PathBuf>,
     commit_batching: CommitBatching,
 }
 
@@ -98,6 +103,7 @@ impl SharedGraphBuilder {
             providers: Vec::new(),
             wal_writer: None,
             audit_log: None,
+            input_dir: None,
             commit_batching: CommitBatching::Off,
         }
     }
@@ -152,7 +158,51 @@ impl SharedGraphBuilder {
     /// when another writer already holds the file lock, and
     /// [`GraphError::ExistingStore`] when the directory already holds a store.
     pub fn with_wal(mut self, path: impl AsRef<Path>, config: WalConfig) -> GraphResult<Self> {
-        self.wal_writer = Some(open_fresh_wal(path.as_ref(), config)?);
+        let path = path.as_ref();
+        let writer = if let Some(audit) = &self.audit_log {
+            let name = composed_child(
+                audit.authority().directory(),
+                self.input_dir.as_deref(),
+                path,
+            )?;
+            let mut config = config;
+            config.sync_policy = SyncPolicy::OnFlushOnly;
+            validate_fresh_wal(WalWriter::open_with_authority(
+                audit.authority(),
+                &name,
+                config,
+            )?)?
+        } else {
+            open_fresh_wal(path, config)?
+        };
+        self.input_dir
+            .get_or_insert_with(|| path.parent().unwrap_or_else(|| Path::new("")).into());
+        self.wal_writer = Some(writer);
+        Ok(self)
+    }
+
+    /// Attach a fresh WAL using a caller-retained directory capability.
+    ///
+    /// # Errors
+    /// Returns locking, existing-store, directory, or WAL validation errors.
+    pub fn with_wal_in(
+        mut self,
+        dir: &StoreDirectory,
+        name: &Path,
+        mut config: WalConfig,
+    ) -> GraphResult<Self> {
+        config.sync_policy = SyncPolicy::OnFlushOnly;
+        let writer = if let Some(audit) = &self.audit_log {
+            if !dir.same_directory(audit.authority().directory())? {
+                return Err(GraphError::Inconsistent {
+                    reason: "WAL and audit require the same store directory".into(),
+                });
+            }
+            WalWriter::open_with_authority(audit.authority(), name, config)?
+        } else {
+            WalWriter::open_in(dir, name, config)?
+        };
+        self.wal_writer = Some(validate_fresh_wal(writer)?);
         Ok(self)
     }
 
@@ -185,7 +235,15 @@ impl SharedGraphBuilder {
     ///
     /// Returns [`GraphError::Persist`] when the audit log cannot be opened.
     pub fn with_audit_log(mut self, path: impl AsRef<Path>) -> GraphResult<Self> {
-        self.audit_log = Some(AuditLog::open(path.as_ref()).map_err(GraphError::Persist)?);
+        let path = path.as_ref();
+        self.audit_log = Some(if let Some(writer) = &self.wal_writer {
+            let name = composed_child(writer.directory(), self.input_dir.as_deref(), path)?;
+            AuditLog::open_with_authority(writer.authority(), &name)?
+        } else {
+            AuditLog::open(path)?
+        });
+        self.input_dir
+            .get_or_insert_with(|| path.parent().unwrap_or_else(|| Path::new("")).into());
         Ok(self)
     }
 
@@ -220,4 +278,23 @@ impl SharedGraphBuilder {
             self.commit_batching,
         )
     }
+}
+
+// A repeated input locator selects the already-owned authority, even if the
+// caller alias or real parent was renamed. A different input is anchored once
+// only to validate that it refers to the same store; never used for child I/O.
+fn composed_child(dir: &StoreDirectory, input: Option<&Path>, path: &Path) -> GraphResult<PathBuf> {
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    let name = path.file_name().ok_or_else(|| GraphError::Inconsistent {
+        reason: "persistence path must name a child file".into(),
+    })?;
+    if input != Some(parent)
+        && dir.locator() != parent
+        && !dir.same_directory(&StoreDirectory::open(parent)?)?
+    {
+        return Err(GraphError::Inconsistent {
+            reason: "WAL and audit require the same store directory".into(),
+        });
+    }
+    Ok(name.into())
 }

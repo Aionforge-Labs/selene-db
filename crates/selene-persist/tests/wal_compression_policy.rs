@@ -2,22 +2,14 @@
 
 use std::fs;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use selene_core::{Change, HlcTimestamp, LabelSet, NodeId, Origin, PropertyMap, Value, db_string};
 use selene_persist::{
     COMPRESS_THRESHOLD, DEFAULT_WAL_FILE_NAME, WalCompression, WalConfig, WalReader, WalWriter,
 };
 
-fn temp_path(name: &str) -> std::path::PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "selene-persist-{name}-{}-{nanos}.wal",
-        std::process::id()
-    ))
+fn temp_path(_name: &str) -> selene_testing::PersistenceTestPath {
+    selene_testing::PersistenceTestPath::new()
 }
 
 fn byte_changes(len: usize) -> Vec<Change> {

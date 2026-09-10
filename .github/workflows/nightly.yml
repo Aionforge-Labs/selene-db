@@ -179,12 +179,12 @@ jobs:
           path: crates/selene-persist/fuzz/corpus
           key: persist-fuzz-corpus-${{ runner.os }}-${{ hashFiles('crates/selene-persist/fuzz/fuzz_targets/**') }}
           restore-keys: persist-fuzz-corpus-${{ runner.os }}-
-      - name: fuzz decoders (4 x 60s)
+      - name: fuzz decoders (5 x 60s)
         working-directory: crates/selene-persist/fuzz
         # Invariant: arbitrary bytes -> Ok or typed PersistError, never
         # panic/OOM/hang. -timeout=20 fails any input that hangs; -max_len=65536
         # bounds the audit record count and the manifest/section length fields.
         run: |
-          for target in decode_manifest decode_wal decode_audit decode_snapshot; do
+          for target in decode_control decode_manifest decode_wal decode_audit decode_snapshot; do
             cargo +nightly fuzz run --target x86_64-unknown-linux-gnu "$target" -- -max_total_time=60 -timeout=20 -max_len=65536
           done

@@ -53,7 +53,8 @@ fn meta_builder(dir: &Path, seq: u64, meta: &[u8]) -> SnapshotBuilder {
         sequence: seq,
         compression: SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     builder
         .add_section(*b"CORE", *b"META", meta.to_vec())
         .expect("section adds");
@@ -191,7 +192,7 @@ fn rotation_rejects_different_existing_snapshot_bytes() {
     let mut writer = WalWriter::open(&wal_path, WalConfig::default()).expect("wal opens");
     assert_eq!(append(&mut writer, 1), 1);
     meta_builder(&dir, 1, b"foreign-snapshot")
-        .finalize()
+        .finalize_with_authority(writer.authority())
         .expect("foreign snapshot publishes");
     let snapshot = snapshot_path(&dir, 1);
     let foreign_bytes = fs::read(&snapshot).expect("foreign snapshot reads");
@@ -224,7 +225,7 @@ fn rotation_rejects_existing_snapshot_with_unhashed_trailing_bytes() {
     let mut writer = WalWriter::open(&wal_path, WalConfig::default()).expect("wal opens");
     assert_eq!(append(&mut writer, 1), 1);
     meta_builder(&dir, 1, b"intended")
-        .finalize()
+        .finalize_with_authority(writer.authority())
         .expect("snapshot publishes");
     let snapshot = snapshot_path(&dir, 1);
     OpenOptions::new()
@@ -326,7 +327,7 @@ fn already_current_rotation_does_not_recreate_pruned_archive() {
     let mut manifest = Manifest::read(&dir).unwrap().unwrap();
     manifest.archived_wal_seqs.clear();
     manifest
-        .write_atomic(&dir)
+        .write_atomic_with_authority(writer.authority())
         .expect("pruned manifest commits");
     fs::remove_file(&archive_path).expect("pruned archive removes");
 
@@ -385,7 +386,7 @@ fn already_current_rotation_rejects_different_committed_snapshot() {
         .expect("initial rotation succeeds");
     fs::remove_file(&snapshot).expect("original snapshot removes");
     meta_builder(&dir, 1, b"foreign")
-        .finalize()
+        .finalize_with_authority(writer.authority())
         .expect("foreign snapshot publishes");
     let foreign_bytes = fs::read(&snapshot).unwrap();
 
@@ -438,7 +439,7 @@ fn rotation_retry_finishes_reset_after_manifest_commit() {
     assert_eq!(append(&mut writer, 1), 1);
     writer.flush().expect("wal flushes");
     meta_builder(&dir, 1, b"snapshot")
-        .finalize()
+        .finalize_with_authority(writer.authority())
         .expect("phase 1 snapshot publishes");
     fs::copy(&wal_path, &archive_path).expect("phase 2 archive publishes");
     let committed = Manifest {
@@ -449,7 +450,7 @@ fn rotation_retry_finishes_reset_after_manifest_commit() {
         archived_wal_seqs: vec![1],
     };
     committed
-        .write_atomic(&dir)
+        .write_atomic_with_authority(writer.authority())
         .expect("phase 3 manifest commits");
 
     let outcome = writer

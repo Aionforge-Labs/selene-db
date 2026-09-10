@@ -32,6 +32,37 @@ fn append_one(writer: &mut WalWriter) {
         .unwrap();
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn replaced_real_parent_cannot_redirect_wal_initialization() {
+    let root = temp_dir("real-parent-replacement");
+    let original = root.join("store");
+    let retained = root.join("retained");
+    std::fs::create_dir(&original).unwrap();
+    let hook_original = original.clone();
+    let hook_retained = retained.clone();
+    set_after_parent_anchor_hook(move || {
+        std::fs::rename(&hook_original, &hook_retained).unwrap();
+        std::fs::create_dir(&hook_original).unwrap();
+    });
+
+    let mut writer = WalWriter::open(&original.join("wal.log"), WalConfig::default()).unwrap();
+    append_one(&mut writer);
+    writer.flush().unwrap();
+    drop(writer);
+    let replacement_entries = std::fs::read_dir(&original).unwrap().count();
+    let anchored_wal_exists = retained.join("wal.log").is_file();
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        replacement_entries, 0,
+        "replacement directory must remain untouched"
+    );
+    assert!(
+        anchored_wal_exists,
+        "WAL must be created in the retained directory"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn parent_alias_is_anchored_before_the_final_path_opens() {
@@ -211,7 +242,7 @@ fn new_wal_is_absent_until_its_complete_header_is_published() {
 }
 
 #[test]
-fn racing_wal_initializer_never_overwrites_the_published_winner() {
+fn store_writer_excludes_a_racing_initializer_before_wal_publication() {
     let dir = temp_dir("atomic-publish-race");
     let active = dir.join("wal.log");
     let (first_staged_tx, first_staged_rx) = sync_channel(0);
@@ -239,39 +270,57 @@ fn racing_wal_initializer_never_overwrites_the_published_winner() {
         .recv_timeout(Duration::from_secs(5))
         .expect("first initializer stages its header");
 
-    let (winner_acquired_tx, winner_acquired_rx) = sync_channel(0);
-    let (release_winner_tx, release_winner_rx) = sync_channel(0);
-    let winner_active = active.clone();
-    let winner = thread::spawn(move || {
-        let writer = WalWriter::open(
-            &winner_active,
+    assert!(matches!(
+        WalWriter::open(
+            &active,
             WalConfig {
                 snapshot_seq: 22,
                 ..WalConfig::default()
-            },
-        )
-        .unwrap();
-        winner_acquired_tx.send(()).unwrap();
-        release_winner_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("winner release arrives before timeout");
-        drop(writer);
-    });
-    winner_acquired_rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("second initializer publishes and retains the winner");
-    release_first_tx.send(()).unwrap();
-
-    assert!(matches!(
-        first_done_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("losing initializer returns after publication race"),
+            }
+        ),
         Err(PersistError::WriterLockHeld)
     ));
+    assert!(
+        !active.exists(),
+        "contender cannot publish before the owner"
+    );
+    release_first_tx.send(()).unwrap();
+    let writer = first_done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
     first.join().unwrap();
-    assert_eq!(WalReader::open(&active).unwrap().snapshot_seq(), 22);
+    assert_eq!(WalReader::open(&active).unwrap().snapshot_seq(), 11);
+    drop(writer);
 
-    release_winner_tx.send(()).unwrap();
-    winner.join().unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn initialization_collision_preserves_the_complete_existing_header() {
+    let dir = temp_dir("exclusive-publish-collision");
+    let active = dir.join("wal.log");
+    let hook_path = active.clone();
+    set_before_wal_publish_hook(move || {
+        // Inject an independent publisher at the no-overwrite boundary.
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&hook_path)
+            .unwrap();
+        WalFileHeader::new(22).write_to(&mut file).unwrap();
+        file.sync_all().unwrap();
+    });
+    let writer = WalWriter::open(
+        &active,
+        WalConfig {
+            snapshot_seq: 11,
+            ..WalConfig::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(writer.snapshot_seq(), 22);
+    assert_eq!(WalReader::open(&active).unwrap().snapshot_seq(), 22);
+    drop(writer);
     std::fs::remove_dir_all(dir).unwrap();
 }

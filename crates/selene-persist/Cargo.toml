@@ -24,6 +24,10 @@ xxhash-rust.workspace = true
 zstd.workspace = true
 tracing.workspace = true
 rayon.workspace = true
+uuid.workspace = true
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+rustix.workspace = true
 
 [features]
 metrics = ["selene-core/metrics"]
@@ -36,7 +40,6 @@ rstest.workspace = true
 rust_decimal.workspace = true
 selene-testing = { package = "selene-db-testing", path = "../selene-testing" }
 serde_json.workspace = true
-uuid.workspace = true
 
 [[bench]]
 name = "wal"
@@ -44,6 +47,10 @@ harness = false
 
 [[bench]]
 name = "snapshot"
+harness = false
+
+[[bench]]
+name = "store_control"
 harness = false
 
 [lints]

@@ -130,7 +130,8 @@ fn write_snapshot(dir: &Path, sequence: u64, sections: &[([u8; 4], [u8; 4], Vec<
         sequence,
         compression: SectionCompression::None,
         fsync: true,
-    });
+    })
+    .unwrap();
     for (provider, sub, bytes) in sections {
         builder.add_section(*provider, *sub, bytes.clone()).unwrap();
     }
