@@ -2954,6 +2954,64 @@ Bench bins: `parse`, `analyze`, `plan_optimize`, `expression_eval`, `mixed_orien
 `procedure_call_repeat`, `correlated_subquery`, `read_pipeline`, `write_e2e`.
 The first four are scale-independent (single-query CPU).
 
+### F03-PR01 immutable source/semantic separation
+
+The existing registered `analyze` binary now includes
+`gql_immutable_semantics/{parse,analyze}/{1,16,64}`. Both arms use the same
+fixture: `RETURN 0` followed by N additions of distinct `$pN :: INT` parameters.
+Parsing includes AST construction, admission, and result drop. Analysis starts
+from a pre-parsed shared source AST and includes one Arc clone, binding/type/tree
+allocation, and result drop; it excludes parsing, deep source cloning, planning,
+and execution. The corpus analysis row also now shares its pre-parsed ASTs;
+historical corpus numbers below used a different ownership/timing boundary.
+
+Measured 2026-09-10 on native Apple M5, 16 GiB, macOS 27.0 (26A5425a), rustc
+1.97.1. Workspace bench profile: opt-level 3, thin LTO, one codegen unit;
+mimalloc, `test-harness`, 100 ms warmup, 30 samples, 2-second measurement.
+The measurement command below was run sequentially twice on **unchanged code**,
+after the compile-only check. No competing Cargo/fuzz/benchmark command was launched.
+
+```bash
+scripts/run-benches.sh --bench analyze --compile-only
+scripts/run-benches.sh --profile quick --bench analyze --filter gql_immutable_semantics --sample-size 30 --measurement-time 2
+```
+
+| Phase / parameter count | Run 1 estimate (95% interval) | Run 2 estimate (95% interval) |
+|---|---:|---:|
+| parse / 1 | 36.546 µs (36.173–37.025) | 24.295 µs (24.227–24.377) |
+| analyze / 1 | 745.58 ns (743.71–747.62) | 702.57 ns (701.32–703.96) |
+| parse / 16 | 135.88 µs (134.25–137.15) | 117.02 µs (116.75–117.28) |
+| analyze / 16 | 28.535 µs (28.364–28.822) | 28.373 µs (28.314–28.459) |
+| parse / 64 | 435.33 µs (432.83–438.03) | 422.54 µs (418.58–426.11) |
+| analyze / 64 | 382.28 µs (380.27–385.56) | 384.35 µs (383.04–385.95) |
+
+The large same-code variation in the smallest parse row is a host/run limitation,
+**not an implementation speedup** despite Criterion's automatic comparison text.
+No baseline checkout was measured, and these are not throughput or facade-latency
+claims. Deep expression analysis still pays repeated structural-fingerprint walks
+in the temporary source-to-current-plan bridge; do not infer linear scaling.
+F03-PR04 owns deletion of that bridge. Catalog lookup and execution are not timed
+by these arithmetic fixtures.
+
+The binary separately reports retained structural accounting while holding both
+trees alive; these values were identical in both runs:
+
+| Parameters | Source text bytes | Source structural bytes | Semantic structural lower-bound bytes |
+|---:|---:|---:|---:|
+| 1 | 21 | 1,432 | 1,352 |
+| 16 | 222 | 3,352 | 9,464 |
+| 64 | 894 | 9,496 | 35,960 |
+
+The shared analysis handle is another 16 bytes. The source column counts the AST
+root, owned vector capacities, and expression boxes for these checked fixtures.
+The semantic column counts its separate root, expression/parameter/reference
+vector capacities, scope/declaration payloads, child-ID vectors, type cells, and
+map entry payloads. Shared DbString storage, Arc control blocks, allocator
+metadata, map-node slack, private-table capacity slack, and source string capacity
+slack are excluded. This is reproducible **partial retained-byte accounting**, not
+total unique heap, peak allocation, or RSS. No full source string is copied into
+each semantic node. It does not estimate production catalog-bound memory usage.
+
 ### F01-PR04 one-hop mixed orientation runtime
 
 `mixed_orientation` measures preplanned `execute_pattern` including the root

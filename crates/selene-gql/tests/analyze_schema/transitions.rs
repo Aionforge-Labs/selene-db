@@ -113,7 +113,7 @@ fn schema_validation_smoke_preserves_write_set() {
         &graph_type,
     )
     .expect("valid mutation analyzes");
-    let write_set = analyzed.write_set.expect("mutation write-set");
+    let write_set = analyzed.write_set.as_ref().expect("mutation write-set");
     assert_eq!(write_set.entries.len(), 2);
 }
 

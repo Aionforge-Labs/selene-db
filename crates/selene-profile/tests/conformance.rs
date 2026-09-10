@@ -40,10 +40,10 @@ fn checked_in_seed_pins_static_boundary_and_pending_ownership() {
         expected_count,
         feature_ids_hash,
     } = &registry.rules().target;
-    assert_eq!(*expected_count, 144);
+    assert_eq!(*expected_count, 146);
     assert_eq!(
         feature_ids_hash,
-        "46ec2d245547093ee31a7046398b707dabb1d82e684a44aa4afbaf9ddb0afd09"
+        "f85e7ad43373806bc64da8b34aa890909402efe671f0a8d29e4aedb5811c7053"
     );
     assert_eq!(
         registry
@@ -89,11 +89,11 @@ fn checked_in_seed_pins_static_boundary_and_pending_ownership() {
     assert_eq!(registry.evidence().rules_hash, registry.rules_hash());
     assert_eq!(
         registry.rules_hash(),
-        "f74ce2ce506b4b79071e41abce88360017b8879a54cc047215bfc0a33431bd40"
+        "e97dd73391a5ad423d006087eeac063e802582c3403a039222045704829a8a94"
     );
     assert_eq!(
         registry.evidence_hash(),
-        "8ab6d9260aa65af4c544a60aa6a320137fe396b7bd4cff7d28071fd7c778f9dc"
+        "9928a43e9b3eec47134e94527de94533652087a28a40fe9f9fc1e6e8cbb21dd3"
     );
     assert!(!profile.profile().release_claimable);
 

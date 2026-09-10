@@ -1,8 +1,8 @@
 //! Analyzer coverage for CASE expression lowering.
 
 use selene_gql::{
-    AnalyzedStatement, AnalyzedStatementKind, BinaryOp, EmptyProcedureRegistry, ExprId,
-    PipelineStatement, ReturnItem, ValueExpr, analyze, parse,
+    AnalyzedStatement, BinaryOp, EmptyProcedureRegistry, ExprId, PipelineStatement, ReturnItem,
+    Statement, ValueExpr, analyze, parse,
 };
 
 fn analyze_one(source: &str) -> AnalyzedStatement {
@@ -11,7 +11,7 @@ fn analyze_one(source: &str) -> AnalyzedStatement {
 }
 
 fn return_items(analyzed: &AnalyzedStatement) -> &[ReturnItem] {
-    let AnalyzedStatementKind::Query(query) = &analyzed.statement else {
+    let Statement::Query(query) = analyzed.source() else {
         panic!("expected query statement");
     };
     query

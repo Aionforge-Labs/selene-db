@@ -1,202 +1,137 @@
-//! Analyzer output AST wrapper.
+//! Immutable source owner and separate semantic tree.
+
+use std::{ops::Deref, sync::Arc};
 
 use selene_core::DbString;
 
-use crate::{
-    DdlStatement, GqlType, MutationPipeline, NonEmpty, ProcedureCall, QueryPipeline,
-    SessionResetTarget, SessionSetGraphTarget, SetOp, SourceSpan, Statement, ValueExpr,
-    analyze::{
-        binding::BindingUse,
-        category::StatementCategory,
-        scope::{BindingScopeTree, ScopeId},
-        types::{ExprIdLookup, ExprTypeTable},
-        write_set::MutationWriteSet,
-    },
+use super::{
+    BindingScopeTree, BindingUse, ExprIdLookup, ExprTypeTable, MutationWriteSet, ScopeId,
+    StatementCategory,
+    semantic::{ResolvedCall, SemanticExpression},
 };
+use crate::{GqlType, SourceSpan, Statement};
 
-/// A parsed and bind-pass-validated GQL statement.
+/// An immutable source tree paired with its independently allocated semantics.
+///
+/// Analysis only borrows the source. Sharing this result or its input cannot
+/// change source spelling, declarations, or procedure argument lists. The
+/// semantic tree contains resolved scopes and expression edges, never a second
+/// mutable syntax tree. Structural type completion belongs to F03-PR02 and
+/// logical operations to F03-PR03.
+///
+/// ```compile_fail
+/// let mut analyzed = selene_gql::analyze(
+///     selene_gql::parse("RETURN $x").unwrap(),
+///     &selene_gql::EmptyProcedureRegistry,
+///     None,
+/// ).unwrap();
+/// analyzed.parameters.clear(); // frozen semantic output has no mutable access
+/// ```
 #[derive(Clone, Debug)]
 pub struct AnalyzedStatement {
-    /// Original statement shape, preserved for planner input.
-    pub statement: AnalyzedStatementKind,
-    /// Full binding scope tree allocated during this analyze call.
+    source: Arc<Statement>,
+    semantic: Arc<SemanticTree>,
+}
+
+/// Resolved lexical and expression trees for one statement.
+///
+/// Fields remain inspectable for lower-engine consumers, but an
+/// [`AnalyzedStatement`] only exposes shared access to this frozen allocation.
+#[derive(Clone, Debug)]
+pub struct SemanticTree {
+    /// Lexical scope tree and stable declaration identities.
     pub scopes: BindingScopeTree,
-    /// Resolved binding references in source-walk order.
+    /// Resolved binding uses, in traversal order.
     pub references: Vec<BindingUse>,
-    /// Parameter references in source order after declaration inheritance.
+    /// Parameter uses in source order, with effective inherited declarations.
     pub parameters: Vec<ParameterUse>,
-    /// Inferred expression type cells.
+    /// Type cells indexed by semantic expression identity.
     pub expr_types: ExprTypeTable,
-    /// Expression-node to type-cell lookup for the owned statement AST.
+    /// Temporary source-expression lookup used by the current-plan adapter.
     pub expr_ids: ExprIdLookup,
-    /// Span of the root statement.
+    /// Expression nodes with resolved namespace and child identities.
+    pub expressions: Vec<SemanticExpression>,
+    /// Root source origin.
     pub span: SourceSpan,
-    /// Per-statement classification for transaction-state enforcement.
+    /// Statement category used by transaction enforcement.
     pub category: StatementCategory,
-    /// Enumerated writes for mutation pipelines.
+    /// Enumerated mutation writes.
     pub write_set: Option<MutationWriteSet>,
+    /// Resolved procedure applications, including semantic-only defaults.
+    pub calls: Vec<ResolvedCall>,
+    /// Catalog sites and exact descriptor dependencies, when catalog-bound.
+    pub catalog: Option<super::catalog::CatalogResolution>,
+    /// Exact generated profile contract used during this analysis.
+    pub profile: selene_profile::ProfileIdentity,
+    /// Registry generation used for procedure resolution.
+    pub procedure_registry_version: u64,
 }
 
 impl AnalyzedStatement {
-    // The constructor keeps every analyzer-owned table explicit so a new table
-    // cannot silently inherit a default outside the bind pass.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
-        statement: Statement,
-        scopes: BindingScopeTree,
-        references: Vec<BindingUse>,
-        parameters: Vec<ParameterUse>,
-        expr_types: ExprTypeTable,
-        expr_ids: ExprIdLookup,
-        category: StatementCategory,
-        write_set: Option<MutationWriteSet>,
-    ) -> Self {
-        let span = statement.span();
+    pub(crate) fn new(source: Arc<Statement>, semantic: SemanticTree) -> Self {
         Self {
-            statement: AnalyzedStatementKind::from_statement(statement),
-            scopes,
-            references,
-            parameters,
-            expr_types,
-            expr_ids,
-            span,
-            category,
-            write_set,
+            source,
+            semantic: Arc::new(semantic),
         }
     }
 
-    /// Return the root statement scope.
+    /// Borrow the exact syntax supplied to analysis, without inferred changes.
+    #[must_use]
+    pub fn source(&self) -> &Statement {
+        &self.source
+    }
+
+    /// Borrow the independently allocated immutable semantic tree.
+    #[must_use]
+    pub fn semantics(&self) -> &SemanticTree {
+        &self.semantic
+    }
+
+    /// Resolve a source expression to its immutable semantic node.
+    #[must_use]
+    pub fn expression(&self, source: &crate::ValueExpr) -> Option<&SemanticExpression> {
+        let id = self.expr_ids.get(source)?;
+        self.expressions
+            .get(id.get() as usize)
+            .filter(|node| node.id == id)
+    }
+
+    /// Return the root lexical scope.
     #[must_use]
     pub fn root_scope(&self) -> ScopeId {
         self.scopes.root()
     }
+
+    // Deliberately absent even from the public test-harness feature. Unit tests
+    // of defensive adapter guards can corrupt a private copy; production and
+    // external consumers cannot mutate either frozen tree.
+    #[cfg(test)]
+    pub(crate) fn corrupt_for_test(
+        &mut self,
+        corrupt: impl FnOnce(&mut Statement, &mut SemanticTree),
+    ) {
+        corrupt(
+            Arc::make_mut(&mut self.source),
+            Arc::make_mut(&mut self.semantic),
+        );
+    }
 }
 
-/// One source parameter reference available to request preflight.
+impl Deref for AnalyzedStatement {
+    type Target = SemanticTree;
+
+    fn deref(&self) -> &Self::Target {
+        &self.semantic
+    }
+}
+
+/// One parameter reference, resolved in the parameter namespace, not bindings.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParameterUse {
-    /// Exact decoded name without the leading `$`.
+    /// Exact decoded name without `$`.
     pub name: DbString,
-    /// Source span of this occurrence.
+    /// Original occurrence span.
     pub span: SourceSpan,
-    /// Inline type, including a declaration inherited from another occurrence.
+    /// Effective declaration, including inheritance from another occurrence.
     pub declared_type: Option<GqlType>,
-}
-
-/// Top-level analyzed statement shape.
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub enum AnalyzedStatementKind {
-    /// Read query pipeline.
-    Query(QueryPipeline),
-    /// Set-composed read pipelines.
-    Composite {
-        /// First pipeline.
-        first: QueryPipeline,
-        /// Remaining pipelines paired with their set operator.
-        rest: NonEmpty<(SetOp, QueryPipeline)>,
-        /// Source span.
-        span: SourceSpan,
-    },
-    /// `NEXT`-chained read pipelines.
-    Chained {
-        /// Chained pipeline blocks.
-        blocks: Vec<QueryPipeline>,
-        /// Source span.
-        span: SourceSpan,
-    },
-    /// Write-side mutation pipeline.
-    Mutate(MutationPipeline),
-    /// Data-definition statement.
-    Ddl(DdlStatement),
-    /// Top-level procedure call.
-    Call(ProcedureCall),
-    /// `EXPLAIN <statement>`.
-    Explain {
-        /// Inner analyzed statement shape.
-        inner: Box<AnalyzedStatementKind>,
-        /// Source span.
-        span: SourceSpan,
-    },
-    /// `START TRANSACTION`.
-    StartTransaction(SourceSpan),
-    /// `COMMIT`.
-    Commit(SourceSpan),
-    /// `ROLLBACK`.
-    Rollback(SourceSpan),
-    /// `SESSION SET VALUE <param> [<type>] = <value expression>` (ISO feature GS03).
-    SessionSetValue {
-        /// Database-string parameter name without the leading `$`.
-        param: DbString,
-        /// Optional declared type for the target session parameter.
-        declared_type: Option<GqlType>,
-        /// Value expression bound to the parameter.
-        value: Box<ValueExpr>,
-        /// `IF NOT EXISTS` was present on the parameter specification.
-        if_not_exists: bool,
-        /// Source span.
-        span: SourceSpan,
-    },
-    /// `SESSION SET TIME ZONE <time zone string>` (ISO feature GS15).
-    SessionSetTimeZone {
-        /// Decoded IANA region name or fixed-offset string.
-        zone: String,
-        /// Source span.
-        span: SourceSpan,
-    },
-    /// `SESSION SET [PROPERTY] GRAPH <current graph>` (ISO/IEC 39075:2024 section 7.1).
-    SessionSetGraph {
-        /// Current-graph expression selected by the command.
-        target: SessionSetGraphTarget,
-        /// Source span.
-        span: SourceSpan,
-    },
-    /// `SESSION RESET [ <session reset arguments> ]` (ISO features GS04/GS07/GS08/GS16).
-    SessionReset {
-        /// Reset target selected by the arguments.
-        target: SessionResetTarget,
-        /// Source span.
-        span: SourceSpan,
-    },
-    /// `SESSION CLOSE` (ISO/IEC 39075:2024 section 7.3).
-    SessionClose(SourceSpan),
-}
-
-impl AnalyzedStatementKind {
-    fn from_statement(statement: Statement) -> Self {
-        match statement {
-            Statement::Query(value) => Self::Query(value),
-            Statement::Composite { first, rest, span } => Self::Composite { first, rest, span },
-            Statement::Chained { blocks, span } => Self::Chained { blocks, span },
-            Statement::Mutate(value) => Self::Mutate(value),
-            Statement::Ddl(value) => Self::Ddl(value),
-            Statement::Call(value) => Self::Call(value),
-            Statement::Explain { inner, span } => Self::Explain {
-                inner: Box::new(Self::from_statement(*inner)),
-                span,
-            },
-            Statement::StartTransaction { span } => Self::StartTransaction(span),
-            Statement::Commit { span } => Self::Commit(span),
-            Statement::Rollback { span } => Self::Rollback(span),
-            Statement::SessionSetValue {
-                param,
-                declared_type,
-                value,
-                if_not_exists,
-                span,
-            } => Self::SessionSetValue {
-                param,
-                declared_type,
-                value,
-                if_not_exists,
-                span,
-            },
-            Statement::SessionSetTimeZone { zone, span, .. } => {
-                Self::SessionSetTimeZone { zone, span }
-            }
-            Statement::SessionSetGraph { target, span } => Self::SessionSetGraph { target, span },
-            Statement::SessionReset { target, span } => Self::SessionReset { target, span },
-            Statement::SessionClose { span } => Self::SessionClose(span),
-        }
-    }
 }

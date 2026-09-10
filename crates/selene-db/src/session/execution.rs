@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use selene_catalog::GraphId as LowerGraphId;
+use selene_catalog::{GraphId as LowerGraphId, SchemaId as LowerSchemaId};
+use selene_gql::analyze::catalog::CatalogEnvironment;
 use selene_gql::{
     CatalogSessionOutput, PreparedCatalogPlan, PreparedCatalogRequest, PreparedCatalogRequestKind,
     PreparedSessionControl, PreparedTransactionControl,
@@ -65,6 +66,16 @@ impl Session {
             Error::invalid_session_reference(Error::from_catalog_invariant(source))
         })?;
         let input = context.lower_input(self.context.time_zone_value());
+        let schema = LowerSchemaId::new(self.context.current_schema().id.get())
+            .map_err(Error::from_catalog_invariant)?;
+        let (catalog, transaction_graph) = match slot.as_ref() {
+            Some(transaction) if transaction.descriptor().state() == TransactionState::Active => (
+                transaction.draft()?.catalog.clone(),
+                Some(transaction.draft()?.selected_graph_id()?),
+            ),
+            _ => (self.inner.state.load_full().catalog.clone(), None),
+        };
+        let environment = CatalogEnvironment::new(catalog, schema, graph_id, transaction_graph);
         let audit = self
             .context
             .principal()
@@ -73,13 +84,26 @@ impl Session {
             Some(transaction) if transaction.descriptor().state() == TransactionState::Active => {
                 let snapshot = transaction.draft()?.selected_graph()?.clone();
                 self.inner
-                    .prepare_catalog_request_from_snapshot(snapshot, audit, request.source(), input)
+                    .prepare_catalog_request_from_snapshot(
+                        snapshot,
+                        audit,
+                        request.source(),
+                        input,
+                        environment,
+                    )
                     .map(CheckedRequest::Prepared)
             }
             Some(transaction) => match self.validate_context_references() {
                 Ok(()) => self
                     .inner
-                    .prepare_catalog_request(graph_id, &graph.path, audit, request.source(), input)
+                    .prepare_catalog_request(
+                        graph_id,
+                        &graph.path,
+                        audit,
+                        request.source(),
+                        input,
+                        environment,
+                    )
                     .map(CheckedRequest::Prepared),
                 Err(reference_error) => {
                     if let Some(control) = selene_gql::parse_transaction_control(request.source())
@@ -112,7 +136,10 @@ impl Session {
                     }
                 };
                 let key = context.plan_key(request.source());
-                if let Some(plan) = self.context.cached_plan(&key, &stamp) {
+                if let Some(plan) = self
+                    .context
+                    .cached_plan(&key, &stamp, |plan| self.inner.cached_plan_current(plan))
+                {
                     let prepared =
                         self.inner
                             .bind_cached_plan(graph_id, &graph.path, plan, input)?;
@@ -124,6 +151,7 @@ impl Session {
                     audit,
                     request.source(),
                     input,
+                    environment,
                 )?;
                 if matches!(
                     prepared.kind(),
@@ -213,7 +241,7 @@ impl Session {
             }
             _ => {
                 let graph = self.context.current_graph();
-                let id = LowerGraphId::new(graph.id.get()).map_err(|source| {
+                let id = LowerGraphId::new(prepared.graph_id().get()).map_err(|source| {
                     Error::invalid_session_reference(Error::from_catalog_invariant(source))
                 })?;
                 self.inner
@@ -316,13 +344,28 @@ impl Session {
 }
 
 impl DatabaseInner {
+    fn cached_plan_current(&self, plan: &PreparedCatalogPlan) -> bool {
+        let current = self.state.load_full();
+        let Ok(id) = LowerGraphId::new(plan.graph_id().get()) else {
+            return false;
+        };
+        current
+            .graphs
+            .get(&id)
+            .is_some_and(|instance| instance.graph.schema_version() == plan.schema_version())
+            && plan
+                .catalog_resolution()
+                .is_none_or(|resolution| resolution.is_current(&current.catalog))
+    }
+
     fn bind_cached_plan(
         &self,
-        id: LowerGraphId,
+        _id: LowerGraphId,
         path: &ObjectPath,
         plan: PreparedCatalogPlan,
         input: selene_gql::RequestExecutionInput,
     ) -> Result<PreparedCatalogRequest> {
+        let id = LowerGraphId::new(plan.graph_id().get()).map_err(Error::from_catalog_invariant)?;
         self.with_graph_request(id, path, |graph| {
             let snapshot = graph.read();
             plan.bind(input, &snapshot).map_err(Error::from_engine)
@@ -336,9 +379,15 @@ impl DatabaseInner {
         audit: Option<Arc<[u8]>>,
         source: &str,
         request: selene_gql::RequestExecutionInput,
+        environment: CatalogEnvironment,
     ) -> Result<PreparedCatalogRequest> {
+        let analyzed = analyze_catalog_source(source, &self.procedures, environment)?;
+        let id = analyzed
+            .catalog
+            .as_ref()
+            .map_or(id, |resolution| resolution.selected_graph());
         self.with_graph_request(id, path, |graph| {
-            prepare_on_graph(graph, audit, source, request, &self.procedures)
+            prepare_on_graph(graph, audit, source, request, &self.procedures, analyzed)
         })
     }
 
@@ -348,10 +397,12 @@ impl DatabaseInner {
         audit: Option<Arc<[u8]>>,
         source: &str,
         request: selene_gql::RequestExecutionInput,
+        environment: CatalogEnvironment,
     ) -> Result<PreparedCatalogRequest> {
         let scratch =
             SharedGraph::try_from_graph(snapshot).map_err(Error::invalid_graph_type_source)?;
-        prepare_on_graph(&scratch, audit, source, request, &self.procedures)
+        let analyzed = analyze_catalog_source(source, &self.procedures, environment)?;
+        prepare_on_graph(&scratch, audit, source, request, &self.procedures, analyzed)
     }
 
     fn execute_prepared_live_read(
@@ -362,7 +413,13 @@ impl DatabaseInner {
         prepared: PreparedCatalogRequest,
     ) -> Result<ExecutionOutcome> {
         self.with_graph_request(id, path, |graph| {
-            execute_read_on_graph(graph, audit, prepared, &self.procedures)
+            execute_read_on_graph(
+                graph,
+                audit,
+                prepared,
+                &self.procedures,
+                Some(self.state.load_full().catalog.clone()),
+            )
         })
     }
 
@@ -374,7 +431,13 @@ impl DatabaseInner {
     ) -> Result<ExecutionOutcome> {
         let scratch = SharedGraph::try_from_graph(transaction.draft()?.selected_graph()?.clone())
             .map_err(Error::invalid_graph_type_source)?;
-        execute_read_on_graph(&scratch, audit, prepared, &self.procedures)
+        execute_read_on_graph(
+            &scratch,
+            audit,
+            prepared,
+            &self.procedures,
+            Some(transaction.draft()?.catalog.clone()),
+        )
     }
 
     fn execute_prepared_detached_mutation(
@@ -386,7 +449,13 @@ impl DatabaseInner {
         let scratch = SharedGraph::try_from_graph(transaction.draft()?.selected_graph()?.clone())
             .map_err(Error::invalid_graph_type_source)?;
         let mut session = lower_session(&scratch, audit);
-        let prepared = reprepare_if_stale(&scratch, &mut session, prepared, &self.procedures)?;
+        let prepared = reprepare_if_stale(
+            &scratch,
+            &mut session,
+            prepared,
+            &self.procedures,
+            Some(transaction.draft()?.catalog.clone()),
+        )?;
         if prepared.is_read_only() || prepared.is_database_catalog() {
             return Err(Error::catalog_invariant(
                 "selected mutation changed category while replanning",
@@ -438,9 +507,10 @@ fn prepare_on_graph(
     source: &str,
     request: selene_gql::RequestExecutionInput,
     procedures: &selene_gql::BuiltinProcedureRegistry,
+    analyzed: selene_gql::AnalyzedStatement,
 ) -> Result<PreparedCatalogRequest> {
     lower_session(graph, audit)
-        .prepare_source_catalog_request(source, procedures, request)
+        .prepare_analyzed_catalog_request(source, analyzed, procedures, request)
         .map_err(Error::from_engine)
 }
 
@@ -449,9 +519,10 @@ fn execute_read_on_graph(
     audit: Option<Arc<[u8]>>,
     prepared: PreparedCatalogRequest,
     procedures: &selene_gql::BuiltinProcedureRegistry,
+    catalog: Option<selene_catalog::CatalogSnapshot>,
 ) -> Result<ExecutionOutcome> {
     let mut session = lower_session(graph, audit);
-    let prepared = reprepare_if_stale(graph, &mut session, prepared, procedures)?;
+    let prepared = reprepare_if_stale(graph, &mut session, prepared, procedures, catalog)?;
     match session
         .execute_prepared_catalog_request(prepared, procedures)
         .map_err(Error::from_engine)?
@@ -466,19 +537,40 @@ fn reprepare_if_stale<'g>(
     session: &mut selene_gql::Session<'g>,
     prepared: PreparedCatalogRequest,
     procedures: &selene_gql::BuiltinProcedureRegistry,
+    catalog: Option<selene_catalog::CatalogSnapshot>,
 ) -> Result<PreparedCatalogRequest> {
     let snapshot = graph.read();
     let stale = prepared.graph_id() != snapshot.graph_id()
-        || prepared.graph_generation() != snapshot.meta.generation
-        || prepared.schema_version() != graph.schema_version();
+        || prepared.schema_version() != graph.schema_version()
+        || catalog.as_ref().is_some_and(|catalog| {
+            prepared
+                .catalog_resolution()
+                .is_some_and(|resolution| !resolution.is_current(catalog))
+        });
     drop(snapshot);
     if stale {
+        if let Some(catalog) = catalog {
+            return session
+                .reprepare_catalog_request(prepared, catalog, procedures)
+                .map_err(Error::from_engine);
+        }
         session
             .reprepare_source_catalog_request(prepared, procedures)
             .map_err(Error::from_engine)
     } else {
         Ok(prepared)
     }
+}
+
+fn analyze_catalog_source(
+    source: &str,
+    procedures: &selene_gql::BuiltinProcedureRegistry,
+    environment: CatalogEnvironment,
+) -> Result<selene_gql::AnalyzedStatement> {
+    let statement = selene_gql::parse(source)
+        .map_err(|source| Error::from_engine(selene_gql::ExecutorError::Parse { source }))?;
+    selene_gql::analyze::analyze_catalog(statement, procedures, environment)
+        .map_err(|source| Error::from_engine(selene_gql::ExecutorError::Analysis { source }))
 }
 
 pub(super) fn lower_session<'g>(

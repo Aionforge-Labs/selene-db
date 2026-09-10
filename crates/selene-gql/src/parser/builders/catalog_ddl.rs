@@ -262,7 +262,9 @@ pub(super) fn reject_catalog_statement_chain(pair: &Pair<'_, Rule>) -> ParserErr
     )
 }
 
-fn build_absolute_path(pair: Pair<'_, Rule>) -> Result<CatalogObjectReference, ParserError> {
+pub(super) fn build_absolute_path(
+    pair: Pair<'_, Rule>,
+) -> Result<CatalogObjectReference, ParserError> {
     debug_assert_eq!(pair.as_rule(), Rule::absolute_catalog_path);
     let source_span = span(&pair);
     let segments = pair
@@ -284,7 +286,9 @@ fn build_absolute_path(pair: Pair<'_, Rule>) -> Result<CatalogObjectReference, P
     })
 }
 
-fn build_graph_reference(pair: Pair<'_, Rule>) -> Result<CatalogObjectReference, ParserError> {
+pub(super) fn build_graph_reference(
+    pair: Pair<'_, Rule>,
+) -> Result<CatalogObjectReference, ParserError> {
     debug_assert_eq!(pair.as_rule(), Rule::graph_reference);
     let source_span = span(&pair);
     let inner = super::first_child(pair)?;
@@ -445,7 +449,7 @@ fn unsupported_graph_type_source(pair: &Pair<'_, Rule>, form: &str) -> ParserErr
 /// keys but not for catalog paths: the catalog validates regular and delimited
 /// names under different rules, and a delimited segment may legitimately spell
 /// `/`, spaces, or backticks.
-fn catalog_segment(pair: Pair<'_, Rule>) -> Result<CatalogPathSegment, ParserError> {
+pub(super) fn catalog_segment(pair: Pair<'_, Rule>) -> Result<CatalogPathSegment, ParserError> {
     debug_assert_eq!(pair.as_rule(), Rule::ident);
     let form = if pair.as_str().starts_with(['"', '`']) {
         IdentifierForm::Delimited

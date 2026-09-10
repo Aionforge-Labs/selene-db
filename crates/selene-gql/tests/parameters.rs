@@ -4,10 +4,10 @@ use std::{collections::HashMap, num::NonZeroUsize, sync::Arc, thread};
 
 use selene_core::{DbString, GraphId, LabelSet, PropertyMap, Value};
 use selene_gql::{
-    AnalysisError, AnalyzedStatement, AnalyzedStatementKind, AnalyzedType, DataExceptionSubclass,
-    EmptyProcedureRegistry, ExecutionPlan, ExecutorError, ExpectedType, GqlStatus, GqlType,
-    LimitValue, OptimizeContext, PipelineStatement, Session, Statement, StatementOutput,
-    TypeMismatchContext, ValueExpr, analyze, execute_statement, optimize, parse, plan,
+    AnalysisError, AnalyzedStatement, AnalyzedType, DataExceptionSubclass, EmptyProcedureRegistry,
+    ExecutionPlan, ExecutorError, ExpectedType, GqlStatus, GqlType, LimitValue, OptimizeContext,
+    PipelineStatement, Session, Statement, StatementOutput, TypeMismatchContext, ValueExpr,
+    analyze, execute_statement, optimize, parse, plan,
 };
 use selene_graph::SharedGraph;
 use serde_json::Value as JsonValue;
@@ -36,7 +36,7 @@ fn analyze_one(source: &str) -> AnalyzedStatement {
 }
 
 fn projection_type(analyzed: &AnalyzedStatement, name: &str) -> AnalyzedType {
-    let AnalyzedStatementKind::Query(query) = &analyzed.statement else {
+    let Statement::Query(query) = analyzed.source() else {
         panic!("expected query statement");
     };
     let item = query

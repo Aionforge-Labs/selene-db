@@ -1,0 +1,4 @@
+// corpus: positive
+// feature: GP16
+// expects: parse-ok
+AT /memory RETURN 1

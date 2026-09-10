@@ -40,7 +40,8 @@ fn db_string(value: &str) -> DbString {
 #[test]
 fn positive_corpus_analyzes_and_resolves_references() {
     let registry = default_corpus_registry();
-    let positives = load_default_analyzed_gql_corpus(&registry).expect("positive corpus analyzes");
+    let positives = load_default_analyzed_gql_corpus(&registry, corpus_catalog_environment())
+        .expect("positive corpus analyzes");
     assert!(!positives.is_empty());
 
     for entry in positives {
@@ -58,6 +59,61 @@ fn positive_corpus_analyzes_and_resolves_references() {
             );
         }
     }
+}
+
+fn corpus_catalog_environment() -> selene_gql::analyze::catalog::CatalogEnvironment {
+    use selene_catalog::{
+        CatalogDescriptor, CatalogGeneration, CatalogId, CatalogName, CatalogSnapshotBuilder,
+        CreationMetadata, DirectoryId, GraphId, SchemaId,
+    };
+    let generation = CatalogGeneration::new(1).unwrap();
+    let creation = CreationMetadata::new(generation, None);
+    let catalog_id = CatalogId::new(1).unwrap();
+    let directory = DirectoryId::new(1).unwrap();
+    let schema = SchemaId::new(1).unwrap();
+    let graph = GraphId::new(1).unwrap();
+    let catalog = CatalogDescriptor::catalog(
+        catalog_id,
+        CatalogName::regular("selene").unwrap(),
+        generation,
+        creation.clone(),
+    )
+    .unwrap();
+    let root =
+        CatalogDescriptor::root_directory(directory, catalog_id, generation, creation.clone())
+            .unwrap();
+    let mut builder = CatalogSnapshotBuilder::new(generation, catalog, root).unwrap();
+    builder
+        .insert(
+            CatalogDescriptor::schema(
+                schema,
+                CatalogName::regular("memory").unwrap(),
+                directory,
+                generation,
+                creation.clone(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    builder
+        .insert(
+            CatalogDescriptor::graph(
+                graph,
+                CatalogName::regular("main").unwrap(),
+                schema,
+                generation,
+                creation,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    selene_gql::analyze::catalog::CatalogEnvironment::new(
+        builder.build().unwrap(),
+        schema,
+        graph,
+        None,
+    )
 }
 
 #[test]
@@ -354,7 +410,7 @@ fn mixed_yield_star_binds_explicit_columns() {
 #[test]
 fn analyzed_statement_preserves_top_level_shape() {
     let analyzed = analyze_one("MATCH (n) RETURN n").expect("analyzes");
-    let selene_gql::AnalyzedStatementKind::Query(query) = analyzed.statement else {
+    let Statement::Query(query) = analyzed.source() else {
         panic!("expected query");
     };
     assert!(matches!(query.statements[0], PipelineStatement::Match(_)));

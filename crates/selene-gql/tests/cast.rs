@@ -14,9 +14,9 @@ mod exec_scalar;
 
 use selene_core::{GraphId, Value, db_string};
 use selene_gql::{
-    AnalysisError, AnalyzedStatement, AnalyzedStatementKind, AnalyzedType, EmptyProcedureRegistry,
-    GqlStatus, GqlType, PipelineStatement, ReturnItem, Session, Statement, StatementOutput,
-    ValueExpr, analyze, ast::format::format_read_statement, parse,
+    AnalysisError, AnalyzedStatement, AnalyzedType, EmptyProcedureRegistry, GqlStatus, GqlType,
+    PipelineStatement, ReturnItem, Session, Statement, StatementOutput, ValueExpr, analyze,
+    ast::format::format_read_statement, parse,
 };
 use selene_graph::SharedGraph;
 
@@ -37,7 +37,7 @@ fn analyze_or_panic(source: &str) -> AnalyzedStatement {
 }
 
 fn return_items(analyzed: &AnalyzedStatement) -> &[ReturnItem] {
-    let AnalyzedStatementKind::Query(query) = &analyzed.statement else {
+    let Statement::Query(query) = analyzed.source() else {
         panic!("expected query statement");
     };
     query

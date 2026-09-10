@@ -197,8 +197,14 @@ pub enum SetOp {
 }
 
 /// Read query pipeline.
-#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct QueryPipeline {
+    /// Lexical prefixes and brace origins surrounding this linear query body.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub working_scopes: Vec<super::working_scope::WorkingScopeClause>,
+    /// Original SELECT origin when this pipeline was desugared by the parser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub select_origin: Option<SourceSpan>,
     /// Ordered pipeline statements.
     pub statements: Vec<PipelineStatement>,
     /// Source span.

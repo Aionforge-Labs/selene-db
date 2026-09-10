@@ -17,6 +17,8 @@ fn addition_statement(terms: usize) -> Statement {
         };
     }
     Statement::Query(QueryPipeline {
+        working_scopes: Vec::new(),
+        select_origin: None,
         statements: vec![PipelineStatement::Return(ReturnClause {
             distinct: false,
             star: false,

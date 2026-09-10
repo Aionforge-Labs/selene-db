@@ -41,7 +41,7 @@ const IMPORTED: &[(&str, &str)] = &[
     ("GG22", "Non-abstract element types"),
     ("GG23", "Abstract element types"),
     ("GP17", "Return statement"),
-    ("GQ01", "Basic query statement"),
+    ("GQ01", "USE graph clause"),
     ("GV65", "Dynamic union types"),
     ("GV70", "Path type"),
     ("GV71", "Open path types"),
@@ -274,12 +274,17 @@ fn imported_endpoint_names_and_orders_are_exact() {
         .iter()
         .filter(|feature| {
             feature.runtime_order >= 234
-                && !["GC01", "G043", "G044", "G045"].contains(&feature.id.as_str())
+                && !["GC01", "G043", "G044", "G045", "GP16"].contains(&feature.id.as_str())
         })
         .map(|feature| {
-            assert_eq!(feature.runtime_support, RuntimeSupport::Referenced);
+            if feature.id.as_str() == "GQ01" {
+                assert_eq!(feature.runtime_support, RuntimeSupport::Unsupported);
+                assert!(!feature.unsupported_rationale.is_empty());
+            } else {
+                assert_eq!(feature.runtime_support, RuntimeSupport::Referenced);
+                assert!(feature.unsupported_rationale.is_empty());
+            }
             assert_eq!(feature.claim_state, ClaimState::Unsupported);
-            assert!(feature.unsupported_rationale.is_empty());
             (feature.id.as_str(), feature.name.as_str())
         })
         .collect::<Vec<_>>();
@@ -289,7 +294,8 @@ fn imported_endpoint_names_and_orders_are_exact() {
             .profile()
             .features
             .iter()
-            .filter(|feature| feature.runtime_order >= 234 && feature.id.as_str() != "G043")
+            .filter(|feature| feature.runtime_order >= 234
+                && !["G043", "GP16"].contains(&feature.id.as_str()))
             .map(|feature| feature.runtime_order)
             .collect::<Vec<_>>(),
         (234..=265).collect::<Vec<_>>()
@@ -331,6 +337,8 @@ fn direct_target_and_surviving_compatibility_order_preserve_m01_pr01() {
     assert_eq!(expected_iso.len(), 136);
     expected_iso.extend(PROMOTED.iter().copied());
     expected_iso.extend(["G043", "G044", "G045"]);
+    // F03-PR01 selects bounded ISO scope admission, not complete runtime support.
+    expected_iso.extend(["GP16", "GQ01"]);
     assert_eq!(
         profile
             .profile()
@@ -560,9 +568,9 @@ fn generated_claim_matrix_pins_counts_blockers_and_boundary() {
         .find(|(path, _)| path == std::path::Path::new("docs/gql/conformance/features.md"))
         .expect("claim matrix")
         .1;
-    assert!(markdown.contains("| Direct selections | 141 |"));
-    assert!(markdown.contains("| Complete Table 10 closure | 144 |"));
-    assert_eq!(markdown.matches("| direct selection | ").count(), 282);
+    assert!(markdown.contains("| Direct selections | 143 |"));
+    assert!(markdown.contains("| Complete Table 10 closure | 146 |"));
+    assert_eq!(markdown.matches("| direct selection | ").count(), 286);
     assert!(markdown.contains("| GC03 | GC04 | transitive dependency | GC03 → GG02 → GC04 |"));
     assert!(markdown.contains("71 direct all-of relationships"));
     assert!(markdown.contains("96 endpoint features"));

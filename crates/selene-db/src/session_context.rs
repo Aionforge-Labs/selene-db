@@ -499,8 +499,9 @@ impl SessionContext {
         &self,
         key: &RequestPlanKey,
         stamp: &DependencyStamp,
+        valid: impl FnOnce(&selene_gql::PreparedCatalogPlan) -> bool,
     ) -> Option<selene_gql::PreparedCatalogPlan> {
-        self.state.borrow_mut().plan_cache.lookup(key, stamp)
+        self.state.borrow_mut().plan_cache.lookup(key, stamp, valid)
     }
 
     pub(crate) fn cache_plan(

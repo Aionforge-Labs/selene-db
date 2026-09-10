@@ -19,6 +19,14 @@ use super::{
 
 pub(super) fn build_query_pipeline(pair: Pair<'_, Rule>) -> Result<QueryPipeline, ParserError> {
     debug_assert_eq!(pair.as_rule(), Rule::query_pipeline);
+    let first = pair
+        .clone()
+        .into_inner()
+        .next()
+        .ok_or_else(ParserError::empty_program)?;
+    if matches!(first.as_rule(), Rule::focused_query | Rule::nested_query) {
+        return super::scopes::build_focused_or_nested(first);
+    }
     build_pipeline_from_children(pair)
 }
 
@@ -36,7 +44,9 @@ pub(super) fn build_call_query_pipeline(
     build_pipeline_from_children(pair)
 }
 
-fn build_pipeline_from_children(pair: Pair<'_, Rule>) -> Result<QueryPipeline, ParserError> {
+pub(super) fn build_pipeline_from_children(
+    pair: Pair<'_, Rule>,
+) -> Result<QueryPipeline, ParserError> {
     let source_span = span(&pair);
     let statements = pair
         .into_inner()
@@ -45,6 +55,7 @@ fn build_pipeline_from_children(pair: Pair<'_, Rule>) -> Result<QueryPipeline, P
     Ok(QueryPipeline {
         statements,
         span: source_span,
+        ..QueryPipeline::default()
     })
 }
 
@@ -160,6 +171,8 @@ pub(super) fn build_select_pipeline(pair: Pair<'_, Rule>) -> Result<QueryPipelin
     Ok(QueryPipeline {
         statements,
         span: source_span,
+        select_origin: Some(source_span),
+        ..QueryPipeline::default()
     })
 }
 

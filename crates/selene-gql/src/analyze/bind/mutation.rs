@@ -16,6 +16,7 @@ pub(crate) fn bind_mutation_pipeline(
     ctx: &mut BindContext,
     pipeline: &MutationPipeline,
 ) -> Result<(), AnalysisError> {
+    ctx.use_working_graph(pipeline.span)?;
     for (statement_index, statement) in pipeline.statements.iter().enumerate() {
         bind_mutation_statement(ctx, statement_index, statement)?;
     }

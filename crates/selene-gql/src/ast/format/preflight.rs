@@ -363,6 +363,8 @@ mod tests {
     fn preflight_rejects_return_star_group_by() {
         let span = SourceSpan::default();
         let err = validate_formattable(&Statement::Query(QueryPipeline {
+            working_scopes: Vec::new(),
+            select_origin: None,
             statements: vec![PipelineStatement::Return(ReturnClause {
                 distinct: false,
                 star: true,
@@ -397,6 +399,8 @@ mod tests {
     fn statement_with_type(ty: GqlType) -> Statement {
         let span = SourceSpan::default();
         Statement::Query(QueryPipeline {
+            working_scopes: Vec::new(),
+            select_origin: None,
             statements: vec![PipelineStatement::Return(ReturnClause {
                 distinct: false,
                 star: false,
@@ -421,6 +425,8 @@ mod tests {
     fn parameter_statement_with_type(ty: GqlType) -> Statement {
         let span = SourceSpan::default();
         Statement::Query(QueryPipeline {
+            working_scopes: Vec::new(),
+            select_origin: None,
             statements: vec![PipelineStatement::Return(ReturnClause {
                 distinct: false,
                 star: false,

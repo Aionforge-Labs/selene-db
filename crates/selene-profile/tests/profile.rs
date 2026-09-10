@@ -44,9 +44,9 @@ fn choice_mut<'a>(value: &'a mut Value, id: &str) -> &'a mut Value {
 fn checked_in_profile_loads_and_preserves_seed_contract() {
     let profile = parse_profile(SOURCE).expect("checked-in profile validates");
     assert_eq!(profile.hash(), PROFILE_HASH);
-    assert_eq!(profile.profile().features.len(), 198);
+    assert_eq!(profile.profile().features.len(), 199);
     assert_eq!(profile.profile().implementation_extensions.len(), 11);
-    assert_eq!(capabilities().len(), 209);
+    assert_eq!(capabilities().len(), 210);
     assert_eq!(
         capabilities()
             .iter()
@@ -59,14 +59,14 @@ fn checked_in_profile_loads_and_preserves_seed_contract() {
             .iter()
             .filter(|record| record.status == CapabilityStatus::Unsupported)
             .count(),
-        36
+        38
     );
     assert_eq!(
         capabilities()
             .iter()
             .filter(|record| record.flagger_status == FlaggerStatus::Accepted)
             .count(),
-        151
+        153
     );
     assert_eq!(annex_b_records().count(), 117);
     assert_eq!(PROFILE_FORMAT_VERSION, 3);
@@ -74,8 +74,8 @@ fn checked_in_profile_loads_and_preserves_seed_contract() {
     assert_eq!(PROFILE_ID, "selene-gql-core-2.0");
     assert_eq!(RELEASE_CLAIMABLE, profile.profile().release_claimable);
     assert!(!profile.profile().release_claimable);
-    assert_eq!(DIRECT_SELECTED_FEATURES.len(), 141);
-    assert_eq!(TARGET_FEATURE_CLOSURE.len(), 144);
+    assert_eq!(DIRECT_SELECTED_FEATURES.len(), 143);
+    assert_eq!(TARGET_FEATURE_CLOSURE.len(), 146);
 
     assert!(
         profile

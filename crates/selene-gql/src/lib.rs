@@ -18,11 +18,11 @@ pub mod runtime;
 mod temporal_parse;
 
 pub use crate::analyze::{
-    AnalysisError, AnalyzedStatement, AnalyzedStatementKind, AnalyzedType, BindingDecl,
-    BindingDeclKind, BindingId, BindingScope, BindingScopeTree, BindingUse, BindingUseKind,
-    ConditionClause, ElementKind, ExpectedType, ExprId, ExprIdLookup, ExprTypeTable,
-    InvalidLabelForm, MutationWriteSet, ParameterUse, ScopeId, ScopeKind, Side, StatementCategory,
-    TypeMismatchContext, WriteKind, WriteSetEntry, analyze,
+    AnalysisError, AnalyzedStatement, AnalyzedType, BindingDecl, BindingDeclKind, BindingId,
+    BindingScope, BindingScopeTree, BindingUse, BindingUseKind, ConditionClause, ElementKind,
+    ExpectedType, ExprId, ExprIdLookup, ExprTypeTable, InvalidLabelForm, MutationWriteSet,
+    ParameterUse, ScopeId, ScopeKind, Side, StatementCategory, TypeMismatchContext, WriteKind,
+    WriteSetEntry, analyze,
 };
 pub use crate::ast::{
     call::{InlineProcedureCall, ProcedureCall, YieldColumn, YieldItem},
@@ -54,6 +54,7 @@ pub use crate::ast::{
     },
     types::{BindingTableType, GqlType, RecordType},
     util::{EmptyVecError, NonEmpty, Vec2OrMore},
+    working_scope::{GraphExpression, WorkingScopeClause},
 };
 pub use crate::catalog_command::DatabaseCatalogCommand;
 pub use crate::diagnostic::DiagnosticReport;

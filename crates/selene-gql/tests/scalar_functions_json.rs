@@ -81,6 +81,8 @@ fn assert_feature_recorded(source: &str) {
 fn typed_parameter_statement(name: selene_core::DbString) -> Statement {
     let span = SourceSpan::new(0, 4);
     Statement::Query(QueryPipeline {
+        working_scopes: Vec::new(),
+        select_origin: None,
         statements: vec![PipelineStatement::Return(ReturnClause {
             distinct: false,
             star: false,

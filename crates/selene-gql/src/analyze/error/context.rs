@@ -83,11 +83,14 @@ pub enum TypeMismatchContext {
     },
     /// `LIMIT` / `OFFSET` parameter type declaration cannot produce an amount.
     LimitAmount,
+    /// A graph expression resolved to a non-graph binding.
+    GraphExpression,
 }
 
 impl std::fmt::Display for TypeMismatchContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::GraphExpression => f.write_str("graph expression"),
             Self::BinaryArithmetic { op, side } => {
                 write!(f, "{side} operand of arithmetic operator {op:?}")
             }

@@ -16,6 +16,8 @@ fn db_string(value: &str) -> DbString {
 fn typed_parameter_statement(name: DbString, declared_type: GqlType) -> Statement {
     let span = SourceSpan::new(0, 4);
     Statement::Query(QueryPipeline {
+        working_scopes: Vec::new(),
+        select_origin: None,
         statements: vec![PipelineStatement::Return(ReturnClause {
             distinct: false,
             star: false,
@@ -148,6 +150,8 @@ fn typed_parameter_runtime_rejects_mismatched_closed_record_fields() {
     let field = db_string("count");
     let name = db_string("rec");
     let statement = Statement::Query(QueryPipeline {
+        working_scopes: Vec::new(),
+        select_origin: None,
         statements: vec![PipelineStatement::Return(ReturnClause {
             distinct: false,
             star: false,
@@ -203,6 +207,8 @@ fn typed_parameter_runtime_accepts_matching_closed_record_fields() {
     let field = db_string("count");
     let name = db_string("rec");
     let statement = Statement::Query(QueryPipeline {
+        working_scopes: Vec::new(),
+        select_origin: None,
         statements: vec![PipelineStatement::Return(ReturnClause {
             distinct: false,
             star: false,

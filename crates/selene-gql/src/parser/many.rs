@@ -265,6 +265,28 @@ fn rebase_statement_spans(statement: &mut Statement, offset: usize) {
 
 fn rebase_query_pipeline(pipeline: &mut QueryPipeline, offset: usize) {
     rebase_span(&mut pipeline.span, offset);
+    if let Some(origin) = &mut pipeline.select_origin {
+        rebase_span(origin, offset);
+    }
+    for clause in &mut pipeline.working_scopes {
+        match clause {
+            crate::WorkingScopeClause::Nested(span) => rebase_span(span, offset),
+            crate::WorkingScopeClause::At { reference, span } => {
+                rebase_span(span, offset);
+                rebase_span(&mut reference.span, offset);
+            }
+            crate::WorkingScopeClause::Use { expression, span } => {
+                rebase_span(span, offset);
+                match expression {
+                    crate::GraphExpression::Reference { reference, .. } => {
+                        rebase_span(&mut reference.span, offset)
+                    }
+                    crate::GraphExpression::Variable { span, .. }
+                    | crate::GraphExpression::Current { span, .. } => rebase_span(span, offset),
+                }
+            }
+        }
+    }
     for statement in &mut pipeline.statements {
         match statement {
             crate::PipelineStatement::Match(value) => rebase_match(value, offset),

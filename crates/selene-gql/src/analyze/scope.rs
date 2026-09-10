@@ -39,6 +39,12 @@ pub enum ScopeKind {
     Subquery,
     /// Diagnostic scope for a `CASE` branch.
     CaseBranch,
+    /// Lexical AT working-schema clause.
+    WorkingSchema,
+    /// Lexical USE working-graph clause.
+    WorkingGraph,
+    /// Brace-delimited query specification origin.
+    QuerySpecification,
 }
 
 impl ScopeKind {

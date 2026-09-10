@@ -475,7 +475,7 @@ impl Session<'_> {
         if policy == SourceExecutionPolicy::PrepareCatalogSession {
             return Ok(CatalogSessionOutput::Prepared {
                 plan,
-                parameter_uses: analyzed.parameters.into(),
+                parameter_uses: analyzed.parameters.clone().into(),
             });
         }
         execute_source_plan(&plan, self, registry, policy)
@@ -499,7 +499,7 @@ impl Session<'_> {
     /// (see `selene_graph::WriteTxn::commit`); index *selection* depends only
     /// on which indexes exist, so a structural access path stays correct for
     /// any data mutation within an epoch.
-    fn optimize_plan(&self, lowered: ExecutionPlan) -> ExecutionPlan {
+    pub(super) fn optimize_plan(&self, lowered: ExecutionPlan) -> ExecutionPlan {
         if !self.index_selection {
             return lowered;
         }
@@ -567,7 +567,7 @@ pub(super) fn database_catalog_command(plan: &ExecutionPlan) -> Option<&Database
     }
 }
 
-fn ensure_source_policy(
+pub(super) fn ensure_source_policy(
     plan: &ExecutionPlan,
     policy: SourceExecutionPolicy,
 ) -> Result<(), ExecutorError> {

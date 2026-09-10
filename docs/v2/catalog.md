@@ -236,6 +236,17 @@ failed: later non-controls and `COMMIT` return `25N02` (commit also completes
 rollback), while `ROLLBACK` succeeds. GT03 multi-graph transactions remain
 unsupported.
 
+F03-PR01 adds bounded lexical read scopes: `AT /schema` at a query-procedure
+head and `USE graph` in focused queries, including same-graph linear nesting.
+Query references resolve against the innermost working schema, not necessarily
+the persistent session schema. An implicit request executes on the graph chosen
+by that resolution; an unused ambient default is not treated as a data access.
+An explicit transaction retains its pinned selected-graph snapshot. A second
+graph identity fails with `25G04` through ordinary statement-abort handling.
+Lexical scopes never execute `SESSION SET` or rewrite persistent selection.
+The [F03-PR01 boundary](roadmap/Milestone-F03-PR-01.md) lists unsupported forms;
+this is not complete GQ01/GP16 or GT03 support.
+
 Selected maintenance procedures remain rejected before lower live-maintenance
 execution with `42N01`. This is an explicit deferred detached-maintenance
 boundary, not a Part 2 bridge: maintenance does not auto-start, and an attempt

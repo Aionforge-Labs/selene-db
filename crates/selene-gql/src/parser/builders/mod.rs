@@ -9,6 +9,7 @@ pub(super) mod let_stmt;
 pub(super) mod mutation;
 pub(super) mod pattern;
 pub(super) mod query;
+pub(super) mod scopes;
 pub(super) mod session;
 pub(super) mod transaction;
 
@@ -32,6 +33,7 @@ pub(crate) fn build_statement(program_pair: Pair<'_, Rule>) -> Result<Statement,
             build_statement(child)
         }
         Rule::query_pipeline => query::build_query_pipeline(program_pair).map(Statement::Query),
+        Rule::schema_query => scopes::build_specification(program_pair).map(Statement::Query),
         Rule::call_query_pipeline => {
             query::build_call_query_pipeline(program_pair).map(Statement::Query)
         }
@@ -43,6 +45,7 @@ pub(crate) fn build_statement(program_pair: Pair<'_, Rule>) -> Result<Statement,
             Ok(Statement::Query(QueryPipeline {
                 statements: vec![statement],
                 span,
+                ..QueryPipeline::default()
             }))
         }
         Rule::select_stmt => query::build_select_pipeline(program_pair).map(Statement::Query),
@@ -86,6 +89,13 @@ fn build_composite(pair: Pair<'_, Rule>) -> Result<Statement, ParserError> {
             .next()
             .ok_or_else(ParserError::empty_program)
             .and_then(|pair| query::build_query_pipeline(pair))?;
+        if focused(&first) != focused(&pipeline) {
+            return Err(ParserError::syntax(
+                "focused and ambient query arms cannot be mixed (ISO 14.2 SR4)",
+                pipeline.span,
+                None,
+            ));
+        }
         rest.push((op, pipeline));
     }
 
@@ -107,10 +117,27 @@ fn build_chained(pair: Pair<'_, Rule>) -> Result<Statement, ParserError> {
     if blocks.is_empty() {
         return Err(ParserError::empty_program());
     }
+    if blocks
+        .iter()
+        .any(|block| focused(block) != focused(&blocks[0]))
+    {
+        return Err(ParserError::syntax(
+            "focused and ambient NEXT statements cannot be mixed (ISO 9.2 SR5)",
+            source_span,
+            None,
+        ));
+    }
     Ok(Statement::Chained {
         blocks,
         span: source_span,
     })
+}
+
+fn focused(query: &QueryPipeline) -> bool {
+    matches!(
+        query.working_scopes.first(),
+        Some(crate::WorkingScopeClause::Use { .. })
+    )
 }
 
 fn build_set_op(pair: Pair<'_, Rule>) -> Result<SetOp, ParserError> {
@@ -143,9 +170,7 @@ fn contains_word(text: &str, word: &str) -> bool {
         .any(|part| part == word)
 }
 
-use query::{
-    build_exists_match_body_pipeline, build_filter, build_query_pipeline, build_return_clause,
-};
+use query::{build_exists_match_body_pipeline, build_filter, build_return_clause};
 
 pub(super) fn first_child(pair: Pair<'_, Rule>) -> Result<Pair<'_, Rule>, ParserError> {
     let pair_span = span(&pair);

@@ -18,10 +18,10 @@
 
 // -- Top-level ------------------------------------------------------
 
-gql_program = { SOI ~ (explain_stmt | catalog_statement_chain | ddl_statement | transaction_control | session_command | call_query_pipeline | call_stmt | select_stmt | mutation_pipeline | composite_query | chained_query | query_pipeline) ~ EOI }
+gql_program = { SOI ~ (explain_stmt | catalog_statement_chain | ddl_statement | transaction_control | session_command | schema_query | call_query_pipeline | call_stmt | select_stmt | mutation_pipeline | composite_query | chained_query | query_pipeline) ~ EOI }
 
 explain_stmt = { explain_kw ~ explainable_statement }
-explainable_statement = { ddl_statement | call_query_pipeline | call_stmt | select_stmt | mutation_pipeline | composite_query | chained_query | query_pipeline }
+explainable_statement = { ddl_statement | schema_query | call_query_pipeline | call_stmt | select_stmt | mutation_pipeline | composite_query | chained_query | query_pipeline }
 explain_kw = @{ ^"EXPLAIN" ~ !(LETTER | NUMBER | "_") }
 
 // -- DDL statements -----------------------------------------------
@@ -386,7 +386,24 @@ select_from = { from_kw ~ (match_stmt | ident) }
 
 // -- Query pipeline -------------------------------------------------
 
-query_pipeline     = { pipeline_statement+ }
+// Bounded ISO §§9.1–9.2, 14.3, 16.1–16.2 hosts. AT is only a procedure-head
+// clause; USE is never an arbitrary statement wrapper. Composition inside a
+// nested specification is recognized for an explicit unsupported diagnostic.
+schema_query = { at_schema_clause ~ (composite_query | chained_query | query_pipeline) }
+query_specification = { at_schema_clause? ~ (composite_query | chained_query | query_pipeline) }
+nested_query = { "{" ~ query_specification ~ "}" }
+focused_query = { use_graph_clause ~ (nested_query | mutation_pipeline | focused_query_body) }
+focused_query_body = { simple_scope_query_statement* ~ return_stmt ~ sorting_stmt? ~ offset_stmt? ~ limit_stmt? }
+simple_scope_query_statement = _{ match_stmt | let_stmt | for_stmt | filter_stmt | sorting_stmt | offset_stmt | limit_stmt | call_stmt }
+at_schema_clause = { at_scope_kw ~ absolute_catalog_path }
+use_graph_clause = { use_scope_kw ~ scope_graph_expression }
+scope_graph_expression = { session_current_graph | scope_graph_variable | scope_relative_graph | graph_reference | typed_param_ref }
+scope_graph_variable = { variable_scope_kw ~ ident }
+scope_relative_graph = ${ "./" ~ ident }
+at_scope_kw = @{ ^"AT" ~ !(LETTER | NUMBER | "_") }
+use_scope_kw = @{ ^"USE" ~ !(LETTER | NUMBER | "_") }
+variable_scope_kw = @{ ^"VARIABLE" ~ !(LETTER | NUMBER | "_") }
+query_pipeline     = { focused_query | nested_query | pipeline_statement+ }
 call_query_pipeline = { call_stmt ~ post_call_pipeline_statement ~ pipeline_statement* }
 pipeline_statement = { match_stmt | let_stmt | for_stmt | with_stmt | filter_stmt | sorting_stmt | offset_stmt | limit_stmt | return_stmt | call_stmt }
 post_call_pipeline_statement = { match_stmt | let_stmt | for_stmt | with_stmt | filter_stmt | sorting_stmt | offset_stmt | limit_stmt | return_stmt | call_stmt }
@@ -711,7 +728,7 @@ group_by_item      = { expr }
 
 call_stmt      = { optional_modifier? ~ call_kw ~ (call_subquery | call_procedure) }
 call_kw = @{ ^"CALL" ~ !(LETTER | NUMBER | "_") }
-call_subquery  = { variable_scope_clause? ~ "{" ~ query_pipeline ~ "}" ~ yield_clause? }
+call_subquery  = { variable_scope_clause? ~ "{" ~ query_specification ~ "}" ~ yield_clause? }
 variable_scope_clause = { "(" ~ (ident ~ ("," ~ ident)*)? ~ ")" }
 call_procedure = { qualified_name ~ "(" ~ procedure_arg_list? ~ ")" ~ yield_clause? }
 qualified_name = { ident ~ ("." ~ prop_ident)* }
@@ -906,7 +923,7 @@ exists_body          = {
 }
 exists_match_body    = { match_stmt ~ exists_query_tail* }
 exists_query_tail    = { let_stmt | for_stmt | with_stmt | filter_stmt | sorting_stmt | offset_stmt | limit_stmt | return_stmt | call_stmt }
-value_subquery_expr  = { ^"VALUE" ~ "{" ~ query_pipeline ~ "}" }
+value_subquery_expr  = { ^"VALUE" ~ "{" ~ query_specification ~ "}" }
 all_different_expr   = { ^"ALL_DIFFERENT" ~ "(" ~ expr ~ ("," ~ expr)+ ~ ")" }
 same_expr            = { ^"SAME" ~ "(" ~ expr ~ ("," ~ expr)+ ~ ")" }
 property_exists_expr = { ^"PROPERTY_EXISTS" ~ "(" ~ expr ~ "," ~ string_lit ~ ")" }

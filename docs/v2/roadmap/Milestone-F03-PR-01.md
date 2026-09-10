@@ -30,12 +30,12 @@ Paths are navigation, not a closed edit inventory. New modules are implementatio
 2. Deliver a real vertical slice for selected-graph MATCH/FILTER/RETURN and parameter resolution, with catalog-aware references and deterministic semantic snapshots. Do not merge only a directory of unused node enums.
 3. Implement distinct namespaces for parameters, binding variables, graph variables and catalog objects. Resolve working schema/graph selection lexically, preserving the already-implemented persistent session controls.
 4. Carry source origins through desugaring and record precise dependencies on catalog/profile/procedure generations. Data snapshot changes and schema changes are different invalidation causes.
-5. Extend the same resolver to the remaining supported statement families without changing grammar. A single explicit semantic-to-current-plan adapter may remain until F03-PR04; there is no hidden fallback to analysis of mutable syntax.
+5. Extend the same immutable resolver to the remaining supported statement families. The owner-authorized bounded ISO grammar admission below supersedes the original no-grammar-change restriction. A single explicit semantic-to-current-plan adapter may remain until F03-PR04; there is no hidden fallback to analysis of mutable syntax.
 
 ## Acceptance and concrete regression cases
 
 - [ ] Request parameters override same-named session defaults as specified, while binding variables remain a distinct namespace.
-- [ ] Nested USE GRAPH/AT SCHEMA scope does not leak into unrelated lexical scopes or permanently rewrite session state.
+- [ ] Nested ISO `USE <graph expression>` / `AT <schema reference>` scope does not leak into unrelated lexical scopes or permanently rewrite session state. Positive nesting uses one graph identity; selecting a second graph fails with `25G04` in implicit and explicit transactions.
 - [ ] Duplicate declarations, unresolved names, wrong object kinds and out-of-scope references carry useful original spans.
 - [ ] The same source and semantic environment produce stable snapshots independent of hash iteration order.
 - [ ] Catalog object replacement invalidates dependent analysis, while a safe independent lookup does not rely on stale numeric identity.
@@ -56,6 +56,32 @@ No parser-generator replacement, new GQL spellings, full physical planner, publi
 ## Bridge/deletion boundary
 
 One semantic-to-current-plan adapter is allowed with deletion at F03-PR04. Future types/effects are completed in F03-PR02/03; unsupported incomplete families remain explicit failures, not guessed semantics.
+
+### Owner-resolved scope corrections (F03-PR01)
+
+- Admit the bounded existing ISO productions needed for the working-query slice:
+  `USE <graph expression>` in focused read queries and `AT <schema reference>`
+  at read-procedure heads. These are not `USE GRAPH` or `AT SCHEMA` wrappers.
+- Preserve unsupported GT03: one graph per implicit or explicit transaction.
+  Successful different-graph nesting is **not** required here. A second graph
+  produces `25G04` through normal request/transaction failure handling. An unused
+  ambient session default does not count as a query data access; an explicit
+  transaction retains its existing pinned graph authority.
+- The bounded executable forms are absolute/working-schema-relative catalog
+  graph names, explicit `./name`, current-graph expressions, same-graph focused
+  queries, single-linear-body braces, CALL bodies, and VALUE bodies. Absolute
+  AT references resolve lexically and restore at sibling boundaries. Graph-valued
+  bindings/parameters, focused mutations, multiple focused parts, and composed
+  AT/nested bodies remain unsupported. GQ01's corrected name is “USE graph
+  clause”; GQ01/GP16 have selected parser admission but remain complete-capability
+  unsupported and unclaimed in the generated profile.
+- `analyze/ast.rs` owns shared immutable source separately from the semantic
+  scope/expression trees, resolved applications, and catalog dependencies.
+  `plan/lowering.rs` and its children are the **single current-plan adapter**:
+  they borrow unchanged syntax payloads required by the existing row plan and
+  consume semantic identities/types/defaults. F03-PR04 deletes this mixed-payload
+  adapter and its expression-shape lookup. No mutable-source analysis fallback
+  is retained. Defensive corruption helpers exist only under private `cfg(test)`.
 
 ## Standards and reviewer focus
 

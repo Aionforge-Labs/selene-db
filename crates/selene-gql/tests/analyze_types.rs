@@ -2,10 +2,10 @@
 
 use selene_core::db_string;
 use selene_gql::{
-    AnalysisError, AnalyzedStatement, AnalyzedStatementKind, AnalyzedType, BinaryOp,
-    ConditionClause, EmptyProcedureRegistry, ExpectedType, GqlStatus, GqlType, IsCheckKind,
-    Literal, PipelineStatement, QueryPipeline, ReturnClause, ReturnItem, Side, SourceSpan,
-    Statement, TypeMismatchContext, ValueExpr, analyze, parse,
+    AnalysisError, AnalyzedStatement, AnalyzedType, BinaryOp, ConditionClause,
+    EmptyProcedureRegistry, ExpectedType, GqlStatus, GqlType, IsCheckKind, Literal,
+    PipelineStatement, QueryPipeline, ReturnClause, ReturnItem, Side, SourceSpan, Statement,
+    TypeMismatchContext, ValueExpr, analyze, parse,
 };
 
 fn analyze_one(source: &str) -> Result<AnalyzedStatement, AnalysisError> {
@@ -22,7 +22,7 @@ fn type_mismatch(source: &str) -> (TypeMismatchContext, SourceSpan) {
 }
 
 fn projection_type(analyzed: &AnalyzedStatement, name: &str) -> AnalyzedType {
-    let AnalyzedStatementKind::Query(query) = &analyzed.statement else {
+    let Statement::Query(query) = analyzed.source() else {
         panic!("expected query statement");
     };
     let item = query
@@ -47,7 +47,7 @@ fn projection_type(analyzed: &AnalyzedStatement, name: &str) -> AnalyzedType {
 }
 
 fn return_items(analyzed: &AnalyzedStatement) -> &[ReturnItem] {
-    let AnalyzedStatementKind::Query(query) = &analyzed.statement else {
+    let Statement::Query(query) = analyzed.source() else {
         panic!("expected query statement");
     };
     query

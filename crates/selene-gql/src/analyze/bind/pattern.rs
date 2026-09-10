@@ -17,6 +17,7 @@ pub(crate) fn bind_match_clause(
     ctx: &mut BindContext,
     clause: &MatchClause,
 ) -> Result<(), AnalysisError> {
+    ctx.use_working_graph(clause.span)?;
     validate_unbounded_legality(clause)?;
     for pattern in &clause.patterns {
         bind_graph_pattern(ctx, pattern, PatternBindingMode::Match)?;

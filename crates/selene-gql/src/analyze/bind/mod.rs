@@ -7,12 +7,12 @@ pub(crate) mod element_ref;
 pub(crate) mod expr;
 pub(crate) mod expr_depth;
 pub(crate) mod mutation;
-pub(crate) mod parameter_inheritance;
 pub(crate) mod parameters;
 pub(crate) mod pattern;
 pub(crate) mod query;
 pub(crate) mod session;
 pub(crate) mod transaction;
+mod working_scope;
 
 use selene_core::DbString;
 
@@ -33,13 +33,16 @@ pub(crate) const ANALYZER_MAX_DEPTH: u32 = 256;
 
 /// Analyze one statement with the binding pass.
 pub(crate) fn bind_statement(
-    mut stmt: Statement,
+    stmt: std::sync::Arc<Statement>,
     registry: &dyn ProcedureRegistry,
+    environment: Option<super::catalog::CatalogEnvironment>,
 ) -> Result<AnalyzedStatement, AnalysisError> {
-    let parameters = parameters::apply_statement_parameter_declarations(&mut stmt)?;
+    let parameters = parameters::collect_statement_parameters(&stmt)?;
     let mut ctx = BindContext::new(stmt.span(), registry);
+    ctx.catalog = environment.map(super::catalog::CatalogResolver::new);
+    ctx.expr_ids.set_parameter_types(&parameters);
     let bind_result = (|| -> Result<(), AnalysisError> {
-        match &mut stmt {
+        match stmt.as_ref() {
             Statement::Query(pipeline) => query::bind_query_pipeline(&mut ctx, pipeline)?,
             Statement::Composite { first, rest, .. } => {
                 ctx.with_child_scope(ScopeKind::Projection, first.span, true, |ctx| {
@@ -80,8 +83,11 @@ pub(crate) fn bind_statement(
             | Statement::Rollback { span } => {
                 transaction::bind_transaction_control(&mut ctx, *span)
             }
-            Statement::SessionSetValue { span, .. }
-            | Statement::SessionSetTimeZone { span, .. }
+            Statement::SessionSetValue { value, span, .. } => {
+                expr::bind_value_expr(&mut ctx, value)?;
+                session::bind_session_command(&mut ctx, *span);
+            }
+            Statement::SessionSetTimeZone { span, .. }
             | Statement::SessionSetGraph { span, .. }
             | Statement::SessionReset { span, .. }
             | Statement::SessionClose { span } => session::bind_session_command(&mut ctx, *span),
@@ -94,10 +100,7 @@ pub(crate) fn bind_statement(
     Ok(ctx.finish(stmt, parameters, category, write_set))
 }
 
-fn bind_explain_inner(
-    ctx: &mut BindContext<'_>,
-    inner: &mut Statement,
-) -> Result<(), AnalysisError> {
+fn bind_explain_inner(ctx: &mut BindContext<'_>, inner: &Statement) -> Result<(), AnalysisError> {
     match inner {
         Statement::Query(pipeline) => query::bind_query_pipeline(ctx, pipeline),
         Statement::Composite { first, rest, .. } => {
@@ -171,6 +174,9 @@ pub(crate) struct BindContext<'ctx> {
     write_set: MutationWriteSet,
     registry: &'ctx dyn ProcedureRegistry,
     expr_depth: u32,
+    calls: Vec<super::semantic::ResolvedCall>,
+    expressions: Vec<super::semantic::SemanticExpression>,
+    catalog: Option<super::catalog::CatalogResolver>,
 }
 
 impl<'ctx> BindContext<'ctx> {
@@ -186,25 +192,37 @@ impl<'ctx> BindContext<'ctx> {
             write_set: MutationWriteSet::default(),
             registry,
             expr_depth: 0,
+            calls: Vec::new(),
+            expressions: Vec::new(),
+            catalog: None,
         }
     }
 
     fn finish(
         self,
-        stmt: Statement,
+        stmt: std::sync::Arc<Statement>,
         parameters: Vec<crate::analyze::ParameterUse>,
         category: StatementCategory,
         write_set: Option<MutationWriteSet>,
     ) -> AnalyzedStatement {
+        let span = stmt.span();
         AnalyzedStatement::new(
             stmt,
-            self.scopes,
-            self.references,
-            parameters,
-            self.expr_types,
-            self.expr_ids,
-            category,
-            write_set,
+            super::ast::SemanticTree {
+                scopes: self.scopes,
+                references: self.references,
+                parameters,
+                expr_types: self.expr_types,
+                expr_ids: self.expr_ids,
+                expressions: self.expressions,
+                span,
+                category,
+                write_set,
+                calls: self.calls,
+                catalog: self.catalog.map(super::catalog::CatalogResolver::finish),
+                profile: selene_profile::current_profile_identity(),
+                procedure_registry_version: self.registry.registry_version(),
+            },
         )
     }
 
@@ -378,6 +396,19 @@ impl<'ctx> BindContext<'ctx> {
 
     pub(crate) fn allocate_expr(&mut self, expr: &ValueExpr, ty: AnalyzedType) -> ExprId {
         let id = self.expr_types.push(ty);
+        let binding = if let ValueExpr::Variable { name, .. } = expr {
+            self.scopes.resolve(self.current, name.clone())
+        } else {
+            None
+        };
+        self.expressions
+            .push(super::semantic::SemanticExpression::new(
+                id,
+                expr,
+                self.current,
+                binding,
+                &self.expr_ids,
+            ));
         self.expr_ids.insert(expr, id);
         id
     }

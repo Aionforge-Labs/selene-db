@@ -1,8 +1,8 @@
 //! Analyzer checks for graph-element predicate operand shapes.
 
 use selene_gql::{
-    AnalysisError, AnalyzedStatement, AnalyzedStatementKind, AnalyzedType, EmptyProcedureRegistry,
-    GqlType, PipelineStatement, ProcedureOutputColumn, ValueExpr, analyze, parse,
+    AnalysisError, AnalyzedStatement, AnalyzedType, EmptyProcedureRegistry, GqlType,
+    PipelineStatement, ProcedureOutputColumn, Statement, ValueExpr, analyze, parse,
 };
 use selene_testing::MockProcedureRegistry;
 
@@ -35,7 +35,7 @@ fn graph_ref_registry() -> MockProcedureRegistry {
 }
 
 fn projection_type(analyzed: &AnalyzedStatement, name: &str) -> AnalyzedType {
-    let AnalyzedStatementKind::Query(query) = &analyzed.statement else {
+    let Statement::Query(query) = analyzed.source() else {
         panic!("expected query statement");
     };
     let item = query

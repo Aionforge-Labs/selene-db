@@ -94,6 +94,17 @@ pub(crate) fn statement(statement: &Statement, uses: &mut Vec<FeatureUse>) {
 }
 
 pub(crate) fn query_pipeline(pipeline: &QueryPipeline, uses: &mut Vec<FeatureUse>) {
+    for clause in &pipeline.working_scopes {
+        match clause {
+            crate::WorkingScopeClause::At { span, .. } => {
+                record_feature(uses, FeatureId::GP16, *span)
+            }
+            crate::WorkingScopeClause::Use { span, .. } => {
+                record_feature(uses, FeatureId::GQ01, *span)
+            }
+            crate::WorkingScopeClause::Nested(_) => {}
+        }
+    }
     let mut projection_names = None;
     for (index, statement) in pipeline.statements.iter().enumerate() {
         if index > 0 && matches!(statement, PipelineStatement::Match(_)) {

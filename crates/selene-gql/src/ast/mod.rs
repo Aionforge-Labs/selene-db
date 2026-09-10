@@ -14,6 +14,7 @@ pub mod statement;
 pub mod types;
 pub mod util;
 mod walk;
+pub mod working_scope;
 
 pub use call::{InlineProcedureCall, ProcedureCall, YieldColumn, YieldItem};
 pub use catalog_ref::{CatalogObjectReference, CatalogPathSegment, IdentifierForm};
@@ -52,3 +53,4 @@ pub use types::{
     CharacterStringTypeForm, GqlType, RecordType,
 };
 pub use util::{EmptyVecError, NonEmpty, Vec2OrMore};
+pub use working_scope::{GraphExpression, WorkingScopeClause};

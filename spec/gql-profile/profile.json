@@ -76,6 +76,8 @@
     "GP02",
     "GP03",
     "GP04",
+    "GP16",
+    "GQ01",
     "GQ02",
     "GQ03",
     "GQ04",
@@ -148,6 +150,14 @@
   "release_claimable": false,
   "clause_anchors": [
     {
+      "id": "CLAUSE-16.1",
+      "citation": "ISO/IEC 39075:2024, Clause 16.1, working schema scope"
+    },
+    {
+      "id": "CLAUSE-16.2",
+      "citation": "ISO/IEC 39075:2024, Clause 16.2, working graph scope"
+    },
+    {
       "id": "CLAUSE-16.7",
       "citation": "ISO/IEC 39075:2024, Clause 16.7, SR14 and CR11–13; Clause 22.3, GR3f2C–D"
     },
@@ -190,6 +200,10 @@
     {
       "id": "CLAUSE-24.7-TABLE10-P521",
       "citation": "ISO/IEC 39075:2024, Clause 24.7, Table 10, p. 521"
+    },
+    {
+      "id": "CLAUSE-9.2",
+      "citation": "ISO/IEC 39075:2024, Clause 9.2, procedure-body AT schema host"
     },
     {
       "id": "CLAUSE-ANNEX-B",
@@ -1402,6 +1416,20 @@
       "applicability": "APP-ALWAYS"
     },
     {
+      "id": "GP16",
+      "name": "AT schema clause",
+      "runtime_support": "unsupported",
+      "claim_state": "unsupported",
+      "unsupported_rationale": "bounded absolute schema references at read-procedure heads execute; other schema-reference forms, composed nested bodies, and non-query procedure bodies remain unsupported",
+      "runtime_order": 266,
+      "clause_anchors": [
+        "CLAUSE-16.1",
+        "CLAUSE-9.2"
+      ],
+      "evidence": [],
+      "applicability": "APP-ALWAYS"
+    },
+    {
       "id": "GP17",
       "name": "Return statement",
       "runtime_support": "referenced",
@@ -1425,12 +1453,14 @@
     },
     {
       "id": "GQ01",
-      "name": "Basic query statement",
-      "runtime_support": "referenced",
+      "name": "USE graph clause",
+      "runtime_support": "unsupported",
       "claim_state": "unsupported",
-      "unsupported_rationale": "",
+      "unsupported_rationale": "bounded catalog-backed focused read queries and single-linear-body nesting execute; focused mutations, multiple focused parts, and graph-valued bindings remain unsupported; GT03 remains unsupported",
       "runtime_order": 261,
-      "clause_anchors": [],
+      "clause_anchors": [
+        "CLAUSE-16.2"
+      ],
       "evidence": [],
       "applicability": "APP-ALWAYS"
     },
@@ -2572,7 +2602,9 @@
     "GG20",
     "GG21",
     "GV66",
-    "GV67"
+    "GV67",
+    "GQ01",
+    "GP16"
   ],
   "implications": [
     {

@@ -1,13 +1,14 @@
 //! Generic analyzed-corpus harness helpers.
 //!
-//! This module intentionally does not depend on `selene-gql`; callers pass a
-//! parse/analyze closure so `selene-gql` can use the helper from integration
-//! tests without creating a Cargo dependency cycle.
+//! The generic entry point accepts a parse/analyze closure. The GQL convenience
+//! entry point receives an explicit catalog fixture so lexical-scope cases use
+//! the same resolver as production without constructing a database.
 
 use std::{error::Error, fmt, path::PathBuf};
 
 use crate::corpus::{CorpusCase, CorpusError, CorpusKind, Expectation, load_default_corpus};
-use selene_gql::{AnalyzedStatement, ProcedureRegistry, analyze, parse};
+use selene_gql::analyze::{analyze_catalog, catalog::CatalogEnvironment};
+use selene_gql::{AnalyzedStatement, ProcedureRegistry, parse};
 
 /// One positive corpus case paired with caller-produced analysis output.
 #[derive(Clone, Debug)]
@@ -89,7 +90,7 @@ pub fn load_default_analyzed_corpus<T, E>(
         .collect()
 }
 
-/// Load the default positive corpus and analyze it with a procedure registry.
+/// Load the positive corpus using explicit procedure and catalog environments.
 ///
 /// # Errors
 ///
@@ -97,9 +98,10 @@ pub fn load_default_analyzed_corpus<T, E>(
 /// positive case fails, or if semantic analysis rejects a positive case.
 pub fn load_default_analyzed_gql_corpus(
     registry: &dyn ProcedureRegistry,
+    environment: CatalogEnvironment,
 ) -> Result<Vec<AnalyzedCorpusCase<AnalyzedStatement>>, AnalyzedCorpusError<String>> {
     load_default_analyzed_corpus(|source| {
         let statement = parse(source).map_err(|err| err.to_string())?;
-        analyze(statement, registry, None).map_err(|err| err.to_string())
+        analyze_catalog(statement, registry, environment.clone()).map_err(|err| err.to_string())
     })
 }

@@ -1,0 +1,4 @@
+// corpus: positive
+// feature: GQ01
+// expects: parse-ok
+USE /memory/main MATCH (n) RETURN n

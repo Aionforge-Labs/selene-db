@@ -83,6 +83,26 @@ fn scrub_statement(statement: &mut Statement) {
 
 fn scrub_query_pipeline(pipeline: &mut QueryPipeline) {
     pipeline.span = SourceSpan::default();
+    pipeline.select_origin = None;
+    for scope in &mut pipeline.working_scopes {
+        match scope {
+            crate::WorkingScopeClause::At { reference, span } => {
+                reference.span = SourceSpan::default();
+                *span = SourceSpan::default();
+            }
+            crate::WorkingScopeClause::Use { expression, span } => {
+                *span = SourceSpan::default();
+                match expression {
+                    crate::GraphExpression::Reference { reference, .. } => {
+                        reference.span = SourceSpan::default()
+                    }
+                    crate::GraphExpression::Variable { span, .. }
+                    | crate::GraphExpression::Current { span, .. } => *span = SourceSpan::default(),
+                }
+            }
+            crate::WorkingScopeClause::Nested(span) => *span = SourceSpan::default(),
+        }
+    }
     for statement in &mut pipeline.statements {
         match statement {
             crate::PipelineStatement::Match(value) => scrub_match(value),
