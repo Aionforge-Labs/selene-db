@@ -1,7 +1,7 @@
 # Format-2 logical transactions (F02-PR03)
 
-This is a pure codec and isolated replay model, **not durable commit or facade
-open/reopen**. F02-PR04 owns append/sync/publication/acknowledgment; PR05 owns
+This document specifies the pure codec and isolated replay model, **not facade
+open/reopen**. [F02-PR04](durable-commit.md) connects private append/sync/publication/acknowledgment; PR05 owns
 checkpoint, runtime reconstruction and durable facade open; PR06 owns lifecycle;
 PR07 owns the long recovery campaign. GT03 remains unsupported. Codec tests with
 multiple graph payloads do not enable multigraph GQL transactions.
@@ -12,7 +12,7 @@ multiple graph payloads do not enable multigraph GQL transactions.
 |---|---|
 | Core `StoredValue` | Explicit semantic tags below; no `Value` enum serde/rkyv |
 | `CatalogSnapshot::logical_changes_from`, `CatalogLogicalRecords` | Dependency-ordered Created/Replaced/Dropped descriptors and all nine allocation domains |
-| Facade `DatabaseDraft` | Pure `logical_transaction` preparation, retaining every prepared statement's logical changes; no live codec invocation yet |
+| Facade `DatabaseDraft` | Pure `logical_transaction` preparation retaining every statement's changes; invoked before private durable append with bounded semantic replay preflight |
 | Named `graph_types` | Stable catalog type ID plus complete named logical definition, or explicit removal |
 | Every touched graph | Graph ID, before/after generation, next node/edge IDs, resulting logical schema, actual backing index identities, ordered data operations |
 | Graph schema/defaults | Named node/edge declarations, named endpoints, recursive property types/defaults, nullability, validation mode, immutability and uniqueness |

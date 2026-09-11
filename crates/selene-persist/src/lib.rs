@@ -20,6 +20,7 @@ pub mod entry_header;
 pub mod error;
 pub mod file_header;
 pub mod logical_frame;
+pub mod logical_stream;
 pub mod manifest;
 mod manifest_lock;
 mod payload;

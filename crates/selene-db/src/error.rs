@@ -2,6 +2,9 @@
 
 use std::{error::Error as StdError, fmt};
 
+mod durable;
+pub use durable::*;
+
 /// Stable category for a facade failure.
 ///
 /// Catalog categories carry a fixed GQLSTATUS (see [`ErrorKind::gqlstatus`])
@@ -62,6 +65,12 @@ pub enum ErrorKind {
     /// A facade mutation was published, but acknowledgement failed. The
     /// complete mutation may be visible and must not be retried blindly.
     MutationIndeterminate,
+    /// Durable commit was proved absent, including synchronized rollback (`40N01`).
+    DurableCommitCanceled,
+    /// Durability is uncertain, without implying live publication (`40003`).
+    DurableCommitUncertain,
+    /// The complete record synchronized but acknowledgment failed (`40003`).
+    DurableCommitUnacknowledged,
     /// A second transaction was requested while one was active (`25G01`).
     ActiveTransaction,
     /// Catalog and data modification classes were mixed (`25G02`).
@@ -118,6 +127,8 @@ impl GqlStatus {
     pub const STATEMENT_COMPLETION_UNKNOWN: Self = Self(*b"40003");
     /// Optimistic transaction conflict rolled the transaction back.
     pub const TRANSACTION_ROLLBACK: Self = Self(*b"40000");
+    /// Local durable commit prevented and the whole transaction canceled (IE008).
+    pub const DURABLE_COMMIT_ROLLBACK: Self = Self(*b"40N01");
     /// A transaction is already active.
     pub const ACTIVE_TRANSACTION: Self = Self(*b"25G01");
     /// Catalog/data transaction mixing is unsupported.
@@ -176,6 +187,7 @@ impl fmt::Display for GqlStatus {
 /// no lower error type appears in the facade signature.
 #[derive(Debug)]
 pub struct Error {
+    durable: Option<Box<DurableCommitOutcome>>,
     kind: ErrorKind,
     status: Option<GqlStatus>,
     message: String,
@@ -200,6 +212,10 @@ impl ErrorKind {
             Self::CatalogRestrictViolation => Some(GqlStatus::DEPENDENT_OBJECT_ERROR),
             Self::MutationCanceled => Some(GqlStatus::OPERATION_CANCELLED),
             Self::MutationIndeterminate => Some(GqlStatus::STATEMENT_COMPLETION_UNKNOWN),
+            Self::DurableCommitCanceled => Some(GqlStatus::DURABLE_COMMIT_ROLLBACK),
+            Self::DurableCommitUncertain | Self::DurableCommitUnacknowledged => {
+                Some(GqlStatus::STATEMENT_COMPLETION_UNKNOWN)
+            }
             Self::ActiveTransaction => Some(GqlStatus::ACTIVE_TRANSACTION),
             Self::TransactionMixing => Some(GqlStatus::INVALID_TRANSACTION_MIXING),
             Self::ReadOnlyTransaction => Some(GqlStatus::READ_ONLY_TRANSACTION),
@@ -236,6 +252,7 @@ impl Error {
             status: kind.gqlstatus(),
             message: message.into(),
             source: None,
+            durable: None,
         }
     }
 
@@ -249,6 +266,7 @@ impl Error {
             status: kind.gqlstatus(),
             message: message.into(),
             source: Some(Box::new(source)),
+            durable: None,
         }
     }
 
@@ -266,6 +284,7 @@ impl Error {
             status: Some(status),
             message: source.to_string(),
             source: Some(Box::new(source)),
+            durable: None,
         }
     }
 
@@ -275,6 +294,7 @@ impl Error {
             status: None,
             message: "the GQL engine returned an outcome unknown to this facade".to_owned(),
             source: None,
+            durable: None,
         }
     }
 
@@ -339,6 +359,7 @@ impl Error {
             status: Some(GqlStatus::FEATURE_NOT_SUPPORTED),
             message: format!("OR REPLACE is not supported for {kind} creation"),
             source: None,
+            durable: None,
         }
     }
 
@@ -606,6 +627,7 @@ impl Error {
             message: "selected maintenance is outside the deferred detached-maintenance boundary"
                 .to_owned(),
             source: None,
+            durable: None,
         }
     }
 

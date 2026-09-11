@@ -8,4 +8,5 @@ use selene_persist::control::{CurrentSelector, EmptyManifest};
 fuzz_target!(|bytes: &[u8]| {
     let _ = CurrentSelector::decode(bytes);
     let _ = EmptyManifest::decode(bytes);
+    let _ = selene_persist::logical_stream::validate_manifest(bytes);
 });

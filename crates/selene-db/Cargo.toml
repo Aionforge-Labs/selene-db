@@ -12,6 +12,10 @@ description = "Stable embedded database facade for the selene-db GQL engine."
 [lib]
 name = "selene_db"
 
+[features]
+# Scripted benchmark-only access to private commit construction, not durable open.
+test-harness = []
+
 [dependencies]
 arc-swap.workspace = true
 jiff.workspace = true
@@ -21,15 +25,23 @@ selene-core = { package = "selene-db-core", path = "../selene-core", version = "
 selene-graph = { package = "selene-db-graph", path = "../selene-graph", version = "2.0.0-alpha.1" }
 selene-gql = { package = "selene-db-gql", path = "../selene-gql", version = "2.0.0-alpha.1" }
 selene-profile.workspace = true
+selene-persist.workspace = true
 
 [dev-dependencies]
+selene-persist = { workspace = true, features = ["test-harness"] }
 criterion.workspace = true
 mimalloc.workspace = true
 proptest.workspace = true
+tempfile.workspace = true
 
 [[bench]]
 name = "catalog_lifecycle"
 harness = false
+
+[[bench]]
+name = "durable_commit"
+harness = false
+required-features = ["test-harness"]
 
 [lints]
 workspace = true

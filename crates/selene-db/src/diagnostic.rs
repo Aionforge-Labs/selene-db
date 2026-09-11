@@ -112,8 +112,18 @@ impl DiagnosticBundle {
         let status = error
             .gqlstatus()
             .unwrap_or(GqlStatus::IMPLEMENTATION_DEFINED_ERROR);
+        let mut causes = Vec::new();
+        let mut source = std::error::Error::source(error);
+        while let Some(cause) = source {
+            if let Some(cause) = cause.downcast_ref::<Error>()
+                && let Some(status) = cause.gqlstatus()
+            {
+                causes.push(GqlStatusObject::new(status, cause.message()));
+            }
+            source = cause.source();
+        }
         Self::new(
-            GqlStatusObject::new(status, error.message()),
+            GqlStatusObject::new(status, error.message()).with_causes(causes),
             additional
                 .iter()
                 .map(GqlStatusObject::from_engine)

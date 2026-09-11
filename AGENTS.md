@@ -145,8 +145,11 @@ locators. Initial path wrappers anchor once; callers may also supply an already
 open directory file. Native filesystem mode supports Linux/macOS only and
 returns typed unsupported-platform errors elsewhere. See
 [`docs/store-directory-control.md`](docs/store-directory-control.md) for file,
-lock, platform, and empty-control guarantees. The facade remains in-memory;
-empty format-2 control is not durable query/catalog support.
+lock, platform, and empty-control guarantees. Public facade construction remains
+in-memory. F02-PR04 privately composes one format-2 WAL with the existing authority;
+see [durable commit](docs/v2/durable-commit.md) for separate typed outcomes, named-type
+admission and preflight costs. Empty control is not durable query/catalog support;
+public durable create/open and checkpoint remain F02-PR05.
 
 Persistence-directory readers participate in the same epoch lock domain as
 rotation and prune. Low-level recovery and online backup-style reads hold

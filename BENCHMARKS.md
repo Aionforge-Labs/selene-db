@@ -15,6 +15,65 @@ iai-callgrind instruction-count layer — it needs valgrind, which never runs on
 the macOS dev machine, so it was dropped rather than left as a perpetually-TBD
 placeholder.
 
+## Format-2 durable commit — durable_commit
+
+F02-PR04, **2026-09-11**, native Apple M5 / 16 GiB / macOS 27.0 (26A5425a),
+Rust 1.97.1 aarch64-apple-darwin, optimized Cargo bench profile, mimalloc.
+New measurements, not a refresh of the historical north-star above:
+
+```bash
+scripts/run-benches.sh --bench durable_commit --compile-only
+scripts/run-benches.sh --profile quick --bench durable_commit
+```
+
+Nine Criterion rows: 10 samples, 100 ms warm-up, 500 ms requested measurement.
+Several rows extended to 0.55–1.00 seconds; stream/16 reported three outliers.
+No competing agent build/benchmark was launched. Gnuplot was unavailable; the
+normal Plotters fallback produced reports under `target/criterion/format2_commit/`.
+
+| Durable row | Criterion estimate / interval (ms) | Actual ack p50 / p95 / p99 (ms) | Ack/s | WAL bytes |
+|---|---:|---:|---:|---:|
+| Stream group 1 | 3.802 / 3.650–3.939 | 3.861 / 4.185 / 4.273 | 279.4 | 116,736 |
+| Stream group 4 | 3.630 / 3.514–3.701 | 3.831 / 4.172 / 4.242 | 1,141.8 | 466,944 |
+| Stream group 16 | 3.771 / 3.693–3.843 | 3.907 / 4.212 / 4.250 | 4,419.6 | 1,867,776 |
+| Stream group 32 | 3.973 / 3.919–4.011 | 3.978 / 4.352 / 5.050 | 8,294.1 | 3,735,552 |
+| Facade unbound, initial 64 | 4.369 / 4.079–4.638 | 4.912 / 5.192 / 5.923 | 215.8 | 99,722 |
+| Facade named, initial 64 | 3.923 / 3.744–4.102 | 4.862 / 5.232 / 5.840 | 219.2 | 110,968 |
+| Facade unbound, initial 1024 | 4.485 / 4.323–4.653 | 4.949 / 5.993 / 7.233 | 204.3 | 99,142 |
+| Facade named, initial 1024 | 4.593 / 4.291–4.887 | 4.971 / 5.772 / 6.012 | 206.9 | 110,380 |
+
+Tail measurements are a separate **256-group / 256-facade-request** sample, not
+percentiles of Criterion medians. Nearest-rank percentiles use each actual
+acknowledgment duration. Stream group members are admitted simultaneously, so
+each receives its group's elapsed time, not elapsed/group-size; groups contain
+256-byte numbered bodies, 456 bytes framed, with RAW compression. Sample counts
+are 256, 1024, 4096 and 8192 member acknowledgments. The callback tracks visible
+members and a fresh retained reader checks every numbered body and sequence.
+Observed stream min/max spans were 1.823–10.328, 1.912–4.255, 1.958–4.321 and
+2.779–10.049 ms respectively. This is a closed-loop controlled workload, not an
+arrival-rate/queueing model or a power-loss experiment.
+
+Facade timing includes real GQL insert staging, named admission where applicable,
+encoding, bounded semantic replay preflight, native append/sync, one outer store
+and acknowledgment. A `test-harness` scripted function privately constructs the
+database and exports no durable database/session. Each transaction inserts one
+property-free Base node. Criterion resets fixtures after at most 64 requests;
+the tail sample grows from initial 64/1024 to 320/1280 nodes. Setup and final
+live-count/semantic real-file replay assertions are outside individual timings.
+Facade WAL bytes include setup; compression explains why the larger initial
+insertion can yield a smaller total than the tiny RAW setup. Min/max spans for
+the four facade tail rows were 2.846–7.716, 2.739–6.179, 3.018–8.252 and
+3.701–6.032 ms. Their ordering/variance is **not** evidence that named validation
+is faster. Named admission scans affected graphs; preflight retains derived
+logical state and applies the bounded replay validator before append. No O(delta),
+exact allocation/RSS, SLO or comparative product-speedup claim is made.
+
+The ninth row, **buffered_prepare_only_no_append_or_ack**, measured 457.21 ns
+(456.92–457.48 ns) to prepare a single 256-byte RAW body. It asserts zero written
+records. It is **not durable latency or acknowledged throughput**. Likewise,
+controlled stream groups are not a facade group-commit implementation: the
+facade remains synchronous, single-writer and single-logical-transaction per call.
+
 ## Format-2 logical transaction codec — logical_wal
 
 F02-PR03 measurement, **2026-09-10**, Apple M5 / 16 GiB / native macOS 27.0

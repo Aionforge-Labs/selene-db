@@ -249,6 +249,25 @@ pub(crate) struct DatabaseInner {
 }
 
 impl DatabaseInner {
+    #[allow(
+        dead_code,
+        reason = "private production seam; public durable create/open belongs to F02-PR05"
+    )]
+    pub(crate) fn with_wal(
+        config: DatabaseConfig,
+        wal: selene_persist::logical_stream::LogicalWal,
+    ) -> Result<Self> {
+        let mut inner = Self::new(config);
+        let seed = CatalogReadSnapshot {
+            state: inner.state.load_full(),
+        }
+        .logical_catalog()?;
+        let replay = selene_graph::logical_transaction::ReplayState::seed(seed)
+            .map_err(Error::invalid_graph_type_source)?;
+        inner.transactions = MutationCoordinator::with_wal(wal, replay);
+        Ok(inner)
+    }
+
     fn new(config: DatabaseConfig) -> Self {
         let procedures = BuiltinProcedureRegistry::new();
         let mut high_water = HighWaterMarks::initial();

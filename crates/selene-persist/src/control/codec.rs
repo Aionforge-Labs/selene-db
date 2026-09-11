@@ -17,7 +17,7 @@ struct Envelope<'a> {
     digest: [u8; 32],
 }
 
-fn encode<T: Serialize>(value: &T, magic: [u8; 4]) -> PersistResult<Vec<u8>> {
+pub(super) fn encode<T: Serialize>(value: &T, magic: [u8; 4]) -> PersistResult<Vec<u8>> {
     let body = postcard::to_stdvec(value).map_err(|_| ControlError::Envelope("encode"))?;
     let envelope = Envelope {
         magic,
@@ -33,7 +33,7 @@ fn encode<T: Serialize>(value: &T, magic: [u8; 4]) -> PersistResult<Vec<u8>> {
     Ok(bytes)
 }
 
-fn decode<T: DeserializeOwned>(bytes: &[u8], magic: [u8; 4]) -> PersistResult<T> {
+pub(super) fn decode<T: DeserializeOwned>(bytes: &[u8], magic: [u8; 4]) -> PersistResult<T> {
     if bytes.len() > MAX_CONTROL_BYTES {
         return Err(ControlError::TooLarge.into());
     }

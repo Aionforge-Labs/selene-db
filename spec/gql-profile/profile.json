@@ -4687,18 +4687,23 @@
     },
     {
       "id": "IE008",
-      "topic": "Additional warning conditions",
+      "topic": "Commit-preventing errors with proven transaction rollback",
       "decision": {
-        "disposition": "pending",
-        "owner": "M05-PR06",
-        "reason": "Unified compiler diagnostics will define any implementation-added warnings."
+        "disposition": "selected",
+        "value": {
+          "type": "identifier",
+          "value": "40N01 for local commit failure with proven cancellation"
+        },
+        "rationale": "Section 8.4 GR1(b) requires class 40 with an implementation-defined subclass when commitment is prevented and the entire transaction is canceled. Semantic statement errors retain their own status; failed cleanup is not proven rollback.",
+        "stability": "stable",
+        "visibility": "embedder"
       },
       "runtime_order": 70,
       "clause_anchors": [
         "CLAUSE-ANNEX-B"
       ],
       "evidence": [
-        "EVID-PLAN-M05-PR06"
+        "EVID-TRANSACTIONS"
       ],
       "applicability": "APP-ALWAYS"
     },
@@ -5418,7 +5423,7 @@
           "type": "identifier",
           "value": "typed RequestOutcome success or error with Rust Result compatibility adapter"
         },
-        "rationale": "Request execution returns a typed RequestOutcome covering validation through runtime; Session::execute and transaction methods retain typed Result compatibility.",
+        "rationale": "RequestOutcome/Result retain diagnostics. MutationIndeterminate means in-memory publication. DurableCommitOutcome reports phase, visibility and recovery: 40N01 for proven cancellation; 40003 for unresolved local termination or synchronized-but-unacknowledged completion. No 08007 or automatic retry.",
         "stability": "stable",
         "visibility": "embedder"
       },

@@ -31,6 +31,8 @@ rustix.workspace = true
 
 [features]
 metrics = ["selene-core/metrics"]
+# Explicit fault-injection seam for cross-crate phase tests; never enabled by default.
+test-harness = []
 
 [dev-dependencies]
 criterion.workspace = true
