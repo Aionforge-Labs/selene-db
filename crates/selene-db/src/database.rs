@@ -134,7 +134,8 @@ impl Database {
         Catalog::new(Arc::clone(&self.inner))
     }
 
-    /// Borrow the configuration used to build this database.
+    /// Borrow the common memory-engine builder settings. These do not select
+    /// durable I/O; use [`Self::open_mode`] for this instance's actual storage mode.
     #[must_use]
     pub fn config(&self) -> &DatabaseConfig {
         &self.inner.config
@@ -238,6 +239,7 @@ pub(crate) struct DatabaseInner {
     pub(crate) transactions: MutationCoordinator,
     next_transaction_id: AtomicU64,
     pub(crate) procedures: BuiltinProcedureRegistry,
+    pub(crate) recovery: Option<crate::RecoveryInfo>,
     #[cfg(test)]
     pub(crate) failure: Mutex<Option<crate::catalog::FailurePoint>>,
     #[cfg(test)]
@@ -246,6 +248,11 @@ pub(crate) struct DatabaseInner {
     pub(crate) before_implicit_commit: Mutex<Option<ImplicitCommitPause>>,
     #[cfg(test)]
     pub(crate) replacement_graph_constructions: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(crate) checkpoint_pause:
+        Mutex<Option<(std::sync::mpsc::Sender<u64>, std::sync::mpsc::Receiver<()>)>>,
+    #[cfg(test)]
+    pub(crate) mutation_blocked: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
 impl DatabaseInner {
@@ -268,7 +275,7 @@ impl DatabaseInner {
         Ok(inner)
     }
 
-    fn new(config: DatabaseConfig) -> Self {
+    pub(crate) fn new(config: DatabaseConfig) -> Self {
         let procedures = BuiltinProcedureRegistry::new();
         let mut high_water = HighWaterMarks::initial();
         high_water.procedure = procedures.declarations().count() as u64;
@@ -285,6 +292,7 @@ impl DatabaseInner {
             transactions: MutationCoordinator::new(),
             next_transaction_id: AtomicU64::new(1),
             procedures,
+            recovery: None,
             #[cfg(test)]
             failure: Mutex::new(None),
             #[cfg(test)]
@@ -293,6 +301,10 @@ impl DatabaseInner {
             before_implicit_commit: Mutex::new(None),
             #[cfg(test)]
             replacement_graph_constructions: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            checkpoint_pause: Mutex::new(None),
+            #[cfg(test)]
+            mutation_blocked: Mutex::new(None),
         }
     }
 

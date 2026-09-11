@@ -44,8 +44,7 @@ pub struct DurableCommitPosition {
     pub offset: u64,
 }
 
-/// Failure evidence returned by the private format-2 commit path. Public durable
-/// create/open is not provided by this slice. `MutationIndeterminate` remains
+/// Failure evidence returned by the format-2 commit path. `MutationIndeterminate` remains
 /// the separate, already-published in-memory outcome.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DurableCommitOutcome {

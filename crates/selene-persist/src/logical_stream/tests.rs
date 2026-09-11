@@ -1,6 +1,9 @@
 use super::*;
 use crate::control::{CompatibilityIdentity, EmptyStoreControl};
 
+#[path = "checkpoint_tests.rs"]
+mod checkpoint;
+
 fn identity() -> CompatibilityIdentity {
     CompatibilityIdentity::new("commit-test", 1, [7; 32], [17, 0, 0], "binary", 1).unwrap()
 }

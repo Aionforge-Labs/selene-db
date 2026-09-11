@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// Exact complete-record boundary. Offsets are meaningful only within this identity.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Position {
     /// Durable store identity.
     pub store: StoreId,

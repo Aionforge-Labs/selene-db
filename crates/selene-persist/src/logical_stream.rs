@@ -1,4 +1,5 @@
-//! One format-2 WAL authority. No legacy writer, provider voters, rotation or reopen.
+//! One format-2 WAL authority with immutable checkpoint selection and non-destructive reopen.
+//! No legacy writer, provider voters, rotation or prune.
 //!
 //! Groups are caller-bounded synchronous units, not a background queue. File and
 //! directory sync requests rely on the supported native filesystem/device contract;
@@ -16,10 +17,14 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
 };
 
+mod checkpoint;
 mod outcome;
 mod reader;
+mod reopen;
+pub use checkpoint::CheckpointInfo;
 pub use outcome::*;
 pub use reader::LogicalReader;
+pub use reopen::ReopeningWal;
 
 /// Maximum controlled synchronous group size; there is no unbounded admission queue.
 pub const MAX_GROUP: usize = 32;
@@ -55,6 +60,7 @@ pub struct LogicalWal {
     file: File,
     progress: Progress,
     fenced: bool,
+    selected: crate::control::logical::Selected,
     #[cfg(any(test, feature = "test-harness"))]
     fault: Option<Fault>,
 }
@@ -63,7 +69,8 @@ impl LogicalWal {
     /// Consume empty control and select a real unsealed WAL segment. Does not
     /// construct a facade, reopen a database, or select empty control as data.
     pub fn create(control: EmptyStoreControl) -> Result<Self, StreamError> {
-        let (authority, file, context) = crate::control::logical::create(control)?;
+        let (authority, file, selected) = crate::control::logical::create(control)?;
+        let context = selected.context;
         let initial = Position {
             store: context.store,
             epoch: context.epoch,
@@ -82,6 +89,7 @@ impl LogicalWal {
                 acknowledged: None,
             },
             fenced: false,
+            selected,
             #[cfg(any(test, feature = "test-harness"))]
             fault: None,
         })

@@ -253,12 +253,24 @@ pub struct StoreWriter {
 }
 
 impl StoreWriter {
+    /// Acquire an existing permanent writer entry without creating any artifact.
+    /// Used by non-destructive format-2 open; a missing lock is an error, not repair.
+    pub fn acquire_existing(directory: &StoreDirectory) -> PersistResult<Self> {
+        Self::lock_file(
+            directory,
+            directory.open_write(Path::new(STORE_LOCK_FILE_NAME))?,
+        )
+    }
     /// Acquire nonblocking writer ownership for this physical directory.
     ///
     /// # Errors
     /// Returns [`PersistError::WriterLockHeld`] on contention, or native errors.
     pub fn acquire(directory: &StoreDirectory) -> PersistResult<Self> {
         let file = directory.open_or_create(Path::new(STORE_LOCK_FILE_NAME))?;
+        Self::lock_file(directory, file)
+    }
+
+    fn lock_file(directory: &StoreDirectory, file: File) -> PersistResult<Self> {
         match file.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => return Err(PersistError::WriterLockHeld),

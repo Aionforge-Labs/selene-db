@@ -142,7 +142,8 @@ impl Encoder {
         }
         self.names(&diff.removed)
     }
-    fn graph_change(&mut self, change: &Change) -> CodecResult<()> {
+    /// Encode one semantic data operation using the enclosing image/transaction budget.
+    pub fn graph_change(&mut self, change: &Change) -> CodecResult<()> {
         match change {
             Change::NodeCreated {
                 id,

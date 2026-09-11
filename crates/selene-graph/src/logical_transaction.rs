@@ -1,8 +1,8 @@
 //! Complete format-2 logical transaction composition and isolated replay.
 //!
-//! This is not a live publication authority, durable commit, or facade reopen.
-//! Candidates expose semantic inspection only; PR05 owns rebuilding accelerators
-//! and admitting runtime native bindings before any recovered database is opened.
+//! This is not a live publication authority or durable commit. Isolated replay
+//! candidates require eager runtime materialization and the facade's frozen native
+//! declaration admission before a recovered database is opened.
 
 use crate::SeleneGraph;
 use selene_catalog::{
@@ -20,10 +20,14 @@ use std::{
     sync::Arc,
 };
 
+mod checkpoint;
 mod named_types;
 mod producer;
+mod runtime;
 mod schema;
+pub use checkpoint::encode_checkpoint;
 pub use producer::graph_delta;
+pub use runtime::ReconstructedRuntime;
 pub use schema::definition;
 
 /// Failure of complete frame verification or semantic transaction validation.

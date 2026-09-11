@@ -5,6 +5,8 @@ use selene_catalog::{
 };
 use selene_core::{Change, EdgeDirectionality, EdgeId, LabelSet, PropertyMap, db_string};
 
+#[path = "checkpoint_tests.rs"]
+mod checkpoint;
 #[path = "golden_tests.rs"]
 mod golden;
 #[path = "named_type_tests.rs"]

@@ -1,8 +1,8 @@
 # Format-2 commit authority (F02-PR04)
 
-This slice connects **private** durable construction to the existing facade
+F02-PR04 connected **private** durable construction to the existing facade
 publication funnel. The public `DatabaseBuilder` remains infallible and in-memory.
-F02-PR05 owns public create/open/checkpoint and query-ready reconstruction; no
+[F02-PR05](checkpoint-reopen.md) adds public create/open/checkpoint and query-ready reconstruction; no
 ephemeral database is advertised as a durable preview. Real-file tests replay
 semantic transactions over the known, compatibility-bound initial catalog seed,
 not a recovered query-ready database. The `test-harness` feature exposes only a
@@ -100,7 +100,8 @@ publishes a new immutable **SLLM** envelope selecting
 as a data manifest. This one-segment manifest contains the existing bounded store,
 epoch, generation, compatibility and parent metadata plus a fresh 32-byte segment
 anchor. CURRENT binds its exact digest; that selected manifest digest is the
-initial frame lineage anchor. SLTXN2 frames never supply their own expected context.
+initial frame lineage anchor. PR05's subsequent SLDM selections retain this origin
+independently of each new selected manifest digest. SLTXN2 frames never supply their own expected context.
 
 The empty segment is synchronized before control selection. Bootstrap errors do
 not guess or adopt orphans. Empty-only control rejects data/mixed artifacts.
