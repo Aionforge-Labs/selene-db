@@ -3,7 +3,8 @@
 This is the first public fallible durable facade, not durable-preview, GA,
 conformance or power-loss qualification. `release_claimable=false` and GT03 remain
 unchanged. [PR04](durable-commit.md) owns the separate transaction outcomes;
-PR06 owns rotation/retention, PR07 the comprehensive recovery campaign, and PR08
+[PR06](rotation-retention.md) adds explicit checkpoint-coupled rotation/retention,
+PR07 owns the comprehensive recovery campaign, and PR08
 legacy deletion and the durable-preview contract.
 
 ## Recorded owner decisions
@@ -81,10 +82,12 @@ boundary mismatch is rejected before publication. Encoding failures release the
 reservation without touching authoritative bytes. Publication/I/O failures fence
 the owner; no later append or checkpoint is admitted on it.
 
-Open takes existing LOCK before one shared epoch, and retains that epoch through
+The PR05 implementation took existing LOCK before one shared epoch, retaining it through
 snapshot use, complete WAL verification, isolated semantic replay, native
 declaration validation and runtime reconstruction. It does not nest an exclusive
-upgrade. Only after all validation does it open the retained segment for appends,
+upgrade. PR06 replaces the through-use epoch with an owned artifact lease
+established under the selection epoch; legacy guard users are unchanged. Only
+after all validation does the engine open the retained segment for appends,
 seek to the verified complete cursor and explicitly sync that complete tail.
 Previously complete but unacknowledged records are recovered, never called
 canceled or overwritten. RecoveryInfo reports work and positions, not historical
@@ -143,11 +146,14 @@ newest files are never chosen. Old snapshots, manifests and the entire WAL remai
 retained. Repeated checkpoints therefore grow storage. An orphan collision is not
 silently adopted or overwritten; cleanup/retention policy remains PR06.
 
-Open deliberately verifies **the entire retained WAL prefix from its original
+For preserved SLLM/SLDM selections, open verifies **the entire retained WAL prefix from its original
 anchor**, checks the checkpoint's exact sequence/offset/digest placement, then
 semantically applies only complete suffix records. This is not prefix-free or
 constant-cost recovery. Any damaged prefix, bad suffix or incomplete unsealed
 tail fails without truncation, repair, or publication of a healthy-looking prefix.
+An explicit successful PR06 checkpoint selects SLRM with a new declared segment
+base; that selection no longer depends on the snapshot-covered old prefix. Open
+never performs this transition implicitly.
 
 ## Bounds and reconstruction
 

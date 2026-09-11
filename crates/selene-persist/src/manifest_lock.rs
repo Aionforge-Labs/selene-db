@@ -1,12 +1,15 @@
 //! Per-directory serialization for MANIFEST epoch reads and mutations.
 //!
 //! Cooperating handles and processes on a supported local filesystem use one
-//! persistent lock-file inode. Recovery and backup-style readers take a shared
+//! persistent lock-file inode. Legacy recovery and backup-style readers take a shared
 //! lock while rotation, prune, and direct MANIFEST publication take an
 //! exclusive lock. A writer's lock order is store `LOCK`, lifetime `wal.log`,
 //! then this epoch lock, then any replacement-WAL temporary lock. All lock-file
 //! opens are relative to the retained StoreDirectory handle; renaming the real
 //! directory or its ancestors cannot redirect an acquired capability.
+//! Format-2 LogicalReader holds this epoch only through selection and registration
+//! of a shared immutable-manifest artifact lock. That separate owned lease retains
+//! all selected names through consumption without excluding newer publication.
 
 use std::fs::File;
 use std::path::Path;
@@ -23,11 +26,11 @@ use crate::{PersistError, PersistResult, StoreDirectory, StoreWriter};
 /// while the named file remains in place for later operations.
 pub const MANIFEST_LOCK_FILE_NAME: &str = "MANIFEST.lock";
 
-/// Shared RAII guard for a stable persistence-directory epoch.
+/// Shared RAII guard for a stable persistence-directory epoch (legacy through-use contract).
 ///
 /// Acquire this guard before reading the authoritative MANIFEST or selecting
 /// snapshot/WAL/archive paths, and retain it until every selected artifact has
-/// been opened or copied. Multiple readers may coexist. Rotation, prune, and
+/// been consumed or copied. Multiple readers may coexist. Rotation, prune, and
 /// direct MANIFEST publication block until all read guards are dropped, while
 /// ordinary append-only WAL commits continue.
 ///

@@ -1,5 +1,6 @@
 //! One format-2 WAL authority with immutable checkpoint selection and non-destructive reopen.
-//! No legacy writer, provider voters, rotation or prune.
+//! Checkpoint-coupled rotation and explicit lease-aware prune use the same writer
+//! and epoch proof. No legacy writer or additional provider votes.
 //!
 //! Groups are caller-bounded synchronous units, not a background queue. File and
 //! directory sync requests rely on the supported native filesystem/device contract;
@@ -19,10 +20,13 @@ use std::{
 
 mod checkpoint;
 mod outcome;
+mod prune;
 mod reader;
+mod reader_snapshot;
 mod reopen;
 pub use checkpoint::CheckpointInfo;
 pub use outcome::*;
+pub use prune::*;
 pub use reader::LogicalReader;
 pub use reopen::ReopeningWal;
 
@@ -34,6 +38,14 @@ pub const MAX_GROUP: usize = 32;
 /// directory epoch must still be validated by [`LogicalReader::open`].
 pub fn validate_manifest(bytes: &[u8]) -> crate::PersistResult<()> {
     crate::control::logical::validate(bytes)
+}
+
+/// Valid rotating-control payload seed for integrity-repaired decoder fuzzing.
+/// Pure bytes only; this grants no filesystem selection or mutation authority.
+#[cfg(feature = "test-harness")]
+#[doc(hidden)]
+pub fn rotating_manifest_fuzz_payload() -> Vec<u8> {
+    crate::control::logical::fuzz_payload()
 }
 
 /// Fully encoded bounded group, tied to its exact synchronized base and segment.
@@ -54,7 +66,7 @@ impl Publication<'_> {
     }
 }
 
-/// Retained synchronous single-segment format-2 stream owner.
+/// Retained synchronous format-2 stream owner; rotation replaces the active segment.
 pub struct LogicalWal {
     authority: StoreWriter,
     file: File,

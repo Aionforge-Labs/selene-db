@@ -1,17 +1,46 @@
-//! Single unsealed format-2 segment selection. No rotation or snapshot lifecycle.
+//! Explicit single-segment and rotating format-2 selection dispatch.
 
 use super::*;
 use crate::logical_frame::Context;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 mod checkpoint;
+mod prune;
+mod rotation;
 pub(crate) use checkpoint::{SnapshotDescriptor, publish_checkpoint};
+pub(crate) use prune::prune;
+#[cfg(feature = "test-harness")]
+pub(crate) use rotation::fuzz_payload;
+pub(crate) use rotation::publish_rotation;
 
+#[derive(Clone)]
 pub(crate) struct Selected {
     pub metadata: EmptyManifest,
     pub selector: CurrentSelector,
     pub context: Context,
     pub checkpoint: Option<SnapshotDescriptor>,
+    pub rotation: Option<rotation::Rotation>,
+}
+
+impl Selected {
+    pub(crate) fn manifest_name(&self) -> &str {
+        &self.selector.manifest_name
+    }
+    pub(crate) fn log_name(&self) -> String {
+        self.rotation
+            .as_ref()
+            .map_or_else(|| LOG_NAME.into(), |r| rotation::log_name(r.base.segment))
+    }
+    pub(crate) fn base(&self) -> crate::logical_stream::Position {
+        crate::logical_stream::Position {
+            store: self.context.store,
+            epoch: self.context.epoch,
+            segment: self.context.segment,
+            sequence: self.context.sequence - 1,
+            offset: 0,
+            digest: self.context.previous,
+        }
+    }
 }
 
 pub(crate) const LOG_NAME: &str = "WAL-00000000000000000001.logical";
@@ -33,6 +62,9 @@ fn decode(bytes: &[u8]) -> PersistResult<LogicalManifest> {
 }
 
 pub(crate) fn validate(bytes: &[u8]) -> PersistResult<()> {
+    if bytes.starts_with(b"SLRM") {
+        return rotation::validate(bytes);
+    }
     if bytes.starts_with(b"SLDM") {
         return checkpoint::validate(bytes);
     }
@@ -82,6 +114,7 @@ pub(crate) fn create(control: EmptyStoreControl) -> PersistResult<(StoreWriter, 
             selector,
             context,
             checkpoint: None,
+            rotation: None,
         },
     ))
 }
@@ -93,7 +126,7 @@ pub(crate) fn select(
     expected.validate()?;
     let dir = guard.directory();
     let selected = select_in(dir, expected)?;
-    Ok((dir.open_read(LOG_NAME)?, selected))
+    Ok((dir.open_read(selected.log_name())?, selected))
 }
 
 pub(crate) fn select_in(
@@ -116,6 +149,7 @@ pub(crate) fn select_in(
         ) && !is_manifest_name(text)
             && !is_stage_name(text)
             && !checkpoint::is_snapshot_name(text)
+            && !rotation::is_log_name(text)
             && !text
                 .strip_prefix(".snapshot.")
                 .and_then(|s| s.strip_suffix(".tmp"))
@@ -125,12 +159,23 @@ pub(crate) fn select_in(
         }
     }
     let selector = CurrentSelector::decode(&read_bounded(dir, Path::new(CURRENT_FILE_NAME))?)?;
+    select_root(dir, selector, expected)
+}
+
+fn select_root(
+    dir: &StoreDirectory,
+    selector: CurrentSelector,
+    expected: &CompatibilityIdentity,
+) -> PersistResult<Selected> {
     let bytes = read_bounded(dir, Path::new(&selector.manifest_name))?;
     if *blake3::hash(&bytes).as_bytes() != selector.digest {
         return Err(ControlError::Checksum.into());
     }
     if bytes.starts_with(b"SLDM") {
         return checkpoint::decode_selected(&bytes, selector, expected);
+    }
+    if bytes.starts_with(b"SLRM") {
+        return rotation::decode_selected(&bytes, selector, expected);
     }
     let manifest = decode(&bytes)?;
     if manifest.metadata.store_id != selector.store_id
@@ -148,6 +193,7 @@ pub(crate) fn select_in(
         metadata: manifest.metadata,
         selector,
         checkpoint: None,
+        rotation: None,
     })
 }
 

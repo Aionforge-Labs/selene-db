@@ -28,7 +28,7 @@ pub(super) fn is_regular(_: &File) -> std::io::Result<bool> {
 pub(super) fn metadata(_: &File, _: &Path) -> PersistResult<Option<EntryMetadata>> {
     unsupported()
 }
-pub(super) fn entries(_: &File) -> PersistResult<Vec<OsString>> {
+pub(super) fn entries(_: &File, _: usize) -> PersistResult<Vec<OsString>> {
     unsupported()
 }
 pub(super) fn rename(_: &File, _: &Path, _: &Path) -> PersistResult<()> {

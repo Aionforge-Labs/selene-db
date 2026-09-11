@@ -60,9 +60,13 @@ fuzz_target!(|input: &[u8]| {
         body[i] ^= edit[2];
     }
     // Production framing deliberately repairs integrity to reach every semantic section.
-    let framed = logical_snapshot::encode(&body, context(), limits.bytes).unwrap();
+    let mut expected = context();
+    if input.first().is_some_and(|b| b & 1 != 0) {
+        expected.boundary.offset = 0; // nonzero global sequence at a rotated base
+    }
+    let framed = logical_snapshot::encode(&body, expected, limits.bytes).unwrap();
     let digest = framed[framed.len() - 32..].try_into().unwrap();
-    let body = logical_snapshot::decode(&framed, context(), &digest, limits.bytes).unwrap();
+    let body = logical_snapshot::decode(&framed, expected, &digest, limits.bytes).unwrap();
     if let Ok(state) = ReplayState::from_checkpoint(body, limits) {
         // Native callable admission is outside this graph-only pure decoder harness.
         let _ = state.materialize(limits);

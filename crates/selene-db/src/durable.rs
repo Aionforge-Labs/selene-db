@@ -21,7 +21,9 @@ use std::{
 };
 
 mod error;
+mod retention;
 pub use error::{StorageError, StorageErrorKind, StoragePhase};
+pub use retention::{PruneOutcome, RetainedArtifact, RetentionReason, StorageArtifact};
 type StorageResult<T> = std::result::Result<T, StorageError>;
 
 /// Facade-owned retained directory authority. Its locator is diagnostic only.
@@ -46,7 +48,7 @@ impl DatabaseDirectory {
 /// One established durable boundary; not a retry token or retention lease.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DurableStatus {
-    /// Last synchronized complete record, with durable store/epoch identity.
+    /// Last synchronized complete record or rotated base, with store/epoch identity.
     pub position: DurableCommitPosition,
     /// Digest qualifying that complete record boundary.
     pub digest: [u8; 32],
@@ -73,6 +75,9 @@ pub struct CheckpointOutcome {
     pub publication: u64,
     /// Measured time holding the serial write reservation, excluding acquisition wait.
     pub write_reservation_elapsed: Duration,
+    /// Old-root validation, seal, new-segment and control publication time,
+    /// excluding new-image encoding/I/O.
+    pub rotation_elapsed: Duration,
 }
 impl From<selene_persist::logical_stream::CheckpointInfo> for CheckpointOutcome {
     fn from(info: selene_persist::logical_stream::CheckpointInfo) -> Self {
@@ -85,6 +90,7 @@ impl From<selene_persist::logical_stream::CheckpointInfo> for CheckpointOutcome 
             boundary_digest: info.boundary.digest,
             publication: info.publication,
             write_reservation_elapsed: Duration::ZERO,
+            rotation_elapsed: info.rotation_elapsed,
         }
     }
 }
@@ -100,7 +106,7 @@ pub struct RecoveryInfo {
     pub rebuild_elapsed: Duration,
     /// Final complete-tail synchronization and writer establishment time.
     pub synchronize_elapsed: Duration,
-    /// Verified prefix records; this first implementation scans the retained prefix.
+    /// Verified prefix records (PR05 selections); zero after explicit rotation.
     pub verified_prefix_records: u64,
     /// Whole suffix records semantically applied, including complete unacknowledged records.
     pub replayed_suffix_records: u64,
@@ -286,7 +292,8 @@ impl Database {
     }
 
     /// Hold the serial write reservation through full image encoding and durable selection.
-    /// Held immutable reader views stay valid; foreground writes wait. No rotation/prune.
+    /// Held immutable reader views stay valid; foreground writes wait. Rotates to
+    /// a fresh segment without resetting transaction sequence. Never auto-prunes.
     /// A fenced/uncertain owner cannot checkpoint its stale semantic preflight candidate.
     pub fn checkpoint(&self) -> StorageResult<CheckpointOutcome> {
         self.inner.checkpoint()

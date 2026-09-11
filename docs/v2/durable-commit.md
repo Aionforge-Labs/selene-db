@@ -109,10 +109,11 @@ Selected validation never depends on opening unselected ancestor payloads.
 These unkeyed hashes detect corruption, not malicious rollback/authentication.
 
 An exclusive epoch spans append through publication/ack or durable rollback.
-Readers retain a shared epoch from CURRENT selection through all WAL consumption,
-so a reader cannot race cleanup. This conservative serialization is intentional;
-there is no PR06 rotation/checkpoint/retention implementation here. Callbacks must
-not re-enter same-directory operations that require this epoch.
+PR04 readers retained a shared epoch through consumption. [PR06](rotation-retention.md)
+now registers a cross-process immutable-manifest artifact lease under that epoch,
+then releases the epoch while retaining all selected dependency names. Existing
+commit callbacks still must not re-enter same-directory operations requiring this
+epoch. New checkpoint/prune lifecycle operations invoke no external callbacks.
 
 Readers validate bounded headers before allocating full frames, require exact
 store/epoch/segment/sequence/digest lineage, and fail closed on complete corruption.

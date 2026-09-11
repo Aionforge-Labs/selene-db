@@ -150,13 +150,24 @@ memory-only; fallible facade create/open/checkpoint use one format-2 authority.
 See [durable commit](docs/v2/durable-commit.md) for separate typed outcomes and
 [checkpoint/reopen](docs/v2/checkpoint-reopen.md) for serialized checkpoint writes,
 eager all-index reconstruction, Rust schema construction and non-destructive open.
-Reopen verifies the retained WAL prefix; rotation/prune remain F02-PR06. The richer
+Unrotated PR05 selections verify the full WAL prefix. Explicit checkpoint adopts
+the [rotating lifecycle](docs/v2/rotation-retention.md); rotating reopen verifies
+only the independently selected new segment. Prune is explicit, never automatic,
+and retains the latest two completed checkpoints plus active artifact leases.
+The richer
 Rust schema builder does not enable unsupported GQL catalog GG02 grammar.
 
 Persistence-directory readers participate in the same epoch lock domain as
-rotation and prune. Low-level recovery and online backup-style reads hold
+rotation and prune. Legacy recovery and backup-style reads hold
 `PersistenceReadGuard` from authoritative MANIFEST selection through snapshot
-and WAL use. `CheckpointOutcome` paths are not retention leases.
+and WAL use. Format-2 `LogicalReader` instead pins an independently opened
+immutable manifest with a shared file lock before releasing the selection epoch.
+That lock retains its named snapshot/WAL dependencies through consumption without
+blocking publication. Prune probes those locks nonblockingly under writer proof
+and the exclusive epoch, retaining and accounting for leased names until release
+or process death. It revalidates and synchronizes CURRENT and selected dependencies
+before unlink, including after uncertain publication/reopen.
+`CheckpointOutcome` paths are not retention leases.
 Writer ownership is one permanent `LOCK` domain; WAL/audit composites share its
 owned lease. Every managed publication/prune requires that StoreWriter proof;
 standalone conveniences acquire it, while online callers pass the existing

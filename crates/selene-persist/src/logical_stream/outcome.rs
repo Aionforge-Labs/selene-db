@@ -6,7 +6,8 @@ use crate::{
     logical_frame::FrameError,
 };
 
-/// Exact complete-record boundary. Offsets are meaningful only within this identity.
+/// Exact complete-record boundary or selected segment base. Offsets are meaningful
+/// only within this identity; rotation never transfers offsets between files.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Position {
     /// Durable store identity.
@@ -15,20 +16,20 @@ pub struct Position {
     pub epoch: StoreEpoch,
     /// Selected segment lineage anchor.
     pub segment: [u8; 32],
-    /// Complete record sequence, zero at the selected empty segment start.
+    /// Global complete-record sequence; a rotated empty base may be nonzero.
     pub sequence: u64,
-    /// Byte offset after the record in this segment only.
+    /// Byte offset after the record in this segment only, zero at its declared base.
     pub offset: u64,
-    /// Complete record digest, or the selected manifest digest at sequence zero.
+    /// Complete record digest, or the independently selected segment origin at its base.
     pub digest: [u8; 32],
 }
 
 /// Independently established boundaries; synchronization advances only on success.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Progress {
-    /// Last completely written record, not a durability promise.
+    /// Last completely written record or selected base, not a durability promise.
     pub written: Position,
-    /// Last successfully synchronized record.
+    /// Last successfully synchronized record or selected base.
     pub synchronized: Position,
     /// Last outer publication reported by the sole facade authority.
     pub published: Option<Position>,

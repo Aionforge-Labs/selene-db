@@ -107,6 +107,8 @@ fn all_vector_families_rebuild_with_exact_native_search_guards_and_descriptor_id
         assert_eq!(expected.len(), 2);
         assert_eq!(result(&s, &query), expected, "live {kind}/{metric}");
         db.checkpoint().unwrap();
+        db.checkpoint().unwrap();
+        assert!(db.prune().unwrap().cleanup_error.is_none());
         drop(s);
         drop(db);
         let db = Database::open(dir.path()).unwrap();

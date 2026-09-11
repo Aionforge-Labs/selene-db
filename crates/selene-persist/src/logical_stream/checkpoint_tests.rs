@@ -1,7 +1,7 @@
 use super::*;
 use std::{collections::BTreeMap, io::Read, path::Path};
 
-fn artifacts(dir: &StoreDirectory) -> BTreeMap<String, Vec<u8>> {
+pub(super) fn artifacts(dir: &StoreDirectory) -> BTreeMap<String, Vec<u8>> {
     dir.entries()
         .unwrap()
         .into_iter()
@@ -48,6 +48,10 @@ fn checkpoint_fault_matrix_selects_only_old_or_complete_new_snapshot_and_fences(
         "snapshot.file_sync",
         "snapshot.publish",
         "snapshot.dir_sync",
+        "rotation.seal",
+        "rotation.create",
+        "rotation.file_sync",
+        "rotation.dir_sync",
         "manifest.create",
         "manifest.write",
         "manifest.file_sync",
@@ -58,6 +62,7 @@ fn checkpoint_fault_matrix_selects_only_old_or_complete_new_snapshot_and_fences(
         "current.file_sync",
         "current.replace",
         "current.dir_sync",
+        "rotation.handle_swap",
     ] {
         let (_temp, dir, mut wal) = fixture();
         wal.checkpoint(b"initial", 0).unwrap();
@@ -66,7 +71,8 @@ fn checkpoint_fault_matrix_selects_only_old_or_complete_new_snapshot_and_fences(
         let error = wal.checkpoint(b"complete image", 1).unwrap_err();
         assert!(wal.is_fenced(), "{point}");
         assert!(wal.prepare(&[b"later"], Compression::Raw, 1024).is_err());
-        if point == "current.dir_sync" {
+        let selected_new = matches!(point, "current.dir_sync" | "rotation.handle_swap");
+        if selected_new {
             assert!(matches!(
                 error,
                 StreamError::Persist(crate::PersistError::Control(
@@ -79,7 +85,7 @@ fn checkpoint_fault_matrix_selects_only_old_or_complete_new_snapshot_and_fences(
         let mut reopen = ReopeningWal::open(&dir, &identity(), 1024).unwrap();
         assert_eq!(
             reopen.snapshot_body().unwrap(),
-            if point == "current.dir_sync" {
+            if selected_new {
                 b"complete image".as_slice()
             } else {
                 b"initial".as_slice()
@@ -90,7 +96,7 @@ fn checkpoint_fault_matrix_selects_only_old_or_complete_new_snapshot_and_fences(
         while let Some(body) = reopen.next_body().unwrap() {
             suffix.push(body);
         }
-        assert_eq!(suffix.len(), usize::from(point != "current.dir_sync"));
+        assert_eq!(suffix.len(), usize::from(!selected_new));
         let mut wal = reopen.finish().unwrap();
         assert_eq!(artifacts(&dir), before, "open mutated bytes at {point}");
         commit(&mut wal, &[b"post reopen"]);
@@ -99,7 +105,7 @@ fn checkpoint_fault_matrix_selects_only_old_or_complete_new_snapshot_and_fences(
 }
 
 #[test]
-fn checkpoints_keep_origin_without_ancestor_reads_and_resume_complete_tail() {
+fn rotating_checkpoints_reopen_without_ancestor_reads_and_resume_complete_tail() {
     let (_temp, dir, mut wal) = fixture();
     wal.checkpoint(b"initial", 0).unwrap();
     commit(&mut wal, &[b"one"]);
@@ -136,7 +142,7 @@ fn checkpoints_keep_origin_without_ancestor_reads_and_resume_complete_tail() {
         b"synchronized-unacknowledged"
     );
     assert!(reopen.next_body().unwrap().is_none());
-    assert_eq!((reopen.prefix_records(), reopen.suffix_records()), (2, 1));
+    assert_eq!((reopen.prefix_records(), reopen.suffix_records()), (0, 1));
     let mut wal = reopen.finish().unwrap();
     assert_eq!(wal.progress().acknowledged, None); // never invent a prior acknowledgment
     commit(&mut wal, &[b"four"]);

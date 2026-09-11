@@ -3,6 +3,23 @@ use crate::{CheckpointOutcome, DurableStatus, StorageError, StorageErrorKind, St
 use selene_core::logical::Limits;
 
 impl DatabaseInner {
+    pub(crate) fn prune(&self) -> std::result::Result<crate::PruneOutcome, StorageError> {
+        self.with_mutation_reservation(|_reservation| {
+            let mut durable = self.transactions.durable.lock();
+            let authority = durable.as_mut().ok_or_else(|| {
+                StorageError::new(
+                    StoragePhase::Prune,
+                    StorageErrorKind::InMemory,
+                    std::io::Error::other("memory-only database"),
+                )
+            })?;
+            authority
+                .wal
+                .prune()
+                .map(Into::into)
+                .map_err(|e| StorageError::stream(StoragePhase::Prune, e))
+        })
+    }
     pub(super) fn lock_writer(&self) -> MutexGuard<'_, ()> {
         #[cfg(test)]
         if let Some(guard) = self.transactions.writer.try_lock() {

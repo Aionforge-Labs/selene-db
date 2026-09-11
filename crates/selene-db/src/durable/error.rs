@@ -20,6 +20,8 @@ pub enum StoragePhase {
     Synchronize,
     /// Immutable checkpoint encoding/publication.
     Checkpoint,
+    /// Explicit retention validation and cleanup.
+    Prune,
 }
 /// Actionable failure categories; no failed open returns a Database.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
