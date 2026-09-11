@@ -27,6 +27,18 @@ pub(super) struct RotatingManifest {
     rotation: Rotation,
 }
 
+#[cfg(feature = "test-harness")]
+pub(super) fn fixture_encode(selected: &Selected) -> PersistResult<Vec<u8>> {
+    codec::encode(
+        &RotatingManifest {
+            metadata: selected.metadata.clone(),
+            snapshot: selected.checkpoint.clone().expect("fixture snapshot"),
+            rotation: selected.rotation.clone().expect("fixture rotation"),
+        },
+        *b"SLRM",
+    )
+}
+
 pub(super) fn log_name(segment: [u8; 32]) -> String {
     format!("WAL-{}.logical", blake3::Hash::from(segment).to_hex())
 }

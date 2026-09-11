@@ -75,7 +75,7 @@ impl ReplayState {
             // memory-only committer. No legacy WAL or snapshot decoder is involved.
             let runtime = SharedGraph::try_from_graph(graph).map_err(|_| E::Semantic)?;
             if runtime.read().catalog_bound_indexes().count() != self.backing_indexes[id].len() {
-                return Err(E::Invalid("incomplete rebuilt runtime"));
+                return Err(E::Admission("incomplete rebuilt runtime"));
             }
             graphs.insert(*id, runtime);
         }
@@ -227,7 +227,7 @@ fn register(
                 return Err(E::Semantic);
             }
         }
-        _ => return Err(E::Invalid("unsupported index reconstruction")),
+        _ => return Err(E::Admission("unsupported index reconstruction")),
     }
     Ok(())
 }

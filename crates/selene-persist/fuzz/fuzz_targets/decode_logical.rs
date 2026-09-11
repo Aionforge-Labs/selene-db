@@ -67,6 +67,26 @@ fuzz_target!(|input: &[u8]| {
     let frame =
         logical_frame::encode(input, context(), logical_frame::Compression::Raw, LIMIT).unwrap();
     drive(&frame);
+    // Reach typed lineage/version classification with valid common integrity.
+    // The expected cause comes from the independently chosen fixed header field.
+    if let Some(choice) = input.first() {
+        use selene_persist::logical_frame::FrameError as E;
+        let offsets = [8, 40, 56, 64, 96];
+        let index = usize::from(*choice) % offsets.len();
+        let mut changed = frame.clone();
+        changed[offsets[index]] ^= 1;
+        selene_persist::logical_stream::repair_fixture_integrity(&mut changed, 160);
+        let error =
+            logical_frame::decode(&changed, context(), Boundary::UnsealedEnd, LIMIT).unwrap_err();
+        assert!(matches!(
+            (index, error),
+            (0, E::Unsupported(_))
+                | (1, E::Store)
+                | (2, E::Epoch)
+                | (3, E::Segment)
+                | (4, E::Origin)
+        ));
+    }
     // Mutate a complete named-type revision over retained graphs, repairing the
     // frame integrity so these owning semantic checks cannot hide behind BLAKE3.
     let (state, template) = logical_named_seed::fixture();

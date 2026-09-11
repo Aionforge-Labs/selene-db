@@ -68,7 +68,7 @@ fn independently_assembled_complete_catalog_graph_transaction() {
     wrong[233] = 255;
     assert_eq!(
         seed.apply_body(&wrong, Limits::default()).err(),
-        Some(E::Invalid("graph operation tag"))
+        Some(E::Unsupported("graph operation tag"))
     );
     let mut wrong = bytes;
     wrong[159] = 2; // corrupt a descriptor revision/parent field, not an enum layout

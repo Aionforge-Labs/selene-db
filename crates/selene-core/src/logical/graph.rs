@@ -351,7 +351,7 @@ impl Decoder<'_, '_> {
                 label: self.name()?,
             },
             12 => Change::GraphReset {},
-            _ => return Err(E::Invalid("graph operation tag")),
+            _ => return Err(E::Unsupported("graph operation tag")),
         })
     }
 }

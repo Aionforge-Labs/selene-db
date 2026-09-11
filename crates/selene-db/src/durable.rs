@@ -21,8 +21,10 @@ use std::{
 };
 
 mod error;
+mod recovery;
 mod retention;
 pub use error::{StorageError, StorageErrorKind, StoragePhase};
+pub use recovery::VerificationReport;
 pub use retention::{PruneOutcome, RetainedArtifact, RetentionReason, StorageArtifact};
 type StorageResult<T> = std::result::Result<T, StorageError>;
 
@@ -104,15 +106,15 @@ pub struct RecoveryInfo {
     pub wal_elapsed: Duration,
     /// Native catalog validation and eager all-index/runtime reconstruction time.
     pub rebuild_elapsed: Duration,
-    /// Final complete-tail synchronization and writer establishment time.
+    /// Final complete-tail synchronization and writer establishment time; zero for verification.
     pub synchronize_elapsed: Duration,
     /// Verified prefix records (PR05 selections); zero after explicit rotation.
     pub verified_prefix_records: u64,
     /// Whole suffix records semantically applied, including complete unacknowledged records.
     pub replayed_suffix_records: u64,
-    /// All retained registered indexes rebuilt before the Database was returned.
+    /// All retained registered indexes rebuilt before success was returned.
     pub rebuilt_indexes: usize,
-    /// Recovered and explicitly synchronized full-record boundary.
+    /// Recovered full-record boundary. Open synchronizes it; verification does not.
     pub position: DurableCommitPosition,
 }
 
@@ -190,102 +192,21 @@ impl Database {
     /// Open via a retained directory. Sessions retaining a prior owner cause contention.
     /// A fresh process-local DatabaseId is allocated; durable StoreId/epoch are preserved.
     pub fn open_in(directory: &DatabaseDirectory) -> StorageResult<Self> {
+        let start = Instant::now();
         let mut recovery =
             ReopeningWal::open(&directory.0, &compatibility()?, Limits::default().bytes)
                 .map_err(|e| StorageError::stream(StoragePhase::Select, e))?;
-        let context = recovery.snapshot_context();
+        let prepared = recovery::prepare(recovery.recovery(), start.elapsed())?;
         let start = Instant::now();
-        if context.publication != context.boundary.sequence {
-            return Err(StorageError::invalid(
-                StoragePhase::Snapshot,
-                "facade publication/WAL sequence mismatch",
-            ));
-        }
-        let body = recovery
-            .snapshot_body()
-            .map_err(|e| StorageError::stream(StoragePhase::Snapshot, e))?;
-        let mut replay = ReplayState::from_checkpoint(&body, Limits::default())
-            .map_err(|e| StorageError::codec(StoragePhase::Snapshot, e))?;
-        drop(body);
-        let snapshot_elapsed = start.elapsed();
-        let start = Instant::now();
-        while let Some(body) = recovery
-            .next_body()
-            .map_err(|e| StorageError::stream(StoragePhase::Replay, e))?
-        {
-            replay = replay
-                .apply_body(&body, Limits::default())
-                .map_err(|e| StorageError::codec(StoragePhase::Replay, e))?;
-        }
-        let wal_elapsed = start.elapsed();
-        let start = Instant::now();
-        let mut inner = DatabaseInner::new(DatabaseConfig::default());
-        let catalog = replay.catalog().reconstruct().map_err(|e| {
-            StorageError::new(StoragePhase::Rebuild, StorageErrorKind::InvalidState, e)
-        })?;
-        inner.procedures.validate_catalog(&catalog).map_err(|e| {
-            StorageError::new(StoragePhase::Rebuild, StorageErrorKind::InvalidState, e)
-        })?;
-        let runtime = replay
-            .materialize(Limits::default())
-            .map_err(|e| StorageError::codec(StoragePhase::Rebuild, e))?;
-        let water = replay.catalog().high_water();
-        let get = |kind| water.get(&kind).copied().unwrap_or(0);
-        use selene_catalog::CatalogObjectKind as K;
-        // The current facade has no binding-table storage/allocation authority.
-        if get(K::BindingTable) != 0 {
-            return Err(StorageError::invalid(
-                StoragePhase::Rebuild,
-                "unsupported binding-table allocation domain",
-            ));
-        }
-        inner.state = ArcSwap::from(Arc::new(DatabaseState {
-            publication: recovery.position().sequence,
-            catalog: runtime.catalog,
-            graphs: runtime
-                .graphs
-                .into_iter()
-                .map(|(id, graph)| {
-                    Ok((
-                        selene_catalog::GraphId::new(id.get()).map_err(|e| {
-                            StorageError::new(
-                                StoragePhase::Rebuild,
-                                StorageErrorKind::InvalidState,
-                                e,
-                            )
-                        })?,
-                        Arc::new(GraphInstance::new(graph)),
-                    ))
-                })
-                .collect::<StorageResult<_>>()?,
-            graph_types: runtime.graph_types,
-            high_water: HighWaterMarks {
-                schema: get(K::Schema),
-                graph: get(K::Graph),
-                graph_type: get(K::GraphType),
-                index: get(K::Index),
-                constraint: get(K::Constraint),
-                procedure: get(K::Procedure),
-            },
-        }));
-        let rebuild_elapsed = start.elapsed();
-        let start = Instant::now();
-        let mut info = RecoveryInfo {
-            snapshot_elapsed,
-            wal_elapsed,
-            rebuild_elapsed,
-            synchronize_elapsed: Duration::ZERO,
-            verified_prefix_records: recovery.prefix_records(),
-            replayed_suffix_records: recovery.suffix_records(),
-            rebuilt_indexes: runtime.rebuilt_indexes,
-            position: recovery.position().into(),
-        };
+        let mut info = prepared.report.recovery;
         let wal = recovery
             .finish()
             .map_err(|e| StorageError::stream(StoragePhase::Synchronize, e))?;
         info.synchronize_elapsed = start.elapsed();
+        let mut inner = DatabaseInner::new(DatabaseConfig::default());
+        inner.state = ArcSwap::from(Arc::new(prepared.state));
         inner.recovery = Some(info);
-        inner.transactions = MutationCoordinator::with_wal(wal, replay);
+        inner.transactions = MutationCoordinator::with_wal(wal, prepared.replay);
         Ok(Self {
             inner: Arc::new(inner),
         })
@@ -341,4 +262,12 @@ fn compatibility() -> StorageResult<CompatibilityIdentity> {
 }
 
 #[cfg(test)]
+mod corruption_tests;
+#[cfg(test)]
+mod process_tests;
+#[cfg(test)]
+mod semantic_recovery_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod verification_tests;

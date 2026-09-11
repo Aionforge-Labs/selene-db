@@ -150,6 +150,11 @@ memory-only; fallible facade create/open/checkpoint use one format-2 authority.
 See [durable commit](docs/v2/durable-commit.md) for separate typed outcomes and
 [checkpoint/reopen](docs/v2/checkpoint-reopen.md) for serialized checkpoint writes,
 eager all-index reconstruction, Rust schema construction and non-destructive open.
+`Database::verify`/`verify_in` share full open readiness through a read-only,
+existing-only selection epoch and artifact lease; they never acquire writer LOCK,
+synchronize or publish a Database. Reports cover only the captured on-disk view,
+not acknowledgment, physical durability, write permission or subsequent freshness.
+See [recovery verification](docs/v2/recovery-verification.md).
 Unrotated PR05 selections verify the full WAL prefix. Explicit checkpoint adopts
 the [rotating lifecycle](docs/v2/rotation-retention.md); rotating reopen verifies
 only the independently selected new segment. Prune is explicit, never automatic,

@@ -166,6 +166,97 @@ reopen change against the preceding run. No concurrent Cargo/rustc process was f
 measurement admission. No Linux, long-running retention stress or device
 power-loss measurement is inferred from these modest fixtures.
 
+### PR07 shared full-readiness verification and open
+
+**2026-09-11**, working tree over `232dd5929455c7bf0c178a483003c184d2824eb4`,
+native Apple M5 / 16 GiB / Darwin 27.0.0, Rust 1.97.1, optimized bench profile,
+mimalloc. Existing registered target, new opt-in measurement mode:
+
+```bash
+scripts/run-benches.sh --bench durable_checkpoint --compile-only
+SELENE_RECOVERY_BENCH=1 scripts/run-benches.sh --profile quick --bench durable_checkpoint
+```
+
+Fixtures contain 3 or 12 named graphs, 32 or 128 nodes per graph, UNIQUE/defaults,
+scalar/composite/text/HNSW registrations (4 per graph), JSON and vectors. Suffixes
+are 1/16/128 actual acknowledged updates distributed across graphs after SLRM
+checkpoint. Every open validates ordered IDs/values and the independent update
+total; verification asserts position, graph/node and all-index counts. Timing
+includes temporary-runtime destruction in Criterion for both operations. Three
+printed pre-Criterion pairs exclude Database destruction from open's printed
+duration. They are first API calls on recently written/read data, **not cold OS
+cache**, and verification precedes open. No historical A/B speedup is claimed.
+
+| Graphs × rows | Indexes | Suffix | Verify estimate / interval (ms) | Open estimate / interval (ms) |
+|---|---:|---:|---:|---:|
+| 3 × 32 | 12 | 1 | 1.816 / 1.768–1.886 | 2.457 / 2.272–2.879 |
+| 3 × 32 | 12 | 16 | 7.183 / 7.108–7.260 | 8.613 / 8.393–8.912 |
+| 3 × 32 | 12 | 128 | 46.582 / 45.925–47.246 | 56.807 / 55.006–58.917 |
+| 3 × 128 | 12 | 1 | 5.121 / 5.060–5.207 | 6.434 / 5.882–7.024 |
+| 3 × 128 | 12 | 16 | 12.309 / 12.158–12.473 | 15.680 / 14.533–16.877 |
+| 3 × 128 | 12 | 128 | 67.531 / 66.927–68.180 | 76.222 / 74.362–78.125 |
+| 12 × 128 | 48 | 1 | 19.540 / 19.001–20.065 | 20.893 / 20.144–21.567 |
+| 12 × 128 | 48 | 16 | 25.321 / 25.022–25.634 | 30.776 / 30.073–31.507 |
+| 12 × 128 | 48 | 128 | 88.561 / 87.921–89.171 | 96.723 / 95.318–98.129 |
+
+Ten Criterion samples, 50 ms warm-up, 100 ms requested measurement; expensive
+collections extended to about 1 second. Several open rows had high outliers.
+The three 12×128/128-suffix pre-Criterion verification observations were
+85.250–91.304 ms: selection 0.126–0.139 ms, snapshot 3.569–3.838 ms, framing
+0.414–0.425 ms, semantic replay 68.443–74.518 ms, eager rebuild 11.378–12.047 ms.
+Semantic retained-state validation dominates long suffixes. Scaling one fixed
+snapshot's suffix does not establish general linear replay as graphs grow;
+per-transaction checks can rescan retained state. No speculative rewrite or SLO.
+
+Snapshots were 76,491 / 115,827 / 283,975 bytes; captured active WAL extents were
+574 / 9,184 / 73,472 bytes. Complete snapshot-header corruption rejected in
+110–156 microseconds across these shapes, before semantic reconstruction. That
+is one rejection shape, not constant-time arbitrary-invalid-input handling.
+
+The same sanctioned run starts isolated `/usr/bin/time -l` children over the
+already-written 12×128/128-suffix fixture. Whole-process peak RSS was **20,889,600
+bytes for verify**, **21,020,672 for open** (one sample each, excluding fixture
+creation but including recovery, runtime/index reconstruction and destruction).
+This is measured native RSS, not logical budget charge or a production memory
+ceiling. The separate valid 17-graph/high-fanout HNSW fixture still fails the
+unchanged 256 MiB aggregate reconstruction accounting limit, for both APIs.
+
+Raw command/stdout/stderr and per-phase samples are in PR07 evidence log
+`35-final-source-benchmark.log`; earlier runs remain in logs 12 and 30. Criterion
+flagged several slower rows versus the preceding short run (up to about 19% in
+successful-readiness point estimates). These sequential runs are not a controlled
+revision A/B and the cause was not isolated; the variation is retained, not a
+regression-free or optimization claim. Criterion artifacts remain under
+`target/criterion/` and are archived with the evidence.
+No competing Cargo/rustc process was observed at benchmark admission. Linux,
+device power loss and broad RC-scale performance are not established here.
+
+After the final error-context-only enrichment, a frozen-source refresh used:
+
+```bash
+SELENE_RECOVERY_BENCH=1 scripts/run-benches.sh --profile quick --bench durable_checkpoint --filter g12_n128_suffix128
+```
+
+Log `39-frozen-source-benchmark.log` retains three new phase-timed witness pairs
+for **all nine** shapes; the filter selects only the largest shape's three
+Criterion rows. That final 12×128/128-suffix estimate/interval was verify
+90.073 / 89.148–91.066 ms, open 92.989 / 90.767–95.327 ms, and corrupt-snapshot
+rejection 109.20 / 108.13–110.83 microseconds. Isolated-process RSS was
+20,938,752 bytes (verify) and 21,069,824 bytes (open). The wide Criterion table
+above is the preceding complete matrix, not silently relabeled as this filtered
+refresh. Neither the slower comparisons above nor this run's improved open
+comparison establishes a controlled revision effect.
+
+The subsequent pre-delivery diagnostic completion attaches missing namespace/WAL
+error context and distinguishes exact-boundary required-prefix truncation. It
+changes no recovery algorithm or timing boundary. The benchmark was recompiled
+with `scripts/run-benches.sh --bench durable_checkpoint --compile-only` (log 47).
+The existing corrupt-rejection row fails at the snapshot header, before the changed
+EOF/writer-establishment branches and with no unknown namespace entry, so that
+measured rejection path is unchanged. No new latency/RSS run is attributed to this
+completion; the prior full matrix and filtered refresh retain their original
+measurement coordinates and qualifications rather than being relabeled.
+
 ## Format-2 durable commit — durable_commit
 
 F02-PR04, **2026-09-11**, native Apple M5 / 16 GiB / macOS 27.0 (26A5425a),

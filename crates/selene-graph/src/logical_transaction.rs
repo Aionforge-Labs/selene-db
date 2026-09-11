@@ -123,7 +123,7 @@ impl LogicalTransaction {
     fn decode_budget(bytes: &[u8], budget: &mut Budget) -> CodecResult<Self> {
         let mut d = Decoder::new(bytes, budget)?;
         if d.u32()? != 1 {
-            return Err(E::Invalid("logical body version"));
+            return Err(E::Unsupported("logical body version"));
         }
         let catalog = CatalogDelta::decode(&mut d)?;
         let count = d.count()?;
@@ -263,14 +263,14 @@ impl ReplayState {
                     if old.descriptor(CatalogObjectId::GraphType(ty.id)) == Some(descriptor)
                         && self.graph_types.get(&ty.id).map(AsRef::as_ref) != Some(definition)
                     {
-                        return Err(E::Invalid("type change without catalog revision"));
+                        return Err(E::Admission("type change without catalog revision"));
                     }
                     candidate
                         .graph_types
                         .insert(ty.id, Arc::new(definition.clone()));
                 }
                 (None, None) if candidate.graph_types.remove(&ty.id).is_some() => {}
-                _ => return Err(E::Invalid("type/catalog disagreement")),
+                _ => return Err(E::Admission("type/catalog disagreement")),
             }
         }
         let touched: BTreeSet<_> = transaction.graphs.iter().map(|g| g.id).collect();
@@ -282,7 +282,7 @@ impl ReplayState {
                 let graph = candidate.graphs.remove(&id).ok_or(E::Semantic)?;
                 candidate.backing_indexes.remove(&id);
                 if graph.node_count() != 0 || graph.edge_count() != 0 || touched.contains(&id) {
-                    return Err(E::Invalid("nonempty graph drop"));
+                    return Err(E::Admission("nonempty graph drop"));
                 }
             }
         }
@@ -293,7 +293,7 @@ impl ReplayState {
                 .descriptor(CatalogObjectId::Graph(catalog_id))
                 .is_none()
             {
-                return Err(E::Invalid("missing graph owner"));
+                return Err(E::Admission("missing graph owner"));
             }
             let original = self.graphs.get(&delta.id);
             if original.map(|g| g.meta.generation) != delta.previous
@@ -301,7 +301,7 @@ impl ReplayState {
                     .previous
                     .is_some_and(|previous| delta.generation <= previous)
             {
-                return Err(E::Invalid("graph generation"));
+                return Err(E::Admission("graph generation"));
             }
             let bound = delta
                 .definition
@@ -331,7 +331,7 @@ impl ReplayState {
                 && candidate.graphs.contains_key(&GraphId::new(id.get()))
                 && !touched.contains(&GraphId::new(id.get()))
             {
-                return Err(E::Invalid("declaration without graph payload"));
+                return Err(E::Admission("declaration without graph payload"));
             }
         }
         candidate.validate_coverage()?;
@@ -366,7 +366,7 @@ impl ReplayState {
             || graph_ids != self.backing_indexes.keys().copied().collect()
             || type_ids != self.graph_types.keys().copied().collect()
         {
-            return Err(E::Invalid("missing or extra catalog graph/type payload"));
+            return Err(E::Admission("missing or extra catalog graph/type payload"));
         }
         for descriptor in snapshot.descriptors() {
             if let CatalogPayload::Graph {
@@ -374,7 +374,7 @@ impl ReplayState {
             } = descriptor.payload()
                 && !self.graph_types.contains_key(id)
             {
-                return Err(E::Invalid("missing constraining type"));
+                return Err(E::Admission("missing constraining type"));
             }
         }
         Ok(())

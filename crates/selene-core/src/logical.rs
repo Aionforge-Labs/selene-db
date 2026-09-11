@@ -27,9 +27,15 @@ pub enum CodecError {
     /// An unknown authoritative tag, reserved bit, or noncanonical representation.
     #[error("invalid logical representation: {0}")]
     Invalid(&'static str),
+    /// A version or authoritative semantic tag is not supported; never ignored.
+    #[error("unsupported logical representation: {0}")]
+    Unsupported(&'static str),
     /// An owning semantic validator rejected the decoded value or declaration.
     #[error("invalid logical semantics")]
     Semantic,
+    /// A decoded cross-object or runtime invariant failed at its owning boundary.
+    #[error("logical admission failed: {0}")]
+    Admission(&'static str),
 }
 
 /// Result from a format-2 semantic codec.

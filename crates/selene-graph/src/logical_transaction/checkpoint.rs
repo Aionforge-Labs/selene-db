@@ -125,7 +125,10 @@ impl ReplayState {
         let mut budget = Budget::new(limits)?;
         let (catalog, graph_types, graphs) = {
             let mut d = Decoder::new(bytes, &mut budget)?;
-            if d.u32()? != 1 || d.u8()? != 1 {
+            if d.u32()? != 1 {
+                return Err(E::Unsupported("checkpoint body version"));
+            }
+            if d.u8()? != 1 {
                 return Err(E::Invalid("checkpoint catalog section"));
             }
             let catalog = selene_catalog::codec::decode_records(&mut d)?;

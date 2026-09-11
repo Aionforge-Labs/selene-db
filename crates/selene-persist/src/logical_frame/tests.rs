@@ -88,25 +88,28 @@ fn context_and_checked_header_lengths_before_body() {
     wrong.sequence = 2;
     assert_eq!(
         decode(&bytes, wrong, Boundary::UnsealedEnd, MAX_PAYLOAD).unwrap_err(),
-        FrameError::Context
+        FrameError::Sequence {
+            expected: 2,
+            observed: 1
+        }
     );
     wrong = context();
     wrong.epoch = StoreEpoch::new(2).unwrap();
     assert_eq!(
         decode(&bytes, wrong, Boundary::UnsealedEnd, MAX_PAYLOAD).unwrap_err(),
-        FrameError::Context
+        FrameError::Epoch
     );
     wrong = context();
     wrong.segment[0] = 1;
     assert_eq!(
         decode(&bytes, wrong, Boundary::UnsealedEnd, MAX_PAYLOAD).unwrap_err(),
-        FrameError::Context
+        FrameError::Segment
     );
     wrong = context();
     wrong.previous[0] = 1;
     assert_eq!(
         decode(&bytes, wrong, Boundary::UnsealedEnd, MAX_PAYLOAD).unwrap_err(),
-        FrameError::Context
+        FrameError::Origin
     );
     let mut bytes = bytes;
     bytes[16..24].copy_from_slice(&u64::MAX.to_le_bytes());
@@ -211,22 +214,51 @@ fn formats_are_visibly_isolated_and_foreign_store_is_rejected() {
     foreign.store = StoreId::from_bytes(id).unwrap();
     assert_eq!(
         decode(&bytes, foreign, Boundary::UnsealedEnd, MAX_PAYLOAD).unwrap_err(),
-        FrameError::Context
+        FrameError::Store
     );
 }
 
 #[test]
-fn unknown_version_and_reserved_flags_are_not_hidden_as_incomplete_tails() {
+fn integrity_precedes_version_and_complete_reserved_flags_are_not_torn_tails() {
     let mut bytes = fixture(&[0], 0, 1);
     bytes[8] = 3;
     assert_eq!(
-        decode(&bytes[..12], context(), Boundary::UnsealedEnd, MAX_PAYLOAD).unwrap_err(),
-        FrameError::Invalid("version")
+        decode(&bytes, context(), Boundary::UnsealedEnd, MAX_PAYLOAD).unwrap_err(),
+        FrameError::Integrity("header")
+    );
+    let hash = blake3::hash(&bytes[..128]);
+    bytes[128..160].copy_from_slice(hash.as_bytes());
+    assert_eq!(
+        decode(&bytes, context(), Boundary::UnsealedEnd, MAX_PAYLOAD).unwrap_err(),
+        FrameError::Unsupported("version")
     );
     bytes[8] = 2;
     bytes[13] = 1;
+    let hash = blake3::hash(&bytes[..128]);
+    bytes[128..160].copy_from_slice(hash.as_bytes());
     assert_eq!(
-        decode(&bytes[..16], context(), Boundary::UnsealedEnd, MAX_PAYLOAD).unwrap_err(),
-        FrameError::Invalid("codec/flags/reserved")
+        decode(&bytes, context(), Boundary::UnsealedEnd, MAX_PAYLOAD).unwrap_err(),
+        FrameError::Invalid("reserved")
     );
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+    #[test]
+    fn exact_sequence_model_rejects_every_gap_and_overlap(expected in 1u64..1000, observed in 0u64..1000) {
+        let mut bytes = fixture(b"bounded", 0, 7);
+        bytes[32..40].copy_from_slice(&observed.to_le_bytes());
+        let header = *blake3::hash(&bytes[..128]).as_bytes();
+        bytes[128..160].copy_from_slice(&header);
+        let end = bytes.len() - 32;
+        let digest = *blake3::hash(&bytes[..end]).as_bytes();
+        bytes[end..].copy_from_slice(&digest);
+        let trusted = Context { sequence: expected, ..context() };
+        let result = decode(&bytes, trusted, Boundary::SealedEnd, 1024);
+        if expected == observed {
+            proptest::prop_assert!(matches!(result, Ok(Decoded::Complete { .. })), "complete exact sequence");
+        } else {
+            proptest::prop_assert_eq!(result.unwrap_err(), FrameError::Sequence { expected, observed });
+        }
+    }
 }

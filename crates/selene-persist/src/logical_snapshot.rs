@@ -3,6 +3,7 @@
 
 use crate::{
     control::{StoreEpoch, StoreId},
+    logical_frame::FrameError,
     logical_stream::Position,
 };
 use selene_core::logical::{Budget, CodecError, Decoder, Encoder, Limits};
@@ -65,23 +66,34 @@ pub fn required_length(
     bytes: &[u8],
     expected: SnapshotContext,
     limit: usize,
-) -> Result<usize, CodecError> {
+) -> Result<usize, FrameError> {
     validate_context(expected)?;
     if limit > Limits::default().bytes {
-        return Err(CodecError::Limit);
+        return Err(FrameError::Limit);
     }
-    let header = bytes.get(..HEADER_LEN).ok_or(CodecError::Incomplete)?;
+    let header = bytes
+        .get(..HEADER_LEN)
+        .ok_or(FrameError::CorruptIncomplete)?;
+    if &header[..8] != MAGIC {
+        return Err(FrameError::Invalid("snapshot magic"));
+    }
     if blake3::hash(&header[..136]).as_bytes() != &header[136..] {
-        return Err(CodecError::Invalid("snapshot header checksum"));
+        return Err(FrameError::Integrity("snapshot header"));
     }
     let mut budget = Budget::new(Limits::default())?;
     let mut d = Decoder::new(&header[..136], &mut budget)?;
-    if d.take(8)? != MAGIC || d.u32()? != 2 || d.u32()? != 0 {
-        return Err(CodecError::Invalid("snapshot version/flags"));
+    if d.take(8)? != MAGIC {
+        return Err(FrameError::Invalid("snapshot magic"));
+    }
+    if d.u32()? != 2 {
+        return Err(FrameError::Unsupported("snapshot version"));
+    }
+    if d.u32()? != 0 {
+        return Err(FrameError::Invalid("snapshot reserved"));
     }
     let length = usize::try_from(d.u64()?).map_err(|_| CodecError::Limit)?;
     if length > limit {
-        return Err(CodecError::Limit);
+        return Err(FrameError::Limit);
     }
     let publication = d.u64()?;
     let store = StoreId::from_bytes(d.take(16)?.try_into().expect("fixed width"))
@@ -96,14 +108,25 @@ pub fn required_length(
         digest: d.take(32)?.try_into().expect("fixed width"),
     };
     d.finish()?;
-    if (SnapshotContext {
-        boundary,
-        publication,
-    }) != expected
-    {
-        return Err(CodecError::Invalid("snapshot boundary identity"));
+    if boundary.store != expected.boundary.store {
+        return Err(FrameError::Store);
     }
-    length.checked_add(OVERHEAD).ok_or(CodecError::Limit)
+    if boundary.epoch != expected.boundary.epoch {
+        return Err(FrameError::Epoch);
+    }
+    if boundary.segment != expected.boundary.segment {
+        return Err(FrameError::Segment);
+    }
+    if boundary.digest != expected.boundary.digest {
+        return Err(FrameError::Origin);
+    }
+    if boundary.sequence != expected.boundary.sequence
+        || boundary.offset != expected.boundary.offset
+        || publication != expected.publication
+    {
+        return Err(FrameError::SnapshotBoundary);
+    }
+    length.checked_add(OVERHEAD).ok_or(FrameError::Limit)
 }
 
 /// Verify exactly one whole snapshot and its selected descriptor digest before decoding.
@@ -113,16 +136,19 @@ pub fn decode<'a>(
     expected: SnapshotContext,
     digest: &[u8; 32],
     limit: usize,
-) -> Result<&'a [u8], CodecError> {
+) -> Result<&'a [u8], FrameError> {
     let length = required_length(bytes, expected, limit)?;
-    if bytes.len() != length {
-        return Err(CodecError::Invalid("snapshot file length"));
+    if bytes.len() < length {
+        return Err(FrameError::CorruptIncomplete);
+    }
+    if bytes.len() > length {
+        return Err(FrameError::Invalid("snapshot file length"));
     }
     if &bytes[length - 40..length - 32] != END
         || &bytes[length - 32..] != digest
         || blake3::hash(&bytes[..length - 32]).as_bytes() != digest
     {
-        return Err(CodecError::Invalid("snapshot complete checksum"));
+        return Err(FrameError::Integrity("snapshot complete"));
     }
     Ok(&bytes[HEADER_LEN..length - 40])
 }
@@ -185,7 +211,7 @@ mod tests {
         assert!(decode(&bytes, foreign, &digest, 1024).is_err());
         assert_eq!(
             decode(&bytes, expected, &digest, 13).unwrap_err(),
-            CodecError::Limit
+            FrameError::Limit
         );
     }
 }

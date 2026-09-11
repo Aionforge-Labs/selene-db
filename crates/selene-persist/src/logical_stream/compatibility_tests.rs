@@ -1,6 +1,115 @@
 use super::*;
 use crate::logical_snapshot::SnapshotContext;
 
+fn pr05_two_record_prefix(
+    adjust: impl FnOnce(&mut Position),
+) -> (
+    selene_testing::PersistenceTestPath,
+    StoreDirectory,
+    Position,
+    Position,
+) {
+    let (_temp, dir, mut wal) = fixture();
+    wal.checkpoint(b"initial", 0).unwrap();
+    commit(&mut wal, &[b"one"]);
+    let first = wal.progress.synchronized;
+    commit(&mut wal, &[b"two"]);
+    let covered = wal.progress.synchronized;
+    let mut boundary = covered;
+    adjust(&mut boundary);
+    let epoch = ManifestEpochGuard::acquire(&wal.authority).unwrap();
+    wal.selected = crate::control::logical::publish_checkpoint(
+        &epoch,
+        &wal.selected,
+        b"two image",
+        SnapshotContext {
+            boundary,
+            publication: 2,
+        },
+    )
+    .unwrap();
+    drop(epoch);
+    drop(wal);
+    (_temp, dir, first, covered)
+}
+
+#[rstest::rstest]
+#[case::empty_wal(0)]
+#[case::complete_record_end(1)]
+#[case::incomplete_frame(2)]
+fn snapshot_covered_pr05_prefix_is_required_not_an_unsealed_tail(#[case] cut_kind: u8) {
+    let (_temp, dir, first, covered) = pr05_two_record_prefix(|_| {});
+    let cut = match cut_kind {
+        0 => 0,
+        1 => first.offset,
+        _ => first.offset + 10,
+    };
+    assert!(cut < covered.offset);
+    dir.open_write(std::path::Path::new(crate::control::logical::LOG_NAME))
+        .unwrap()
+        .set_len(cut)
+        .unwrap();
+    let before = checkpoint::artifacts(&dir);
+    let mut reader = RecoveryReader::open(&dir, &identity(), 1024).unwrap();
+    assert_eq!(reader.snapshot_body().unwrap(), b"two image");
+    let expected_offset = if cut_kind == 0 { 0 } else { first.offset };
+    let expected_sequence = if cut_kind == 0 { 1 } else { 2 };
+    assert!(
+        matches!(reader.next_body(), Err(StreamError::Artifact { name, offset, expected_sequence: sequence, source })
+        if name == crate::control::logical::LOG_NAME && offset == Some(expected_offset)
+            && sequence == Some(expected_sequence)
+            && matches!(*source, StreamError::Frame(logical_frame::FrameError::CorruptIncomplete)))
+    );
+    assert!(matches!(reader.next_body(), Err(StreamError::Terminated)));
+    assert!(reader.finish().is_err());
+    assert_eq!(checkpoint::artifacts(&dir), before);
+}
+
+#[rstest::rstest]
+#[case::wrong_offset(true)]
+#[case::wrong_digest(false)]
+fn present_pr05_checkpoint_sequence_with_inconsistent_boundary_remains_lineage(
+    #[case] offset: bool,
+) {
+    let (_temp, dir, _, covered) = pr05_two_record_prefix(|boundary| {
+        if offset {
+            boundary.offset += 1;
+        } else {
+            boundary.digest[0] ^= 1;
+        }
+    });
+    let before = checkpoint::artifacts(&dir);
+    let mut reader = RecoveryReader::open(&dir, &identity(), 1024).unwrap();
+    assert_eq!(reader.snapshot_body().unwrap(), b"two image");
+    assert!(
+        matches!(reader.next_body(), Err(StreamError::Artifact { name, offset, expected_sequence, source })
+        if name == crate::control::logical::LOG_NAME && offset == Some(covered.offset)
+            && expected_sequence == Some(covered.sequence)
+            && matches!(*source, StreamError::Frame(logical_frame::FrameError::SnapshotBoundary)))
+    );
+    assert!(matches!(reader.next_body(), Err(StreamError::Terminated)));
+    assert!(reader.finish().is_err());
+    assert_eq!(checkpoint::artifacts(&dir), before);
+}
+
+#[test]
+fn empty_rotated_declared_base_is_complete_at_nonzero_sequence() {
+    let (_temp, dir, mut wal) = fixture();
+    wal.checkpoint(b"initial", 0).unwrap();
+    commit(&mut wal, &[b"one"]);
+    wal.checkpoint(b"one image", 1).unwrap();
+    let base = wal.progress.synchronized;
+    assert_eq!((base.sequence, base.offset), (1, 0));
+    drop(wal);
+    let before = checkpoint::artifacts(&dir);
+    let mut reopen = ReopeningWal::open(&dir, &identity(), 1024).unwrap();
+    assert_eq!(reopen.snapshot_body().unwrap(), b"one image");
+    assert!(reopen.next_body().unwrap().is_none());
+    assert_eq!(reopen.position(), base);
+    assert_eq!(reopen.finish().unwrap().progress().synchronized, base);
+    assert_eq!(checkpoint::artifacts(&dir), before);
+}
+
 #[test]
 fn storage_full_during_snapshot_write_preserves_acknowledged_prefix() {
     let (_temp, dir, mut wal) = fixture();

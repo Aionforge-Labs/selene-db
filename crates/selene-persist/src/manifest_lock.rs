@@ -69,6 +69,20 @@ impl PersistenceReadGuard {
     /// Returns lock-file validation, open, or locking errors.
     pub fn acquire_in(dir: &StoreDirectory) -> PersistResult<Self> {
         let file = open_lock_file(dir)?;
+        Self::lock_shared(dir, file)
+    }
+
+    /// Acquire the existing epoch through an independently opened read-only file.
+    /// Never creates or repairs coordination state and requires no write access.
+    /// Selection still participates in the same permanent epoch lock domain.
+    ///
+    /// # Errors
+    /// Returns missing-file, validation, read-open, or shared-lock errors.
+    pub fn acquire_existing_in(dir: &StoreDirectory) -> PersistResult<Self> {
+        Self::lock_shared(dir, dir.open_read(MANIFEST_LOCK_FILE_NAME)?)
+    }
+
+    fn lock_shared(dir: &StoreDirectory, file: File) -> PersistResult<Self> {
         match file.try_lock_shared() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {

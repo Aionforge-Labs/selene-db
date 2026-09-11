@@ -1,168 +1,83 @@
-//! Non-destructive writer reopen: retain LOCK and a selected artifact lease through use.
+//! Writer admission around the shared read-only recovery pipeline.
 
 use super::*;
-use crate::{
-    control::{CURRENT_FILE_NAME, CompatibilityIdentity},
-    logical_snapshot::SnapshotContext,
-};
+use crate::control::CompatibilityIdentity;
 
-/// Isolated recovery owner. No database is usable until semantic validation and
-/// eager runtime rebuilding finish and the caller consumes [`Self::finish`].
+/// Existing writer proof and the same pinned recovery reader used by verification.
 pub struct ReopeningWal {
-    reader: LogicalReader,
+    recovery: RecoveryReader,
     authority: StoreWriter,
-    boundary_seen: bool,
-    complete: bool,
-    failed: bool,
-    prefix_records: u64,
-    suffix_records: u64,
 }
 
 impl ReopeningWal {
-    /// Open existing format-2 snapshot control only. Never creates a missing store,
-    /// repairs data, adopts orphans, or invokes legacy persistence.
+    /// Acquire existing exclusive writer ownership, then select an artifact view.
+    /// Never creates missing coordination state or repairs authoritative bytes.
     pub fn open(
         dir: &StoreDirectory,
         expected: &CompatibilityIdentity,
         limit: usize,
     ) -> Result<Self, StreamError> {
-        if !dir.contains(CURRENT_FILE_NAME)? {
-            for name in dir.entries()? {
-                if name != crate::STORE_LOCK_FILE_NAME && name != crate::MANIFEST_LOCK_FILE_NAME {
-                    return Err(
-                        crate::PersistError::Control(crate::ControlError::MixedArtifacts(
-                            name.into(),
-                        ))
-                        .into(),
-                    );
-                }
-            }
-            return Err(StreamError::Protocol("store is not initialized"));
-        }
-        if !dir.contains(crate::STORE_LOCK_FILE_NAME)?
-            || !dir.contains(crate::MANIFEST_LOCK_FILE_NAME)?
-        {
-            return Err(StreamError::Protocol("store is not initialized"));
-        }
-        let authority = StoreWriter::acquire_existing(dir)?;
-        let reader = LogicalReader::open(dir, expected, limit)?;
-        let snapshot = reader
-            .selected
-            .checkpoint
-            .as_ref()
-            .ok_or(StreamError::Protocol("missing initial database snapshot"))?;
-        let boundary_seen =
-            snapshot.boundary == reader.position || reader.selected.rotation.is_some();
+        // Validate the read prerequisites before opening any file writable.
+        RecoveryReader::check_initialized(dir)?;
+        let authority = StoreWriter::acquire_existing(dir)
+            .map_err(|e| StreamError::from(e).at(crate::STORE_LOCK_FILE_NAME, None, None))?;
+        let recovery = RecoveryReader::open(dir, expected, limit)?;
         Ok(Self {
-            reader,
+            recovery,
             authority,
-            boundary_seen,
-            complete: false,
-            failed: false,
-            prefix_records: 0,
-            suffix_records: 0,
         })
     }
 
-    /// Selected checkpoint boundary and publication ordinal, never inferred from image bytes.
-    pub fn snapshot_context(&self) -> SnapshotContext {
-        let s = self
-            .reader
-            .selected
-            .checkpoint
-            .as_ref()
-            .expect("full snapshot selection");
-        SnapshotContext {
-            boundary: s.boundary,
-            publication: s.publication,
-        }
+    /// Shared physical read/validation pipeline, without write methods.
+    pub fn recovery(&mut self) -> &mut RecoveryReader {
+        &mut self.recovery
     }
 
-    /// Load exact selected image under the retained artifact lease. Fixed-header checks
-    /// and the aggregate encoded-byte ceiling precede the full allocation.
+    /// Selected snapshot boundary and publication ordinal.
+    pub fn snapshot_context(&self) -> crate::logical_snapshot::SnapshotContext {
+        self.recovery.snapshot_context()
+    }
+    /// Load the exact selected snapshot; errors terminate recovery.
     pub fn snapshot_body(&self) -> Result<Vec<u8>, StreamError> {
-        self.reader.snapshot_body()
+        self.recovery.snapshot_body()
     }
-
-    /// Verify the selected segment from its declared base, returning suffix bodies
-    /// for semantic replay. PR05 selections still verify their complete prefix;
-    /// rotating selections start at the snapshot-covered global sequence instead.
+    /// Verify prefix and return complete suffix transactions.
     pub fn next_body(&mut self) -> Result<Option<Vec<u8>>, StreamError> {
-        if self.failed {
-            return Err(StreamError::Protocol("reopen reader terminated by failure"));
-        }
-        let result = self.next_checked();
-        if result.is_err() {
-            self.failed = true;
-        }
-        result
+        self.recovery.next_body()
     }
-
-    fn next_checked(&mut self) -> Result<Option<Vec<u8>>, StreamError> {
-        if self.complete {
-            return Ok(None);
-        }
-        let boundary = self.snapshot_context().boundary;
-        while let Some(body) = self.reader.next_body()? {
-            let position = self.reader.position;
-            if position.sequence <= boundary.sequence {
-                self.prefix_records += 1;
-                if position.sequence == boundary.sequence {
-                    if position != boundary {
-                        return Err(StreamError::Protocol("checkpoint WAL boundary mismatch"));
-                    }
-                    self.boundary_seen = true;
-                }
-            } else {
-                if !self.boundary_seen {
-                    return Err(StreamError::Protocol("checkpoint boundary absent from WAL"));
-                }
-                self.suffix_records += 1;
-                return Ok(Some(body));
-            }
-        }
-        if self.reader.incomplete_tail() {
-            return Err(StreamError::Protocol(
-                "incomplete authoritative WAL tail; no repair",
-            ));
-        }
-        if !self.boundary_seen {
-            return Err(StreamError::Protocol("checkpoint boundary absent from WAL"));
-        }
-        self.complete = true;
-        Ok(None)
-    }
-
-    /// Verified prefix records, counted separately from semantically replayed suffix records.
+    /// Physically verified prefix record count.
     pub fn prefix_records(&self) -> u64 {
-        self.prefix_records
+        self.recovery.prefix_records()
     }
-    /// Complete suffix transactions returned to the semantic replay owner.
+    /// Complete suffix record count returned for semantic replay.
     pub fn suffix_records(&self) -> u64 {
-        self.suffix_records
+        self.recovery.suffix_records()
     }
-    /// Current independently verified full-record cursor.
+    /// Independently verified complete cursor.
     pub fn position(&self) -> Position {
-        self.reader.position
+        self.recovery.position()
     }
 
-    /// Establish synchronized append state after the caller has rebuilt and
-    /// validated its entire runtime. Complete recovered records are retained even
-    /// when their prior live acknowledgment cannot be proved. No truncation occurs.
+    /// Synchronize and establish append ownership only after complete consumption
+    /// and the caller's semantic/runtime validation. Never truncates a tail.
     pub fn finish(self) -> Result<LogicalWal, StreamError> {
-        if self.failed || !self.complete {
-            return Err(StreamError::Protocol("reopen consumption incomplete"));
-        }
-        let position = self.reader.position;
-        let mut file = self
-            .authority
-            .directory()
-            .open_write(std::path::Path::new(&self.reader.selected.log_name()))?;
-        if file.metadata()?.len() != position.offset {
-            return Err(StreamError::Protocol("WAL changed during reopen"));
-        }
-        file.seek(SeekFrom::Start(position.offset))?;
-        file.sync_all()?;
+        self.recovery.finish()?;
+        let position = self.recovery.position();
+        let reader = self.recovery.reader;
+        let name = reader.selected.log_name();
+        let file = (|| -> Result<File, StreamError> {
+            let dir = self.authority.directory();
+            let mut file = dir.open_write(std::path::Path::new(&name))?;
+            if file.metadata()?.len() != position.offset {
+                return Err(StreamError::Protocol("WAL changed during reopen"));
+            }
+            dir.check_fault("reopen.seek")?;
+            file.seek(SeekFrom::Start(position.offset))?;
+            dir.check_fault("reopen.sync")?;
+            file.sync_all()?;
+            Ok(file)
+        })()
+        .map_err(|e| e.at(name, Some(position.offset), Some(position.sequence)))?;
         Ok(LogicalWal {
             authority: self.authority,
             file,
@@ -173,7 +88,7 @@ impl ReopeningWal {
                 acknowledged: None,
             },
             fenced: false,
-            selected: self.reader.selected,
+            selected: reader.selected,
             #[cfg(any(test, feature = "test-harness"))]
             fault: None,
         })

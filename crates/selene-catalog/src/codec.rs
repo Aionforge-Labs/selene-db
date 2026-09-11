@@ -152,7 +152,7 @@ impl CatalogDelta {
                     id: descriptor::id_decode(d)?,
                     generation: self::generation(d)?,
                 },
-                _ => return Err(E::Invalid("catalog operation tag")),
+                _ => return Err(E::Unsupported("catalog operation tag")),
             };
             if !seen.insert(change_id(&change)) {
                 return Err(E::Invalid("duplicate catalog change"));

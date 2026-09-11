@@ -8,6 +8,9 @@ fn name(s: &str) -> PathSegment {
 }
 
 pub fn fixture(rows: usize, indexes: bool) -> (tempfile::TempDir, Database) {
+    fixture_graphs(rows, indexes, GRAPHS)
+}
+pub fn fixture_graphs(rows: usize, indexes: bool, graphs: usize) -> (tempfile::TempDir, Database) {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::create(dir.path()).unwrap();
     db.catalog()
@@ -43,7 +46,7 @@ pub fn fixture(rows: usize, indexes: bool) -> (tempfile::TempDir, Database) {
             CreatePolicy::Strict,
         )
         .unwrap();
-    for graph in 0..GRAPHS {
+    for graph in 0..graphs {
         db.catalog()
             .create_graph(&path(graph), Some(&ty), CreatePolicy::Strict)
             .unwrap();
@@ -65,8 +68,11 @@ pub fn fixture(rows: usize, indexes: bool) -> (tempfile::TempDir, Database) {
 }
 
 pub fn verify(db: &Database, rows: usize, sum: i64) {
+    verify_graphs(db, rows, sum, GRAPHS);
+}
+pub fn verify_graphs(db: &Database, rows: usize, sum: i64, graphs: usize) {
     let mut total = 0;
-    for graph in 0..GRAPHS {
+    for graph in 0..graphs {
         let s = db.session(&path(graph)).unwrap();
         let ExecutionOutcome::Rows { result, .. } = s
             .execute("MATCH (n:Doc) RETURN n.id, n.n ORDER BY n.id")

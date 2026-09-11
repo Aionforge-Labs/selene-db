@@ -4,7 +4,8 @@ This is the first public fallible durable facade, not durable-preview, GA,
 conformance or power-loss qualification. `release_claimable=false` and GT03 remain
 unchanged. [PR04](durable-commit.md) owns the separate transaction outcomes;
 [PR06](rotation-retention.md) adds explicit checkpoint-coupled rotation/retention,
-PR07 owns the comprehensive recovery campaign, and PR08
+[PR07](recovery-verification.md) adds shared full-readiness read-only verification
+and a bounded recovery campaign; PR08 owns
 legacy deletion and the durable-preview contract.
 
 ## Recorded owner decisions

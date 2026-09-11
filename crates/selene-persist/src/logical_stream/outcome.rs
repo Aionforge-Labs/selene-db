@@ -66,6 +66,27 @@ pub enum Durability {
 /// Framing, control, I/O, or protocol error, retaining concrete causal errors.
 #[derive(Debug, thiserror::Error)]
 pub enum StreamError {
+    /// Validated artifact and bounded cursor context supplied by the reader.
+    #[error("format-2 artifact {name:?} at {offset:?}, next {expected_sequence:?}: {source}")]
+    Artifact {
+        /// Managed basename, not I/O authority.
+        name: String,
+        /// Byte cursor within this artifact, where known.
+        offset: Option<u64>,
+        /// Trusted next sequence at the cursor, where known.
+        expected_sequence: Option<u64>,
+        /// Original typed physical failure.
+        source: Box<StreamError>,
+    },
+    /// The selected database lacks an initial full snapshot.
+    #[error("missing initial database snapshot")]
+    MissingSnapshot,
+    /// Specifically incomplete captured unsealed suffix; no truncation is authorized.
+    #[error("incomplete authoritative WAL tail; no repair")]
+    IncompleteTail,
+    /// A prior failure permanently terminated this reader.
+    #[error("format-2 reader terminated by failure")]
+    Terminated,
     /// Retained-directory/control failure.
     #[error(transparent)]
     Persist(#[from] PersistError),
@@ -84,6 +105,22 @@ pub enum StreamError {
     /// Owning runtime preparation failed before any append.
     #[error("commit preparation failed: {0}")]
     Preparation(#[source] Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl StreamError {
+    pub(super) fn at(
+        self,
+        name: impl Into<String>,
+        offset: Option<u64>,
+        expected_sequence: Option<u64>,
+    ) -> Self {
+        Self::Artifact {
+            name: name.into(),
+            offset,
+            expected_sequence,
+            source: Box::new(self),
+        }
+    }
 }
 
 /// Failed commit with phase, recovery evidence, live progress and causal cleanup failure.

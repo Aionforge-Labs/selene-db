@@ -49,11 +49,11 @@ pub(super) fn decode<T: DeserializeOwned>(bytes: &[u8], magic: [u8; 4]) -> Persi
     if !tail.is_empty() || envelope.magic != magic {
         return Err(ControlError::Envelope("magic or trailing bytes").into());
     }
-    if envelope.version != VERSION {
-        return Err(ControlError::UnsupportedVersion.into());
-    }
     if *blake3::hash(envelope.body).as_bytes() != envelope.digest {
         return Err(ControlError::Checksum.into());
+    }
+    if envelope.version != VERSION {
+        return Err(ControlError::UnsupportedVersion.into());
     }
     let (value, tail) =
         postcard::take_from_bytes(envelope.body).map_err(|_| ControlError::Envelope("payload"))?;

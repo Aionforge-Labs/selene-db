@@ -18,7 +18,7 @@ mod semantic;
 fn logical_body_rejects_unassigned_version() {
     assert_eq!(
         LogicalTransaction::decode(&[2, 0, 0, 0], Limits::default()).unwrap_err(),
-        E::Invalid("logical body version")
+        E::Unsupported("logical body version")
     );
 }
 

@@ -14,6 +14,8 @@ use std::{
 mod fixture;
 #[path = "durable_checkpoint/lifecycle.rs"]
 mod lifecycle;
+#[path = "durable_checkpoint/verification.rs"]
+mod verification;
 use fixture::*;
 
 fn witness(rows: usize, count: usize, indexes: bool) -> Duration {
@@ -152,6 +154,10 @@ fn rss_child(rows: usize, hold: bool) {
 }
 
 fn main() {
+    if std::env::var_os("SELENE_RECOVERY_BENCH").is_some() {
+        verification::run();
+        return;
+    }
     if let Ok(mode) = std::env::var("SELENE_CHECKPOINT_RSS_CHILD") {
         let (rows, hold) = mode.split_once(':').unwrap();
         rss_child(rows.parse().unwrap(), hold == "held");
