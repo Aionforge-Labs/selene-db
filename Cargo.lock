@@ -1823,7 +1823,9 @@ dependencies = [
  "selene-db-core",
  "selene-db-gql",
  "selene-db-graph",
+ "selene-db-persist",
  "selene-db-profile",
+ "tempfile",
 ]
 
 [[package]]

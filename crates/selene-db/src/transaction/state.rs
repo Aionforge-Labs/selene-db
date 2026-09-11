@@ -56,7 +56,9 @@ pub enum TransactionState {
     RolledBack,
     /// The complete successor state was published and acknowledged.
     Committed,
-    /// The complete successor state was published but acknowledgement was uncertain.
+    /// Termination was not acknowledged. In-memory mutations have published;
+    /// durable failures require inspecting `Error::durable_commit_outcome` for
+    /// recovery evidence and live visibility, which may precede publication.
     Indeterminate,
 }
 

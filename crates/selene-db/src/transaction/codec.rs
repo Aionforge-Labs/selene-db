@@ -1,4 +1,4 @@
-//! F02-PR03 pure codec preparation. PR04 connects this to the existing authority.
+//! Pure codec preparation used before the authoritative format-2 append.
 
 use super::{DatabaseDraft, DatabaseState};
 use selene_catalog::{
@@ -11,10 +11,6 @@ use std::sync::Arc;
 impl DatabaseDraft {
     /// Build the complete transaction from real detached inputs without publishing,
     /// appending, syncing, notifying providers, or changing the facade outcome contract.
-    #[allow(
-        dead_code,
-        reason = "pure preparation seam; F02-PR04 owns live durable invocation"
-    )]
     pub(crate) fn logical_transaction(
         &self,
         base: &Arc<DatabaseState>,

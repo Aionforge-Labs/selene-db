@@ -395,28 +395,17 @@ fn inactive_declarations_are_owner_scoped_fresh_on_replace_and_cleaned_on_owner_
 
 #[test]
 fn selected_unique_rule_is_declared_and_remains_enforced_after_index_drop() {
-    use crate::{CreatePolicy, GraphTypeDefinition, NodeTypeDefinition, ObjectPath, PathSegment};
+    use crate::ObjectPath;
     let (database, _, path) = fixture();
     let ty = ObjectPath::regular("selene", "authority", "closed").unwrap();
-    let definition = GraphTypeDefinition::builder()
-        .with_node_type(
-            NodeTypeDefinition::new(
-                PathSegment::regular("Base").unwrap(),
-                vec![PathSegment::regular("Base").unwrap()],
-            )
-            .unwrap(),
-        )
-        .build()
-        .unwrap();
-    database
-        .catalog()
-        .create_graph_type(&ty, definition, CreatePolicy::Strict)
-        .unwrap();
-    database
-        .catalog()
-        .create_graph(&path, Some(&ty), CreatePolicy::OrReplace)
-        .unwrap();
+    crate::transaction::test_schema::bind_schema(
+        &database,
+        &path,
+        &ty,
+        &["CREATE NODE TYPE :Sensor (serial :: STRING, age :: INT64)"],
+    );
     let session = database.session(&path).unwrap();
+    session.execute("DROP NODE TYPE :Sensor").unwrap();
     session
         .execute("CREATE NODE TYPE :Sensor (serial :: STRING UNIQUE, age :: INT64)")
         .unwrap();

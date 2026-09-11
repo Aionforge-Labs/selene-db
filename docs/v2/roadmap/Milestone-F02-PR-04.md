@@ -16,6 +16,11 @@ initial_status: proposed
 
 Extend the landed facade mutation authority with one authoritative WAL, precise watermarks and defensible commit outcomes. This is the closure owner for #1128.
 
+The [implemented behavior contract](../durable-commit.md) records the owner-approved
+separate durable outcomes and the subsequent both-mode named-type admission
+alignment. It describes private construction, real-file evidence, preflight costs,
+diagnostic mapping and the PR05/PR08 boundaries; no public durable open is added.
+
 ## Start from what exists
 
 The facade already has detached drafts, a serial mutation coordinator and one outer in-memory publication. Its prepare/flush failpoints are not a durable implementation. The current WAL flush calls sync_data but does not retain a flushed offset. Source: S06/S08.

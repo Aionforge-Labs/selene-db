@@ -39,7 +39,11 @@ use crate::{
 };
 
 mod codec;
+mod durable;
+mod named;
 mod state;
+#[cfg(test)]
+mod test_schema;
 
 pub(crate) use state::{DetachedTransaction, MutationMode, TransitionEvent, transition};
 pub use state::{Transaction, TransactionAccessMode, TransactionId, TransactionState};
@@ -318,6 +322,7 @@ impl DatabaseDraft {
                 .bind_catalog(&self.catalog)
                 .map_err(Error::from_catalog_invariant)?;
         }
+        self.validate_named_graph(prepared.snapshot(), prepared.changes())?;
         self.graph_removals.remove(&id);
         self.modified = true;
         self.logical_changes
@@ -333,12 +338,14 @@ impl DatabaseDraft {
 /// One facade-owned serial mutation coordinator.
 pub(crate) struct MutationCoordinator {
     writer: Mutex<()>,
+    durable: Mutex<Option<durable::DurableAuthority>>,
 }
 
 impl MutationCoordinator {
     pub(crate) const fn new() -> Self {
         Self {
             writer: Mutex::new(()),
+            durable: Mutex::new(None),
         }
     }
 }
@@ -362,18 +369,43 @@ impl DatabaseInner {
     /// Validate, publish once, clean graph-scoped runtime state, and acknowledge.
     pub(crate) fn publish_database_draft(
         &self,
+        reservation: MutationReservation<'_>,
+        draft: DatabaseDraft,
+    ) -> Result<AuthorityOutcome> {
+        let mut durable = self.transactions.durable.lock();
+        let result = self.publish_draft_checked(reservation, draft, durable.as_mut());
+        result.map_err(|error| match durable.as_ref() {
+            Some(wal) if error.durable_commit_outcome().is_none() => durable::canceled(error, wal),
+            _ => error,
+        })
+    }
+
+    fn publish_draft_checked(
+        &self,
         _reservation: MutationReservation<'_>,
         mut draft: DatabaseDraft,
+        mut wal: Option<&mut durable::DurableAuthority>,
     ) -> Result<AuthorityOutcome> {
+        if wal.as_ref().is_some_and(|wal| wal.is_fenced()) {
+            return Err(Error::catalog_invariant(
+                "durable writer fenced; reconciliation required",
+            ));
+        }
         if !draft.is_modified() && draft.pinned_graph.is_none() {
             return Ok(AuthorityOutcome::Committed);
         }
         #[cfg(test)]
         if self.take_failure(crate::catalog::FailurePoint::BeforeAuthorityPrepare) {
+            if wal.is_some() {
+                return Err(Error::injected_failure("before durable preparation"));
+            }
             return Ok(AuthorityOutcome::Canceled);
         }
         #[cfg(test)]
         if self.take_failure(crate::catalog::FailurePoint::BeforeAuthorityFlush) {
+            if wal.is_some() {
+                return Err(Error::injected_failure("before authoritative append"));
+            }
             return Ok(AuthorityOutcome::Canceled);
         }
 
@@ -527,10 +559,15 @@ impl DatabaseInner {
         }
 
         #[cfg(test)]
-        if self.take_failure(crate::catalog::FailurePoint::BeforePublication) {
+        if wal.is_none() && self.take_failure(crate::catalog::FailurePoint::BeforePublication) {
             return Ok(AuthorityOutcome::Canceled);
         }
 
+        draft.validate_named_replacements(&current)?;
+        let encoded = wal
+            .as_mut()
+            .map(|wal| durable::prepare(wal, &draft, &current))
+            .transpose()?;
         let DatabaseDraft {
             catalog,
             graph_types,
@@ -569,16 +606,53 @@ impl DatabaseInner {
 
         // The sole facade mutation cut-line. No facade code outside this
         // authority may store the outer database state.
-        self.state.store(next);
-        for id in forget_graphs {
-            self.procedures.forget_graph(id);
+        let publish = |notification: Option<
+            &mut selene_persist::logical_stream::Publication<'_>,
+        >| {
+            #[cfg(test)]
+            if notification.is_some()
+                && self.take_failure(crate::catalog::FailurePoint::BeforePublication)
+            {
+                return Err(selene_persist::logical_stream::StreamError::Protocol(
+                    "interrupted before outer publication",
+                ));
+            }
+            self.state.store(next);
+            if let Some(notification) = notification {
+                notification.mark_published();
+            }
+            #[cfg(test)]
+            if self.take_failure(crate::catalog::FailurePoint::AfterPublicationObserverPanic) {
+                panic!("injected post-store observer unwind");
+            }
+            for id in forget_graphs {
+                self.procedures.forget_graph(id);
+            }
+            #[cfg(test)]
+            if self.take_failure(crate::catalog::FailurePoint::AfterPublicationAcknowledgement) {
+                return Err(selene_persist::logical_stream::StreamError::Protocol(
+                    "interrupted acknowledgment",
+                ));
+            }
+            Ok(())
+        };
+        if let (Some(wal), Some(encoded)) = (wal, encoded) {
+            wal.wal
+                .commit(
+                    encoded.group,
+                    || false,
+                    |notification| publish(Some(notification)),
+                )
+                .map_err(Error::durable_failure)?;
+            wal.replay = encoded.replay;
+            Ok(AuthorityOutcome::Committed)
+        } else {
+            Ok(if publish(None).is_ok() {
+                AuthorityOutcome::Committed
+            } else {
+                AuthorityOutcome::Indeterminate
+            })
         }
-
-        #[cfg(test)]
-        if self.take_failure(crate::catalog::FailurePoint::AfterPublicationAcknowledgement) {
-            return Ok(AuthorityOutcome::Indeterminate);
-        }
-        Ok(AuthorityOutcome::Committed)
     }
 
     #[cfg(test)]

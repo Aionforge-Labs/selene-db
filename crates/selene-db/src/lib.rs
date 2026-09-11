@@ -13,8 +13,9 @@
 //! transaction state, serial multi-request visibility, and one outer in-memory
 //! publication for implicit and explicit mutations. An
 //! [`ErrorKind::MutationIndeterminate`] result means the complete mutation is
-//! already visible and must not be retried blindly. Persistence remains owned
-//! by M09.
+//! already visible and must not be retried blindly. F02-PR04 separately reports
+//! [`DurableCommitOutcome`] for the private format-2 commit path; it does not
+//! add public durable create/open (owned by F02-PR05).
 //!
 //! # Quickstart
 //!
@@ -104,6 +105,9 @@
 #![deny(missing_docs)]
 
 mod auth;
+#[cfg(feature = "test-harness")]
+#[doc(hidden)]
+pub mod benchmark;
 mod catalog;
 mod catalog_snapshot;
 mod catalog_stage;
@@ -139,7 +143,10 @@ pub use config::{DatabaseConfig, OpenMode};
 pub use database::{Database, DatabaseBuilder};
 pub use declarations::*;
 pub use diagnostic::{DiagnosticBundle, GqlStatusObject};
-pub use error::{Error, ErrorKind, GqlStatus};
+pub use error::{
+    DurableCommitOutcome, DurableCommitPhase, DurableCommitPosition, DurableCommitState, Error,
+    ErrorKind, GqlStatus,
+};
 pub use graph_type::{GraphTypeBuilder, GraphTypeDefinition, NodeTypeDefinition};
 pub use handle::{DatabaseId, EdgeRef, GraphGeneration, GraphRef, NodeRef};
 pub use outcome::{

@@ -274,6 +274,7 @@ pub(crate) enum FailurePoint {
     BeforeAuthorityFlush,
     BeforePublication,
     AfterPublicationAcknowledgement,
+    AfterPublicationObserverPanic,
 }
 
 #[cfg(test)]

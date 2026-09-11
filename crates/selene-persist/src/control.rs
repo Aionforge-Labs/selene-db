@@ -6,6 +6,7 @@
 //! data APIs reject a control directory, and empty control rejects data files.
 
 mod codec;
+pub(crate) mod logical;
 mod types;
 
 use std::io::{Read, Write};
@@ -280,15 +281,25 @@ fn publish(
     manifest: &EmptyManifest,
     initial: bool,
 ) -> PersistResult<CurrentSelector> {
-    let dir = guard.directory();
     let bytes = manifest.encode()?;
     let selector = CurrentSelector::from_manifest(manifest, *blake3::hash(&bytes).as_bytes());
+    publish_bytes(guard, &bytes, &selector, initial)?;
+    Ok(selector)
+}
+
+fn publish_bytes(
+    guard: &ManifestEpochGuard,
+    bytes: &[u8],
+    selector: &CurrentSelector,
+    initial: bool,
+) -> PersistResult<()> {
+    let dir = guard.directory();
     let current_bytes = selector.encode()?;
-    let name = PathBuf::from(manifest.generation.name());
+    let name = PathBuf::from(&selector.manifest_name);
     if dir.contains(&name)? && read_bounded(dir, &name)? != bytes {
         return Err(ControlError::Lineage.into());
     }
-    let temp = stage(guard, &bytes, "manifest")?;
+    let temp = stage(guard, bytes, "manifest")?;
     let immutable = (|| -> PersistResult<()> {
         dir.check_fault("manifest.publish")?;
         match dir.publish_new(&temp, &name) {
@@ -342,7 +353,7 @@ fn publish(
             Err(error)
         };
     }
-    Ok(selector)
+    Ok(())
 }
 
 #[cfg(test)]

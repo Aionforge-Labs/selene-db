@@ -133,9 +133,20 @@ impl Session {
                 Err(Error::mutation_indeterminate())
             }
             Err(error) => {
-                transaction.transition(TransitionEvent::CommitCanceled)?;
+                let uncertain = error
+                    .durable_commit_outcome()
+                    .is_some_and(|outcome| outcome.state != crate::DurableCommitState::Canceled);
+                transaction.transition(if uncertain {
+                    TransitionEvent::CommitIndeterminate
+                } else {
+                    TransitionEvent::CommitCanceled
+                })?;
                 if error.kind() == crate::ErrorKind::StaleSessionReference {
                     Err(Error::transaction_rollback())
+                } else if error.durable_commit_outcome().is_none()
+                    && error.gqlstatus() == Some(crate::GqlStatus::GRAPH_TYPE_VIOLATION)
+                {
+                    Err(Error::local_commit_rollback(error))
                 } else {
                     Err(error)
                 }

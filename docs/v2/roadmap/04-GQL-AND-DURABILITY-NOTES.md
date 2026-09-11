@@ -55,7 +55,12 @@ The durable order is **validate/prepare → append → synchronize → publish �
 | WAL synchronized, publication/ack interrupted | Recovery must preserve the whole durable transaction; never call it definitely canceled |
 | Derived provider fails | Cannot undo a committed authoritative transaction; required constraint state blocks unsafe writes/open |
 
-The current in-memory MutationIndeterminate case documents a mutation already visible. Do not silently map every new pre-publication durable ambiguity into that same promise. F02-PR04 explicitly owns the API/status distinction and its live-versus-recovered tests.
+The in-memory MutationIndeterminate case documents a mutation already visible.
+F02-PR04 preserves it and adds a separate [durable outcome contract](../durable-commit.md):
+proven cancellation, uncertain durability, and synchronized-but-unacknowledged state
+carry phase and live visibility independently. Named-type admission is aligned in
+both modes; unused instance-local declarations remain valid without relaxing the
+shared named constraint.
 
 GQL commit failures under §8.4 and connection-related unknown statuses are not interchangeable labels. Choose diagnostic codes from the applicable situation and retain useful causes/phase context (§23). Cancellation must not interrupt an irreversible commit and then pretend the caller’s canceled task proves the transaction canceled. No automatic retry is safe solely because a request returned an indeterminate error.
 
