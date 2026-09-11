@@ -10,9 +10,15 @@ use crate::{
 use selene_core::logical::{CodecError as E, CodecResult, Decoder, Encoder};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod checkpoint;
 mod declaration;
 mod descriptor;
 mod native;
+
+pub use checkpoint::{decode_records, encode_records};
+
+#[cfg(test)]
+mod checkpoint_tests;
 
 /// Wire domain order; IDs in distinct domains are never interchangeable.
 pub const DOMAINS: [Kind; 9] = [

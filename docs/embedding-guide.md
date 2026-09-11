@@ -57,7 +57,8 @@ The crate set is layered so transitive footprint stays small:
 selene-db = { version = "2.0.0-alpha.1" }
 ```
 
-The facade owns one in-memory catalog. Create a schema and graph through the
+The facade owns one immutable catalog. The infallible builder is memory-only.
+Create a schema and graph through the
 catalog lifecycle service, then select the graph when constructing a session:
 
 ```rust
@@ -92,10 +93,56 @@ the session dictionary. Graph-backed values are checked against the selected
 graph before execution. The lower runtime resolves binding-table references
 through one request-owned registry; the facade exposes neither physical tables
 nor raw registry access. The session is `Send` but not `Sync`, so an embedder
-must serialize access rather than issue concurrent requests. Persistence
-configuration, facade transactions, cancellation, and session set/reset/close
-controls are not exposed yet. Successful regular results retain immutable row
+must serialize access rather than issue concurrent requests. Explicit facade
+transactions and session controls share the same outer authority. Successful regular results retain immutable row
 values and analyzer-declared field descriptors.
+
+### Fallible format-2 facade lifecycle
+
+The containing directory must already exist and be empty for strict creation:
+
+```rust
+use selene_db::{CreatePolicy, Database, ObjectPath, SchemaPath};
+
+fn restart(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let database = Database::create(path)?;
+    database.catalog().create_schema(&SchemaPath::regular("selene", "memory")?, CreatePolicy::Strict)?;
+    let graph = ObjectPath::regular("selene", "memory", "episodes")?;
+    database.catalog().create_graph(&graph, None, CreatePolicy::Strict)?;
+    let session = database.session(&graph)?;
+    session.execute("START TRANSACTION")?;
+    session.execute("INSERT (:Episode {n: 1})")?;
+    session.execute("COMMIT")?;
+    database.checkpoint()?;
+    session.execute("INSERT (:Episode {n: 2})")?;
+    drop(session); // Sessions retain database ownership, including LOCK.
+    drop(database);
+    let reopened = Database::open(path)?;
+    assert_eq!(reopened.session(&graph)?.execute("MATCH (n:Episode) RETURN n")?.row_count(), Some(2));
+    Ok(())
+}
+```
+
+Use `DatabaseDirectory::from_file` and `create_in`/`open_in` for caller-owned open
+directory authority. `Database::open_mode()` reports the actual instance mode;
+builder configuration does not accept ignored persistence settings. Checkpoint
+holds the serial write reservation through I/O. Open is non-destructive and
+eagerly rebuilds all retained supported indexes before returning; no optional
+degraded or background-ready mode exists. Old owning sessions must be dropped
+before another writer can open the directory. Old process-local references never
+rebind to the fresh DatabaseId.
+
+`GraphTypeDefinition`, `NodeTypeDefinition`, `EdgeTypeDefinition` and
+`PropertyDefinition` construct richer **Rust** named schemas with the existing
+`Type`/`Value`, defaults, nullability, UNIQUE and immutability. Install the type
+through `Catalog::create_graph_type` and bind a graph to its path. Endpoints name
+node types; there is no ignored directed-only flag. Use existing mutation calls
+for supported indexes. This does not expand the property-free GQL catalog
+graph-type subset. See the tested rustdoc and
+[checkpoint/reopen contract](v2/checkpoint-reopen.md) for exact bounds, outcomes,
+compatibility and remaining PR06/07/08 responsibilities. This is not a GA or
+durable-preview/conformance announcement. Lower legacy persistence recipes below
+are advanced historical APIs and are not the facade's format-2 open path.
 
 ## Advanced lower-engine APIs
 

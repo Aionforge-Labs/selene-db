@@ -39,6 +39,10 @@ name = "catalog_lifecycle"
 harness = false
 
 [[bench]]
+name = "durable_checkpoint"
+harness = false
+
+[[bench]]
 name = "durable_commit"
 harness = false
 required-features = ["test-harness"]

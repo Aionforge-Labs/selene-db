@@ -225,6 +225,12 @@ impl<'a> CatalogStager<'a> {
         self.inner.after_descriptor_staging()?;
         let mut graph = SeleneGraph::new(core_graph_id(id));
         graph.meta.bound_type = runtime;
+        crate::registration_stage::stage_constraints(
+            &mut transaction,
+            id,
+            &graph,
+            &mut self.draft.high_water,
+        )?;
         self.draft.catalog = transaction.build().map_err(Error::from_catalog_invariant)?;
         self.draft.high_water.graph = raw;
         graph

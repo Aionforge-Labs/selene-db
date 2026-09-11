@@ -19,11 +19,18 @@ struct Envelope<'a> {
 
 pub(super) fn encode<T: Serialize>(value: &T, magic: [u8; 4]) -> PersistResult<Vec<u8>> {
     let body = postcard::to_stdvec(value).map_err(|_| ControlError::Envelope("encode"))?;
+    encode_payload(&body, magic)
+}
+
+pub(super) fn encode_payload(body: &[u8], magic: [u8; 4]) -> PersistResult<Vec<u8>> {
+    if body.len() > MAX_CONTROL_BYTES {
+        return Err(ControlError::TooLarge.into());
+    }
     let envelope = Envelope {
         magic,
         version: VERSION,
-        digest: *blake3::hash(&body).as_bytes(),
-        body: &body,
+        digest: *blake3::hash(body).as_bytes(),
+        body,
     };
     let bytes =
         postcard::to_stdvec(&envelope).map_err(|_| ControlError::Envelope("encode envelope"))?;

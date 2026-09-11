@@ -25,6 +25,14 @@ pub use types::{
 /// Authoritative selector filename for the empty-control protocol.
 pub const CURRENT_FILE_NAME: &str = "CURRENT";
 
+/// Frame bounded fuzz payloads using the production control integrity primitive.
+/// This creates no selected state or filesystem authority and validates no semantics.
+#[cfg(feature = "test-harness")]
+#[doc(hidden)]
+pub fn frame_fuzz_payload(body: &[u8], magic: [u8; 4]) -> PersistResult<Vec<u8>> {
+    codec::encode_payload(body, magic)
+}
+
 /// Single-writer handle to a complete empty-store control state.
 ///
 /// No database sessions, graph/catalog recovery, or transaction commits are

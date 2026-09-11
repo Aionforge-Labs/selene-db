@@ -4,6 +4,15 @@ use super::*;
 use crate::logical_frame::Context;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
+mod checkpoint;
+pub(crate) use checkpoint::{SnapshotDescriptor, publish_checkpoint};
+
+pub(crate) struct Selected {
+    pub metadata: EmptyManifest,
+    pub selector: CurrentSelector,
+    pub context: Context,
+    pub checkpoint: Option<SnapshotDescriptor>,
+}
 
 pub(crate) const LOG_NAME: &str = "WAL-00000000000000000001.logical";
 
@@ -24,10 +33,13 @@ fn decode(bytes: &[u8]) -> PersistResult<LogicalManifest> {
 }
 
 pub(crate) fn validate(bytes: &[u8]) -> PersistResult<()> {
+    if bytes.starts_with(b"SLDM") {
+        return checkpoint::validate(bytes);
+    }
     decode(bytes).map(|_| ())
 }
 
-pub(crate) fn create(control: EmptyStoreControl) -> PersistResult<(StoreWriter, File, Context)> {
+pub(crate) fn create(control: EmptyStoreControl) -> PersistResult<(StoreWriter, File, Selected)> {
     if control.fenced {
         return Err(ControlError::RequiresReopen.into());
     }
@@ -62,15 +74,33 @@ pub(crate) fn create(control: EmptyStoreControl) -> PersistResult<(StoreWriter, 
     publish_bytes(&guard, &bytes, &selector, false)?;
     let context = context(&manifest, &selector);
     drop(guard);
-    Ok((control.authority, file, context))
+    Ok((
+        control.authority,
+        file,
+        Selected {
+            metadata: manifest.metadata,
+            selector,
+            context,
+            checkpoint: None,
+        },
+    ))
 }
 
 pub(crate) fn select(
     guard: &PersistenceReadGuard,
     expected: &CompatibilityIdentity,
-) -> PersistResult<(File, Context)> {
+) -> PersistResult<(File, Selected)> {
     expected.validate()?;
     let dir = guard.directory();
+    let selected = select_in(dir, expected)?;
+    Ok((dir.open_read(LOG_NAME)?, selected))
+}
+
+pub(crate) fn select_in(
+    dir: &StoreDirectory,
+    expected: &CompatibilityIdentity,
+) -> PersistResult<Selected> {
+    expected.validate()?;
     for name in dir.entries()? {
         let path = Path::new(&name);
         dir.regular_metadata(path)?;
@@ -85,6 +115,11 @@ pub(crate) fn select(
                 | crate::MANIFEST_LOCK_FILE_NAME
         ) && !is_manifest_name(text)
             && !is_stage_name(text)
+            && !checkpoint::is_snapshot_name(text)
+            && !text
+                .strip_prefix(".snapshot.")
+                .and_then(|s| s.strip_suffix(".tmp"))
+                .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok())
         {
             return Err(ControlError::MixedArtifacts(path.into()).into());
         }
@@ -93,6 +128,9 @@ pub(crate) fn select(
     let bytes = read_bounded(dir, Path::new(&selector.manifest_name))?;
     if *blake3::hash(&bytes).as_bytes() != selector.digest {
         return Err(ControlError::Checksum.into());
+    }
+    if bytes.starts_with(b"SLDM") {
+        return checkpoint::decode_selected(&bytes, selector, expected);
     }
     let manifest = decode(&bytes)?;
     if manifest.metadata.store_id != selector.store_id
@@ -105,7 +143,12 @@ pub(crate) fn select(
     if &manifest.metadata.identity != expected {
         return Err(ControlError::Compatibility.into());
     }
-    Ok((dir.open_read(LOG_NAME)?, context(&manifest, &selector)))
+    Ok(Selected {
+        context: context(&manifest, &selector),
+        metadata: manifest.metadata,
+        selector,
+        checkpoint: None,
+    })
 }
 
 fn context(manifest: &LogicalManifest, selector: &CurrentSelector) -> Context {

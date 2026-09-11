@@ -12,10 +12,15 @@ pub struct LogicalReader {
     limit: usize,
     ended: bool,
     incomplete: bool,
+    pub(super) position: Position,
+    pub(super) selected: crate::control::logical::Selected,
     _epoch: crate::PersistenceReadGuard,
 }
 
 impl LogicalReader {
+    pub(super) fn limit(&self) -> usize {
+        self.limit
+    }
     /// Select exact control metadata independently of the frames being validated.
     /// The read lease remains held until this reader is dropped. Do not re-enter
     /// same-directory mutation while consuming it.
@@ -28,7 +33,8 @@ impl LogicalReader {
             return Err(logical_frame::FrameError::Limit.into());
         }
         let epoch = crate::PersistenceReadGuard::acquire_in(dir)?;
-        let (file, context) = crate::control::logical::select(&epoch, expected)?;
+        let (file, selected) = crate::control::logical::select(&epoch, expected)?;
+        let context = selected.context;
         let length = file.metadata()?.len();
         Ok(Self {
             file: file.take(length),
@@ -36,6 +42,15 @@ impl LogicalReader {
             limit,
             ended: false,
             incomplete: false,
+            position: Position {
+                store: context.store,
+                epoch: context.epoch,
+                segment: context.segment,
+                sequence: 0,
+                offset: 0,
+                digest: context.previous,
+            },
+            selected,
             _epoch: epoch,
         })
     }
@@ -76,7 +91,11 @@ impl LogicalReader {
                 Decoded::Incomplete { .. } => {
                     return Err(StreamError::Protocol("decoder made no progress"));
                 }
-                Decoded::Complete { body, digest, .. } => {
+                Decoded::Complete {
+                    body,
+                    digest,
+                    consumed,
+                } => {
                     let body = body.into_owned();
                     self.context.sequence = self
                         .context
@@ -84,6 +103,13 @@ impl LogicalReader {
                         .checked_add(1)
                         .ok_or(StreamError::Protocol("sequence exhausted"))?;
                     self.context.previous = digest;
+                    self.position.sequence = self.context.sequence - 1;
+                    self.position.offset = self
+                        .position
+                        .offset
+                        .checked_add(consumed as u64)
+                        .ok_or(logical_frame::FrameError::Limit)?;
+                    self.position.digest = digest;
                     self.ended = false;
                     return Ok(Some(body));
                 }

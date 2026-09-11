@@ -16,6 +16,11 @@ initial_status: proposed
 
 Create a complete format-2 checkpoint and a first facade create/open/reopen path that reconstructs catalog and graph state together.
 
+The [implemented behavior and recorded owner decisions](../checkpoint-reopen.md)
+specify serialized checkpoint writes, eager reconstruction of all retained
+supported indexes, and the minimal richer public Rust schema builder. GQL catalog
+grammar and conformance claims are unchanged.
+
 ## Start from what exists
 
 The current DatabaseBuilder only builds in-memory databases. New fallible persistence APIs belong beside the actual database/configuration owners, not a presumed existing builder.rs. This first reopen slice precedes the comprehensive recovery campaign; it is not release certification. Source: S05.
@@ -47,7 +52,7 @@ process-local DatabaseId and binding newly issued handles to that live instance.
 - [ ] Mixed edges, selected value types and graph-type restrictions survive restart with fresh process-local handle validation.
 - [ ] Durable facade reopen preserves StoreId/epoch but rejects old or foreign process-local handles, without changing infallible in-memory construction.
 - [ ] An incomplete staged snapshot is never selected as authoritative; corrupt required sections fail rather than becoming empty graphs.
-- [ ] Required derived constraint state is complete before writes; optional accelerator rebuild status is explicit.
+- [ ] Required constraint state and every retained supported optional index are rebuilt before open returns; failure returns no Database.
 
 ## Validation and performance
 

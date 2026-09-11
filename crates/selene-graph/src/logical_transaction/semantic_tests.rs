@@ -5,6 +5,8 @@ use selene_catalog::{
     ElementKind, IndexConfiguration, IndexDeclaration, IndexId, PropertyTarget,
 };
 use selene_core::{PropertyDiff, PropertyValueType, SchemaPropertyIndexKind};
+#[path = "runtime_tests.rs"]
+mod runtime;
 
 fn property(name: &str, kind: PropertyValueType, value: Option<Value>) -> PropertyTypeDef {
     PropertyTypeDef {

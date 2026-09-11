@@ -15,6 +15,87 @@ iai-callgrind instruction-count layer — it needs valgrind, which never runs on
 the macOS dev machine, so it was dropped rather than left as a perpetually-TBD
 placeholder.
 
+## Format-2 checkpoint and reopen — durable_checkpoint
+
+F02-PR05 working-tree measurement over base `bd219118e8a22adbc4bbb0f4265cf91f8df6c37d`,
+**2026-09-11**, native Apple M5 / 16 GiB / macOS 27.0 (26A5425a), Rust 1.97.1,
+optimized Cargo bench profile, mimalloc. First public lifecycle baseline, not an
+A/B speedup, SLO, capacity or crash/power-loss claim.
+
+```bash
+scripts/run-benches.sh --bench durable_checkpoint --compile-only
+scripts/run-benches.sh --profile quick --bench durable_checkpoint
+```
+
+Eight Criterion rows, 10 samples, 50 ms warm-up and 100 ms requested measurement;
+some sample collections extended to 134–204 ms. Gnuplot was absent; the normal
+Plotters backend generated `target/criterion/format2_open/` artifacts. Builds and
+measurements were serial. Raw stdout, snapshot digests and native `time` output
+are retained in the task's `bench-compile.log`, initial `bench-run.log`, and
+`bench-final.log` (handoff gives
+the exact evidence directory). The final run below followed a timing-boundary
+correction to include temporary-image destruction inside the measured reservation.
+Criterion detected no significant reopen change across the two runs; this is
+not presented as an optimization comparison.
+
+The deterministic fixture source is `crates/selene-db/benches/durable_checkpoint/fixture.rs`:
+three named graphs, 32 or 256 rows **per graph**, integer identities, UNIQUE,
+defaults, text, two-component vectors and JSON. The indexed configuration adds
+12 registrations total—four per graph: scalar, composite, text and HNSW (M=8,
+construction effort=32). The comparison configuration still validates UNIQUE; it does not
+disable constraints. Suffixes contain 1 or 16 actual acknowledged updates.
+Every reopen checks all ordered IDs/values, the update total, durable position and
+reconstructed index count. Each independent first-open witness prints its exact
+snapshot BLAKE3 digest; live and reopened semantic results are checked rather than
+assuming a serialized-byte round trip is sufficient.
+
+| Rows/graph | Registered indexes | Suffix | Warm-reopen Criterion estimate / interval (ms) | Independent first-open range, 3 witnesses (ms) | Snapshot bytes |
+|---:|---:|---:|---:|---:|---:|
+| 32 | 0 | 1 | 1.235 / 1.227–1.252 | 1.571–1.896 | 74,259 |
+| 32 | 0 | 16 | 6.752 / 5.871–7.700 | 6.722–7.334 | 74,259 |
+| 32 | 12 | 1 | 1.763 / 1.743–1.813 | 2.245–2.511 | 76,491 |
+| 32 | 12 | 16 | 6.854 / 6.626–7.260 | 7.446–8.432 | 76,491 |
+| 256 | 0 | 1 | 3.416 / 3.250–3.705 | 3.552–3.753 | 166,587 |
+| 256 | 0 | 16 | 12.884 / 12.518–13.557 | 12.985–13.978 | 166,587 |
+| 256 | 12 | 1 | 8.532 / 8.302–8.921 | 8.601–12.830 | 168,819 |
+| 256 | 12 | 16 | 18.697 / 18.006–19.682 | 18.246–19.411 | 168,819 |
+
+"First open" is first facade open after dropping all owners, **not cold OS cache**.
+All opens verify the retained prefix: 8 records without indexes or 20 with them.
+At 256 rows/graph and 12 indexes, prefix verification plus semantic suffix replay
+took 0.783–0.883 ms for one suffix record and 10.346–11.167 ms for 16. Verified
+whole-log bytes were 20,137 / 28,747, not just suffix bytes. Eager native/runtime
+reconstruction took 5.728–6.427 ms with all indexes, versus 0.724–0.813 ms without
+registered indexes; both include required type/UNIQUE validation. This is not a
+claim that those timings isolate only index allocation. One first-open witness
+spent 3.681 ms in final synchronization; that observed outlier is retained above.
+
+Full checkpoint witness time was 19.876–26.407 ms; its measured serial write
+reservation, including temporary destruction, was 19.875–26.407 ms. No concurrent writes during checkpoint I/O are
+claimed. A separate 60-read/40-write workload held an immutable reader while
+three checkpoints ran. Actual foreground write p50/p95/max was
+4.730/5.225/48.912 ms at 32 rows/graph, and 8.630/9.624/55.746 ms at 256. These
+are end-to-end successful request latencies, not isolated lock wait or unconstrained
+arrival-rate measurements. Held-reader results and reopened totals were asserted.
+Retained storage after those checkpoints grew 151,368 → 228,260 → 305,726 bytes
+and 249,366 → 418,587 → 588,382 bytes respectively; no pruning is hidden.
+
+The same sanctioned target runs sequential isolated native child workloads under
+`/usr/bin/time -l` on macOS. Three complete text replacements/checkpoints retain
+or release an old reader, keeping the workload otherwise identical:
+
+| Rows/graph | Released-reader process peak RSS (bytes) | Held-reader process peak RSS (bytes) |
+|---:|---:|---:|
+| 32 | 19,087,360 | 19,185,664 |
+| 256 | 47,579,136 | 47,955,968 |
+
+These are **measured whole-process peak RSS**, including setup, preflight, graph
+copies, indexes and snapshot buffers—not logical allocation charges or a precise
+reader-only increment. One sample per configuration is not an allocator-regression
+statistical claim. The 256-row child retained 642,316 → 1,204,489 → 1,766,664
+artifact bytes across its three checkpoints. Larger databases, long suffixes,
+Linux performance and the PR07/F06 crash campaign remain unmeasured here.
+
 ## Format-2 durable commit — durable_commit
 
 F02-PR04, **2026-09-11**, native Apple M5 / 16 GiB / macOS 27.0 (26A5425a),

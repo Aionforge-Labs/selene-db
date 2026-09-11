@@ -5,7 +5,7 @@
 //! not carry this crate's 2.x stability promise unless a type is intentionally
 //! re-exported here.
 //!
-//! The current facade owns one in-memory catalog with named schemas, graphs, and
+//! The facade owns one immutable catalog with named schemas, graphs, and
 //! closed graph types. A [`Session`] holds copied catalog/profile defaults,
 //! optional embedder-provided authorization, a controlled typed parameter map,
 //! and one active-request slot. [`RequestOutcome`] retains the immutable context
@@ -14,8 +14,11 @@
 //! publication for implicit and explicit mutations. An
 //! [`ErrorKind::MutationIndeterminate`] result means the complete mutation is
 //! already visible and must not be retried blindly. F02-PR04 separately reports
-//! [`DurableCommitOutcome`] for the private format-2 commit path; it does not
-//! add public durable create/open (owned by F02-PR05).
+//! [`DurableCommitOutcome`] for the format-2 commit path. [`Database::create`],
+//! [`Database::open`] and [`Database::checkpoint`] provide fallible durable
+//! lifecycle separately from the infallible memory builder. Checkpoint serializes
+//! writes; open eagerly rebuilds all retained supported indexes or returns an error.
+//! This first slice adds no destructive repair, background readiness or release claim.
 //!
 //! # Quickstart
 //!
@@ -116,6 +119,7 @@ mod database;
 mod ddl;
 mod declarations;
 mod diagnostic;
+mod durable;
 mod error;
 mod graph_type;
 mod handle;
@@ -143,11 +147,18 @@ pub use config::{DatabaseConfig, OpenMode};
 pub use database::{Database, DatabaseBuilder};
 pub use declarations::*;
 pub use diagnostic::{DiagnosticBundle, GqlStatusObject};
+pub use durable::{
+    CheckpointOutcome, DatabaseDirectory, DurableStatus, RecoveryInfo, StorageError,
+    StorageErrorKind, StoragePhase,
+};
 pub use error::{
     DurableCommitOutcome, DurableCommitPhase, DurableCommitPosition, DurableCommitState, Error,
     ErrorKind, GqlStatus,
 };
-pub use graph_type::{GraphTypeBuilder, GraphTypeDefinition, NodeTypeDefinition};
+pub use graph_type::{
+    EdgeTypeDefinition, GraphTypeBuilder, GraphTypeDefinition, NodeTypeDefinition,
+    PropertyDefinition,
+};
 pub use handle::{DatabaseId, EdgeRef, GraphGeneration, GraphRef, NodeRef};
 pub use outcome::{
     DeclaredType, ExecutionOutcome, RegularResult, ResultDescriptor, ResultField, ResultRow,

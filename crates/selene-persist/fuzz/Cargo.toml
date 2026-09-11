@@ -11,7 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4.13"
-selene-persist = { package = "selene-db-persist", path = "..", version = "2.0.0-alpha.1" }
+selene-persist = { package = "selene-db-persist", path = "..", version = "2.0.0-alpha.1", features = ["test-harness"] }
 selene-core = { package = "selene-db-core", path = "../../selene-core", version = "2.0.0-alpha.1" }
 selene-graph = { package = "selene-db-graph", path = "../../selene-graph", version = "2.0.0-alpha.1" }
 selene-catalog = { package = "selene-db-catalog", path = "../../selene-catalog", version = "2.0.0-alpha.1" }
@@ -20,6 +20,13 @@ blake3 = "1.8.6"
 # whose checksums are correct, or WAL 3.0's integrity checks make the target
 # unreachable past its first frame.
 xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
+
+[[bin]]
+name = "decode_logical_snapshot"
+path = "fuzz_targets/decode_logical_snapshot.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "decode_control"

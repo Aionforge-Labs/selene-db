@@ -38,6 +38,7 @@ use crate::{
     database::{DatabaseInner, DatabaseState, GraphInstance, HighWaterMarks},
 };
 
+mod checkpoint;
 mod codec;
 mod durable;
 mod named;
@@ -362,7 +363,7 @@ impl DatabaseInner {
             0,
             "catalog lifecycle entered under a same-thread graph request lease"
         );
-        let mut writer = self.transactions.writer.lock();
+        let mut writer = self.lock_writer();
         execute(MutationReservation::new(&mut writer))
     }
 

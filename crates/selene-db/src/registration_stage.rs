@@ -104,7 +104,7 @@ impl DatabaseDraft {
     }
 }
 
-fn stage_constraints(
+pub(crate) fn stage_constraints(
     transaction: &mut CatalogTransaction,
     owner: GraphId,
     graph: &selene_graph::SeleneGraph,

@@ -2,7 +2,7 @@
 
 This document specifies the pure codec and isolated replay model, **not facade
 open/reopen**. [F02-PR04](durable-commit.md) connects private append/sync/publication/acknowledgment; PR05 owns
-checkpoint, runtime reconstruction and durable facade open; PR06 owns lifecycle;
+[checkpoint, runtime reconstruction and durable facade open](checkpoint-reopen.md); PR06 owns lifecycle;
 PR07 owns the long recovery campaign. GT03 remains unsupported. Codec tests with
 multiple graph payloads do not enable multigraph GQL transactions.
 
