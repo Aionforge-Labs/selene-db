@@ -166,7 +166,13 @@ impl StoreDirectory {
     }
 
     pub(crate) fn entries(&self) -> PersistResult<Vec<OsString>> {
-        native::entries(&self.file)
+        native::entries(&self.file, usize::MAX)
+    }
+
+    /// Reject an oversized maintenance inventory during enumeration, not after
+    /// collecting all names. Other existing directory callers keep their policy.
+    pub(crate) fn entries_bounded(&self, limit: usize) -> PersistResult<Vec<OsString>> {
+        native::entries(&self.file, limit)
     }
 
     pub(crate) fn rename(&self, from: &Path, to: &Path) -> PersistResult<()> {

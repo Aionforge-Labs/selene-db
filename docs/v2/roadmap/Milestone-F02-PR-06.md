@@ -16,6 +16,8 @@ initial_status: proposed
 
 Rotate and prune durable artifacts without losing the only recoverable lineage or invalidating readers that have already selected it.
 
+Implementation contract and evidence: [rotation and explicit retention](../rotation-retention.md).
+
 ## Start from what exists
 
 F02-PR05 establishes a working checkpoint/reopen slice. The remaining risk is lifecycle coordination: a saved path is not a retention lease, and a rename is not by itself a durable control publication.

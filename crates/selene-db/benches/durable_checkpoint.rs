@@ -12,6 +12,8 @@ use std::{
 };
 #[path = "durable_checkpoint/fixture.rs"]
 mod fixture;
+#[path = "durable_checkpoint/lifecycle.rs"]
+mod lifecycle;
 use fixture::*;
 
 fn witness(rows: usize, count: usize, indexes: bool) -> Duration {
@@ -161,6 +163,9 @@ fn main() {
         .measurement_time(Duration::from_millis(100))
         .configure_from_args();
     for rows in [32, 256] {
+        for _ in 0..3 {
+            lifecycle::witness(rows);
+        }
         for indexes in [false, true] {
             for count in [1, 16] {
                 let (dir, db) = fixture(rows, indexes);

@@ -1,11 +1,10 @@
-//! Non-destructive writer reopen: retain LOCK, then one read epoch through all use.
+//! Non-destructive writer reopen: retain LOCK and a selected artifact lease through use.
 
 use super::*;
 use crate::{
     control::{CURRENT_FILE_NAME, CompatibilityIdentity},
-    logical_snapshot::{self, SnapshotContext},
+    logical_snapshot::SnapshotContext,
 };
-use std::io::Read;
 
 /// Isolated recovery owner. No database is usable until semantic validation and
 /// eager runtime rebuilding finish and the caller consumes [`Self::finish`].
@@ -52,7 +51,8 @@ impl ReopeningWal {
             .checkpoint
             .as_ref()
             .ok_or(StreamError::Protocol("missing initial database snapshot"))?;
-        let boundary_seen = snapshot.boundary == reader.position;
+        let boundary_seen =
+            snapshot.boundary == reader.position || reader.selected.rotation.is_some();
         Ok(Self {
             reader,
             authority,
@@ -78,48 +78,15 @@ impl ReopeningWal {
         }
     }
 
-    /// Load exact selected image under the retained read epoch. Fixed-header checks
+    /// Load exact selected image under the retained artifact lease. Fixed-header checks
     /// and the aggregate encoded-byte ceiling precede the full allocation.
     pub fn snapshot_body(&self) -> Result<Vec<u8>, StreamError> {
-        let s = self
-            .reader
-            .selected
-            .checkpoint
-            .as_ref()
-            .expect("full snapshot selection");
-        let mut file = self.authority.directory().open_read(&s.name)?;
-        if file.metadata()?.len() != s.bytes {
-            return Err(StreamError::Protocol("snapshot descriptor length"));
-        }
-        let mut header = [0; logical_snapshot::HEADER_LEN];
-        file.read_exact(&mut header)?;
-        let context = self.snapshot_context();
-        let length = logical_snapshot::required_length(&header, context, self.reader.limit())
-            .map_err(|e| StreamError::Preparation(Box::new(e)))?;
-        if length as u64 != s.bytes {
-            return Err(StreamError::Protocol("snapshot declared length"));
-        }
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(length)
-            .map_err(|_| logical_frame::FrameError::Limit)?;
-        bytes.extend_from_slice(&header);
-        file.take((length - header.len()) as u64)
-            .read_to_end(&mut bytes)?;
-        let body_length = logical_snapshot::decode(&bytes, context, &s.digest, self.reader.limit())
-            .map_err(|e| StreamError::Preparation(Box::new(e)))?
-            .len();
-        bytes.copy_within(
-            logical_snapshot::HEADER_LEN..logical_snapshot::HEADER_LEN + body_length,
-            0,
-        );
-        bytes.truncate(body_length);
-        Ok(bytes)
+        self.reader.snapshot_body()
     }
 
-    /// Verify the retained prefix from its independent origin, then return only
-    /// suffix bodies for semantic replay. This deliberately scans the entire WAL;
-    /// checkpoint/suffix metrics must not describe it as prefix-free recovery.
+    /// Verify the selected segment from its declared base, returning suffix bodies
+    /// for semantic replay. PR05 selections still verify their complete prefix;
+    /// rotating selections start at the snapshot-covered global sequence instead.
     pub fn next_body(&mut self) -> Result<Option<Vec<u8>>, StreamError> {
         if self.failed {
             return Err(StreamError::Protocol("reopen reader terminated by failure"));
@@ -190,7 +157,7 @@ impl ReopeningWal {
         let mut file = self
             .authority
             .directory()
-            .open_write(std::path::Path::new(crate::control::logical::LOG_NAME))?;
+            .open_write(std::path::Path::new(&self.reader.selected.log_name()))?;
         if file.metadata()?.len() != position.offset {
             return Err(StreamError::Protocol("WAL changed during reopen"));
         }

@@ -208,6 +208,25 @@ fn consumer_reopens_exact_catalog_native_values_mixed_edges_and_fresh_references
         vec![vec![Value::Float(0.0)], vec![Value::Float(1.0)]]
     );
     assert_eq!(expected[3], expected[4]);
+    // Repeat the complete multi-graph/default/index lifecycle before explicit
+    // cleanup; a fresh checkpoint makes the old prefix unnecessary for reopen.
+    database.checkpoint().unwrap();
+    let compacted = database.checkpoint().unwrap();
+    let cleanup = database.prune().unwrap();
+    assert!(cleanup.cleanup_error.is_none());
+    assert!(!cleanup.removed.is_empty());
+    assert!(
+        cleanup
+            .removed
+            .iter()
+            .any(|a| a.name == checkpoint.snapshot)
+    );
+    assert!(
+        cleanup
+            .retained
+            .iter()
+            .any(|a| a.artifact.name == compacted.snapshot)
+    );
     let catalog = database.catalog().snapshot().logical_catalog().unwrap();
     let declarations = database
         .catalog()
@@ -236,6 +255,7 @@ fn consumer_reopens_exact_catalog_native_values_mixed_edges_and_fresh_references
         declarations
     );
     assert!(database.recovery_info().unwrap().rebuilt_indexes >= 5);
+    assert_eq!(database.recovery_info().unwrap().verified_prefix_records, 0);
     let session = database.session(&path("memory", "episodes")).unwrap();
     for (query, expected) in queries.iter().zip(expected) {
         assert_eq!(rows(&session, query), expected, "{query}");
@@ -308,6 +328,10 @@ fn consumer_reopens_exact_catalog_native_values_mixed_edges_and_fresh_references
 #[test]
 fn memory_build_remains_infallible_and_missing_open_never_initializes() {
     let database = DatabaseBuilder::from_config(DatabaseConfig::default()).build();
+    assert_eq!(
+        database.prune().unwrap_err().kind,
+        StorageErrorKind::InMemory
+    );
     assert!(database.durable_status().is_none());
     assert_eq!(
         database.checkpoint().unwrap_err().kind,

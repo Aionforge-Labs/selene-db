@@ -86,13 +86,16 @@ pub(super) fn metadata(dir: &File, name: &Path) -> PersistResult<Option<EntryMet
     }))
 }
 
-pub(super) fn entries(dir: &File) -> PersistResult<Vec<OsString>> {
+pub(super) fn entries(dir: &File, limit: usize) -> PersistResult<Vec<OsString>> {
     let entries = fs::Dir::read_from(dir).map_err(std::io::Error::from)?;
     let mut names = Vec::new();
     for entry in entries {
         let entry = entry.map_err(std::io::Error::from)?;
         let bytes = entry.file_name().to_bytes();
         if bytes != b"." && bytes != b".." {
+            if names.len() == limit {
+                return Err(crate::ControlError::TooLarge.into());
+            }
             names.push(std::ffi::OsStr::from_bytes(bytes).to_os_string());
         }
     }

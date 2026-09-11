@@ -63,6 +63,7 @@ repository or issue evidence.
 ## Policy and evidence documents
 
 - [Coherent checkpoint and facade reopen](checkpoint-reopen.md)
+- [Checkpoint rotation, artifact leases and explicit retention](rotation-retention.md)
 
 - [2.0 line and 1.x end-of-life policy](eol-and-version-policy.md)
 - [Conformance and claim policy](conformance-policy.md)

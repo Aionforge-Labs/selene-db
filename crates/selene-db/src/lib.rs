@@ -148,8 +148,9 @@ pub use database::{Database, DatabaseBuilder};
 pub use declarations::*;
 pub use diagnostic::{DiagnosticBundle, GqlStatusObject};
 pub use durable::{
-    CheckpointOutcome, DatabaseDirectory, DurableStatus, RecoveryInfo, StorageError,
-    StorageErrorKind, StoragePhase,
+    CheckpointOutcome, DatabaseDirectory, DurableStatus, PruneOutcome, RecoveryInfo,
+    RetainedArtifact, RetentionReason, StorageArtifact, StorageError, StorageErrorKind,
+    StoragePhase,
 };
 pub use error::{
     DurableCommitOutcome, DurableCommitPhase, DurableCommitPosition, DurableCommitState, Error,

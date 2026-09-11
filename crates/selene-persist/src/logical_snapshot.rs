@@ -129,7 +129,10 @@ pub fn decode<'a>(
 
 fn validate_context(context: SnapshotContext) -> Result<(), CodecError> {
     let p = context.boundary;
-    if p.segment == [0; 32] || p.digest == [0; 32] || (p.sequence == 0) != (p.offset == 0) {
+    // A rotated empty segment can cover a nonzero global sequence. The selected
+    // control validates offset/sequence/digest against its trusted segment base;
+    // the envelope must exactly match that externally supplied context.
+    if p.segment == [0; 32] || p.digest == [0; 32] || (p.sequence == 0 && p.offset != 0) {
         return Err(CodecError::Invalid("snapshot context"));
     }
     Ok(())

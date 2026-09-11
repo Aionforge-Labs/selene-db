@@ -3,6 +3,67 @@ use crate::control::{CompatibilityIdentity, EmptyStoreControl};
 
 #[path = "checkpoint_tests.rs"]
 mod checkpoint;
+#[path = "compatibility_tests.rs"]
+mod compatibility;
+#[path = "process_tests.rs"]
+mod process;
+#[path = "prune_tests.rs"]
+mod prune;
+
+#[test]
+fn rotation_changes_segment_not_global_sequence_or_acknowledgment() {
+    let (_temp, dir, mut wal) = fixture();
+    wal.checkpoint(b"initial", 0).unwrap();
+    commit(&mut wal, &[b"one"]);
+    let old = wal.progress();
+    let stale = wal.prepare(&[b"stale"], Compression::Raw, 1024).unwrap();
+    let checkpoint = wal.checkpoint(b"one image", 1).unwrap();
+    let base = wal.progress().synchronized;
+    assert_eq!(checkpoint.boundary, old.synchronized);
+    assert_eq!(base.sequence, 1);
+    assert_eq!(base.offset, 0);
+    assert_ne!(base.segment, old.synchronized.segment);
+    assert_eq!(wal.progress().acknowledged, old.acknowledged);
+    let error = wal
+        .commit(stale, || false, |_| panic!("stale publication"))
+        .unwrap_err();
+    assert_eq!(error.durability, Durability::Canceled);
+    // An empty repeat still has a nonzero global sequence at offset zero.
+    wal.checkpoint(b"same image", 1).unwrap();
+    commit(&mut wal, &[b"two"]);
+    assert_eq!(wal.progress().synchronized.sequence, 2);
+    drop(wal);
+    let mut reopen = ReopeningWal::open(&dir, &identity(), 1024).unwrap();
+    assert_eq!(reopen.snapshot_body().unwrap(), b"same image");
+    assert_eq!(reopen.next_body().unwrap().unwrap(), b"two");
+    assert!(reopen.next_body().unwrap().is_none());
+    assert_eq!(reopen.prefix_records(), 0);
+    assert_eq!(reopen.finish().unwrap().progress().acknowledged, None);
+}
+
+#[test]
+fn selected_reader_allows_checkpoint_before_consumption() {
+    use std::{sync::mpsc, time::Duration};
+    let (_temp, dir, mut wal) = fixture();
+    wal.checkpoint(b"initial", 0).unwrap();
+    commit(&mut wal, &[b"selected prefix"]);
+    let mut reader = LogicalReader::open(&dir, &identity(), 1024).unwrap();
+    let (done, completed) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        wal.checkpoint(b"new image", 1).unwrap();
+        done.send(()).unwrap();
+        wal
+    });
+    let published_while_leased = completed.recv_timeout(Duration::from_secs(2)).is_ok();
+    assert_eq!(reader.next_body().unwrap().unwrap(), b"selected prefix");
+    assert!(reader.next_body().unwrap().is_none());
+    drop(reader);
+    drop(worker.join().unwrap());
+    assert!(
+        published_while_leased,
+        "publication waited for artifact consumption"
+    );
+}
 
 fn identity() -> CompatibilityIdentity {
     CompatibilityIdentity::new("commit-test", 1, [7; 32], [17, 0, 0], "binary", 1).unwrap()

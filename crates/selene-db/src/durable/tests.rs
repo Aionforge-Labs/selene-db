@@ -65,9 +65,14 @@ fn public_create_checkpoint_suffix_reopen_and_session_retained_lock() {
     );
     session.execute("INSERT (:Item {n: 3})").unwrap();
     database.checkpoint().unwrap();
+    database.checkpoint().unwrap();
+    let cleanup = database.prune().unwrap();
+    assert!(cleanup.cleanup_error.is_none());
+    assert!(!cleanup.removed.is_empty());
     drop(session);
     drop(database);
     let database = Database::open(dir.path()).unwrap();
+    assert_eq!(database.recovery_info().unwrap().verified_prefix_records, 0);
     assert_eq!(
         database
             .session(&path)

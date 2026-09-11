@@ -96,6 +96,76 @@ statistical claim. The 256-row child retained 642,316 → 1,204,489 → 1,766,66
 artifact bytes across its three checkpoints. Larger databases, long suffixes,
 Linux performance and the PR07/F06 crash campaign remain unmeasured here.
 
+### PR06 rotating lifecycle and actual artifact-reader retention
+
+**2026-09-11**, working tree over `f2f72767650004b29eac6ffdfb15a8a1ddecf882`,
+same native Apple M5 / 16 GiB / macOS 27.0 (26A5425a), Rust 1.97.1,
+optimized bench profile and mimalloc. Commands remain:
+
+```bash
+scripts/run-benches.sh --bench durable_checkpoint --compile-only
+scripts/run-benches.sh --profile quick --bench durable_checkpoint
+```
+
+The existing target now also runs `durable_checkpoint/lifecycle.rs`: three
+independent fixtures per scale, each with three checkpoints and four acknowledged
+updates after each. A LogicalReader selects and pins actual immutable control
+before the first checkpoint; its delayed snapshot and 20 WAL records are consumed
+only after explicit prune. Twelve scalar/composite/text/HNSW registrations remain
+query-ready. Native file lengths are checked against successful prune accounting.
+A deliberate 19-byte unclassified orphan remains visible deferred debt, never
+selected or counted as reclaimed. These are new lifecycle baselines, not A/B
+speedup claims against PR05's different full-prefix recovery work.
+
+| Rows/graph (3 graphs) | Full write-reservation range, 9 checkpoints (ms) | Rotation stage range (ms) | Prune with lease, 3 runs (ms) | Extra reader-retained bytes | Reclaimed after release (bytes) | Release prune range (ms) | Reopen after repeated checkpoint/prune (ms) |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 32 | 26.893–34.870 | 20.015–26.088 | 24.639–32.691 | 73,994 | 73,994 | 13.895–17.773 | 5.991–6.430 |
+| 256 | 27.833–33.998 | 19.181–23.145 | 23.841–26.986 | 79,663 | 79,663 | 14.451–16.895 | 13.746–14.424 |
+
+Rotation stage measures old selected snapshot/WAL verification, old-segment
+seal/sync, new-file creation/sync and control publication, excluding new-snapshot
+encoding/I/O and reservation acquisition wait.
+Snapshot files were 76,491 / 168,819 bytes. While leased, total storage after prune
+was 233,063 / 423,388 bytes, becoming 159,069 / 343,725 after release. The first
+prune also reclaimed 79,818 / 172,148 unleased obsolete bytes. The final ten-file
+inventory contains CURRENT, permanent locks, two complete checkpoint roots and
+their data dependencies, plus the explicit 19-byte debt. Reopen verified **zero
+old-prefix records**, four suffix records / 2,296 WAL bytes, and rebuilt 12 indexes.
+
+The unchanged eight Criterion fixture shapes (10 samples, 50 ms warm-up, 100 ms
+requested measurement) now measure rotating selection; intervals are below.
+Some collections extended to 219 ms, with one or two high outliers per row;
+the 256-row/unindexed/16-suffix row also had a low mild outlier.
+
+| Rows/graph | Indexes | Suffix | Reopen estimate / interval (ms) |
+|---:|---:|---:|---:|
+| 32 | 0 | 1 | 1.249 / 1.229–1.275 |
+| 32 | 0 | 16 | 6.153 / 5.819–6.777 |
+| 32 | 12 | 1 | 1.763 / 1.745–1.792 |
+| 32 | 12 | 16 | 6.861 / 6.612–7.266 |
+| 256 | 0 | 1 | 3.382 / 3.236–3.635 |
+| 256 | 0 | 16 | 13.064 / 12.622–13.870 |
+| 256 | 12 | 1 | 8.909 / 8.356–9.653 |
+| 256 | 12 | 16 | 18.321 / 17.862–19.130 |
+
+The retained 60-read/40-write comparator with three concurrent serialized
+checkpoints reported successful write p50/p95/max of 4.630/5.165/63.835 ms (32)
+and 8.410/9.295/65.472 ms (256). That comparator's held reader is an **in-memory
+transaction**, distinct from the measured artifact lease above. Likewise the
+existing one-sample isolated RSS comparator remains an in-memory-reader workload:
+released/held peaks were 19,316,736/19,365,888 and 47,857,664/48,463,872 bytes.
+These are whole-process peaks, not lease-only memory or allocator charges.
+
+Serial raw stdout, digests, timing/RSS output and Criterion artifacts are retained
+under `f02-pr06-evidence-f2f72767` in the task evidence directory; files are
+`67-bench-compile-verified.log`, `68-bench-verified.log`, `24-environment.log` and
+`criterion-format2-open-verified.tar.gz`. Earlier measurements remain in logs
+18–19 and 49–50 plus their Criterion archives. The final run follows bounded
+enumeration and old-root integrity hardening; Criterion detected no significant
+reopen change against the preceding run. No concurrent Cargo/rustc process was found at
+measurement admission. No Linux, long-running retention stress or device
+power-loss measurement is inferred from these modest fixtures.
+
 ## Format-2 durable commit — durable_commit
 
 F02-PR04, **2026-09-11**, native Apple M5 / 16 GiB / macOS 27.0 (26A5425a),

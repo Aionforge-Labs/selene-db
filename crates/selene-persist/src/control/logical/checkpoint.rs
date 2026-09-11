@@ -16,8 +16,8 @@ pub(crate) struct SnapshotDescriptor {
 }
 
 #[derive(Serialize, Deserialize)]
-struct DataManifest {
-    metadata: EmptyManifest,
+pub(super) struct DataManifest {
+    pub(super) metadata: EmptyManifest,
     segment: [u8; 32],
     origin: [u8; 32],
     snapshot: SnapshotDescriptor,
@@ -29,7 +29,7 @@ pub(super) fn is_snapshot_name(name: &str) -> bool {
         .and_then(|s| s.parse::<u64>().ok())
         .is_some_and(|n| n != 0 && snapshot_name(n) == name)
 }
-fn snapshot_name(generation: u64) -> String {
+pub(super) fn snapshot_name(generation: u64) -> String {
     format!("SNAPSHOT-{generation:020}.logical")
 }
 
@@ -60,6 +60,7 @@ pub(super) fn decode_selected(
         metadata: manifest.metadata,
         selector,
         checkpoint: Some(manifest.snapshot),
+        rotation: None,
     })
 }
 
@@ -67,7 +68,7 @@ pub(super) fn validate(bytes: &[u8]) -> PersistResult<()> {
     decode_manifest(bytes).map(|_| ())
 }
 
-fn decode_manifest(bytes: &[u8]) -> PersistResult<DataManifest> {
+pub(super) fn decode_manifest(bytes: &[u8]) -> PersistResult<DataManifest> {
     let manifest: DataManifest = codec::decode(bytes, *b"SLDM")?;
     manifest.metadata.validate()?;
     let p = manifest.snapshot.boundary;
@@ -103,6 +104,37 @@ pub(crate) fn publish_checkpoint(
         return Err(PersistError::Control(ControlError::Stale).into());
     }
     let generation = previous.metadata.generation.next()?;
+    let snapshot = publish_snapshot(dir, generation, body, context)?;
+    let manifest = DataManifest {
+        metadata: EmptyManifest {
+            generation,
+            parent: Some(Parent {
+                generation: previous.metadata.generation,
+                digest: previous.selector.digest,
+            }),
+            ..previous.metadata.clone()
+        },
+        segment: previous.context.segment,
+        origin: previous.context.previous,
+        snapshot,
+    };
+    let bytes = codec::encode(&manifest, *b"SLDM")?;
+    let selector =
+        CurrentSelector::from_manifest(&manifest.metadata, *blake3::hash(&bytes).as_bytes());
+    publish_bytes(guard, &bytes, &selector, false)?;
+    Ok(decode_selected(
+        &bytes,
+        selector,
+        &previous.metadata.identity,
+    )?)
+}
+
+pub(super) fn publish_snapshot(
+    dir: &StoreDirectory,
+    generation: ManifestGeneration,
+    body: &[u8],
+    context: SnapshotContext,
+) -> Result<SnapshotDescriptor, crate::logical_stream::StreamError> {
     let name = snapshot_name(generation.get());
     let bytes =
         logical_snapshot::encode(body, context, selene_core::logical::Limits::default().bytes)
@@ -143,34 +175,13 @@ pub(crate) fn publish_checkpoint(
     dir.publish_new(Path::new(&temp), Path::new(&name))?;
     dir.check_fault("snapshot.dir_sync")?;
     dir.sync()?;
-    let manifest = DataManifest {
-        metadata: EmptyManifest {
-            generation,
-            parent: Some(Parent {
-                generation: previous.metadata.generation,
-                digest: previous.selector.digest,
-            }),
-            ..previous.metadata.clone()
-        },
-        segment: previous.context.segment,
-        origin: previous.context.previous,
-        snapshot: SnapshotDescriptor {
-            name,
-            bytes: bytes.len() as u64,
-            digest,
-            boundary: context.boundary,
-            publication: context.publication,
-        },
-    };
-    let bytes = codec::encode(&manifest, *b"SLDM")?;
-    let selector =
-        CurrentSelector::from_manifest(&manifest.metadata, *blake3::hash(&bytes).as_bytes());
-    publish_bytes(guard, &bytes, &selector, false)?;
-    Ok(decode_selected(
-        &bytes,
-        selector,
-        &previous.metadata.identity,
-    )?)
+    Ok(SnapshotDescriptor {
+        name,
+        bytes: bytes.len() as u64,
+        digest,
+        boundary: context.boundary,
+        publication: context.publication,
+    })
 }
 
 #[cfg(test)]
