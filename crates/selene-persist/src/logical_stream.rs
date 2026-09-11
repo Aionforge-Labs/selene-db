@@ -23,11 +23,18 @@ mod outcome;
 mod prune;
 mod reader;
 mod reader_snapshot;
+mod recovery;
 mod reopen;
+#[cfg(feature = "test-harness")]
+#[doc(hidden)]
+pub use crate::control::logical::fixtures::{
+    ControlMutation, mutate_control_fixture, mutate_snapshot_fixture, repair_fixture_integrity,
+};
 pub use checkpoint::CheckpointInfo;
 pub use outcome::*;
 pub use prune::*;
 pub use reader::LogicalReader;
+pub use recovery::RecoveryReader;
 pub use reopen::ReopeningWal;
 
 /// Maximum controlled synchronous group size; there is no unbounded admission queue.
@@ -217,6 +224,7 @@ impl LogicalWal {
                 self.file.write_all(bytes)?;
                 self.progress.written = *position;
             }
+            self.authority.directory().check_fault("commit.appended")?;
             phase = CommitPhase::Synchronize;
             #[cfg(any(test, feature = "test-harness"))]
             if matches!(self.fault, Some(Fault::Synchronize)) {
@@ -226,6 +234,9 @@ impl LogicalWal {
             self.progress.synchronized = candidate;
             synchronized = true;
             phase = CommitPhase::Publish;
+            self.authority
+                .directory()
+                .check_fault("commit.synchronized")?;
             if canceled() {
                 return Err(StreamError::Protocol("canceled after synchronization"));
             }
@@ -237,6 +248,7 @@ impl LogicalWal {
                 return Err(StreamError::Protocol("outer state not published"));
             }
             phase = CommitPhase::Acknowledge;
+            self.authority.directory().check_fault("commit.published")?;
             if canceled() {
                 return Err(StreamError::Protocol("canceled after publication"));
             }

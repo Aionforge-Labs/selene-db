@@ -74,7 +74,7 @@ pub(super) fn validate_bindings(
         };
         let type_descriptor = catalog
             .descriptor(CatalogObjectId::GraphType(*type_id))
-            .ok_or(E::Invalid("missing constraining type"))?;
+            .ok_or(E::Admission("missing constraining type"))?;
         // Same-schema binding is required by the facade's resolve_binding owner.
         if descriptor.parent() != type_descriptor.parent() {
             return Err(E::Invalid("cross-schema named type binding"));
@@ -82,7 +82,7 @@ pub(super) fn validate_bindings(
         let def = candidate
             .graph_types
             .get(type_id)
-            .ok_or(E::Invalid("missing constraining type"))?;
+            .ok_or(E::Admission("missing constraining type"))?;
         check_name(def, type_descriptor)?;
         let graph_id = GraphId::new(descriptor.id().get());
         let graph = candidate

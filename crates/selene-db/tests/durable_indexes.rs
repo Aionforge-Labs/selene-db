@@ -49,6 +49,17 @@ fn eager_reconstruction_limit_returns_no_database_and_preserves_every_artifact()
     };
     let before = artifacts();
     for _ in 0..2 {
+        let verification = Database::verify(dir.path()).unwrap_err();
+        assert_eq!(verification.kind, StorageErrorKind::ResourceLimit);
+        assert_eq!(verification.phase, StoragePhase::Rebuild);
+        assert!(
+            verification
+                .artifact
+                .as_ref()
+                .unwrap()
+                .starts_with("MANIFEST-")
+        );
+        assert_eq!(artifacts(), before);
         let error = Database::open(dir.path())
             .err()
             .expect("must not return a Database");
@@ -111,6 +122,9 @@ fn all_vector_families_rebuild_with_exact_native_search_guards_and_descriptor_id
         assert!(db.prune().unwrap().cleanup_error.is_none());
         drop(s);
         drop(db);
+        let report = Database::verify(dir.path()).unwrap();
+        assert_eq!(report.recovery.rebuilt_indexes, 1, "verify {kind}/{metric}");
+        assert_eq!((report.graphs, report.nodes), (1, 2));
         let db = Database::open(dir.path()).unwrap();
         assert_eq!(db.recovery_info().unwrap().rebuilt_indexes, 1);
         assert_eq!(

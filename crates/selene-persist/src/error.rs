@@ -41,6 +41,14 @@ impl std::fmt::Display for PersistArtifact {
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[non_exhaustive]
 pub enum PersistError {
+    /// Selected artifact context; the name is diagnostic, never path authority.
+    #[error("selected artifact {name:?}: {source}")]
+    Artifact {
+        /// Managed artifact basename supplied by the owning selection code.
+        name: String,
+        /// Original typed cause, including native I/O errors.
+        source: Box<PersistError>,
+    },
     /// Retained directory authority or platform contract failure.
     #[error(transparent)]
     Directory(#[from] crate::DirectoryError),
@@ -521,6 +529,7 @@ impl PersistError {
     #[must_use]
     pub const fn gqlstatus(&self) -> &'static str {
         match self {
+            Self::Artifact { source, .. } => source.gqlstatus(),
             Self::PrincipalTooLarge { .. } => "22G03",
             Self::PayloadTooLarge { .. }
             | Self::TooManySections { .. }

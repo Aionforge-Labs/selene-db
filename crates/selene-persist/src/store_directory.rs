@@ -14,6 +14,8 @@ mod native;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[path = "store_directory/unsupported.rs"]
 mod native;
+#[cfg(feature = "test-harness")]
+mod observation;
 #[cfg(test)]
 mod test_hooks;
 
@@ -39,6 +41,8 @@ pub struct StoreDirectory {
     locator: Arc<PathBuf>,
     #[cfg(test)]
     hooks: Arc<test_hooks::TestHooks>,
+    #[cfg(feature = "test-harness")]
+    observation: Arc<observation::Observation>,
 }
 
 /// Metadata obtained without following the final managed component.
@@ -82,6 +86,8 @@ impl StoreDirectory {
             locator: Arc::new(locator.into()),
             #[cfg(test)]
             hooks: Arc::default(),
+            #[cfg(feature = "test-harness")]
+            observation: Arc::default(),
         })
     }
 
@@ -127,6 +133,10 @@ impl StoreDirectory {
     }
 
     fn open_file(&self, name: &Path, write: bool, exclusive: bool) -> PersistResult<File> {
+        #[cfg(feature = "test-harness")]
+        if write {
+            self.observe_mutation()?;
+        }
         validate_name(name)?;
         if !exclusive {
             self.regular_metadata(name)?;
@@ -198,6 +208,8 @@ impl StoreDirectory {
     }
 
     pub(crate) fn check_fault(&self, _point: &'static str) -> PersistResult<()> {
+        #[cfg(feature = "test-harness")]
+        self.observe_phase(_point);
         #[cfg(test)]
         self.run_fault(_point)?;
         Ok(())
@@ -218,6 +230,8 @@ impl StoreDirectory {
     /// # Errors
     /// Propagates native synchronization failures; there is no weaker fallback.
     pub fn sync(&self) -> PersistResult<()> {
+        #[cfg(feature = "test-harness")]
+        self.observe_mutation()?;
         self.file.sync_all()?;
         Ok(())
     }

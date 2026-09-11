@@ -11,6 +11,7 @@ pub struct LogicalReader {
     context: Context,
     limit: usize,
     ended: bool,
+    pub(super) failed: std::cell::Cell<bool>,
     incomplete: bool,
     pub(super) position: Position,
     pub(super) selected: crate::control::logical::Selected,
@@ -18,6 +19,8 @@ pub struct LogicalReader {
     // Independently opened description, locked once under the selection epoch.
     // Prune probes this immutable named inode before removing it or dependencies.
     _lease: File,
+    pub(super) captured_bytes: u64,
+    pub(super) last_record_offset: u64,
 }
 
 impl LogicalReader {
@@ -39,9 +42,13 @@ impl LogicalReader {
         if limit > logical_frame::MAX_PAYLOAD {
             return Err(logical_frame::FrameError::Limit.into());
         }
-        let epoch = crate::PersistenceReadGuard::acquire_in(dir)?;
+        let epoch = crate::PersistenceReadGuard::acquire_existing_in(dir)
+            .map_err(|e| StreamError::from(e).at(crate::MANIFEST_LOCK_FILE_NAME, None, None))?;
         let (file, selected) = crate::control::logical::select(&epoch, expected)?;
-        Self::from_selection(dir, file, selected, limit)
+        let reader = Self::from_selection(dir, file, selected, limit)?;
+        drop(epoch);
+        dir.check_fault("reader.captured")?;
+        Ok(reader)
     }
 
     // Caller holds either shared selection epoch or exclusive maintenance epoch.
@@ -51,21 +58,31 @@ impl LogicalReader {
         selected: crate::control::logical::Selected,
         limit: usize,
     ) -> Result<Self, StreamError> {
-        let lease = dir.open_read(selected.manifest_name())?;
-        dir.check_fault("reader.selected")?;
-        lease.lock_shared()?;
+        let selection_error = |e| StreamError::from(e).at(selected.manifest_name(), None, None);
+        let lease = dir
+            .open_read(selected.manifest_name())
+            .map_err(selection_error)?;
+        dir.check_fault("reader.selected")
+            .map_err(selection_error)?;
+        lease.lock_shared().map_err(|e| selection_error(e.into()))?;
         let context = selected.context;
-        let length = file.metadata()?.len();
+        let length = file
+            .metadata()
+            .map_err(|e| StreamError::Io(e).at(selected.log_name(), None, None))?
+            .len();
         Ok(Self {
             file: file.take(length),
             context,
             limit,
             ended: false,
+            failed: std::cell::Cell::new(false),
             incomplete: false,
             position: selected.base(),
             selected,
             directory: dir.clone(),
             _lease: lease,
+            captured_bytes: length,
+            last_record_offset: 0,
         })
     }
 
@@ -73,6 +90,19 @@ impl LogicalReader {
     /// An incomplete final unsealed suffix returns `None` and is not repaired.
     /// After any error, the reader is terminal and must not be used for salvage.
     pub fn next_body(&mut self) -> Result<Option<Vec<u8>>, StreamError> {
+        if self.failed.get() {
+            return Err(StreamError::Terminated);
+        }
+        let offset = self.position.offset;
+        let expected = self.context.sequence;
+        let result = self.read_next();
+        if result.is_err() {
+            self.failed.set(true);
+        }
+        result.map_err(|e| e.at(self.selected.log_name(), Some(offset), Some(expected)))
+    }
+
+    fn read_next(&mut self) -> Result<Option<Vec<u8>>, StreamError> {
         if self.ended {
             return Ok(None);
         }
@@ -110,6 +140,7 @@ impl LogicalReader {
                     digest,
                     consumed,
                 } => {
+                    self.last_record_offset = self.position.offset;
                     let body = body.into_owned();
                     self.context.sequence = self
                         .context

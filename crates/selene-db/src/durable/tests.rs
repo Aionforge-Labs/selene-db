@@ -5,7 +5,7 @@ mod failure;
 #[path = "schedule_tests.rs"]
 mod schedule;
 
-fn fixture() -> (tempfile::TempDir, Database, ObjectPath) {
+pub(super) fn fixture() -> (tempfile::TempDir, Database, ObjectPath) {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::create(dir.path()).unwrap();
     let path = ObjectPath::regular("selene", "data", "graph").unwrap();

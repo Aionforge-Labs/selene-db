@@ -62,12 +62,44 @@ pub enum Boundary {
 /// Framing error. No variant authorizes file truncation or salvage.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, thiserror::Error)]
 pub enum FrameError {
-    /// Corruption, unsupported format, or noncanonical frame content.
+    /// Structural corruption or noncanonical frame content.
     #[error("invalid format-2 frame: {0}")]
     Invalid(&'static str),
     /// Store, epoch, exact sequence, or lineage disagrees with trusted context.
     #[error("format-2 stream context mismatch")]
     Context,
+    /// An intact common envelope selects an unsupported version or codec.
+    #[error("unsupported format-2 frame: {0}")]
+    Unsupported(&'static str),
+    /// Header or complete-record checksum failure; never a harmless torn tail.
+    #[error("format-2 integrity failure: {0}")]
+    Integrity(&'static str),
+    /// Durable store identity differs from the selected context.
+    #[error("foreign format-2 store")]
+    Store,
+    /// Store epoch differs from the selected context.
+    #[error("foreign format-2 epoch")]
+    Epoch,
+    /// Segment anchor differs from selected control.
+    #[error("foreign format-2 segment")]
+    Segment,
+    /// Previous-record or origin digest differs from the trusted boundary.
+    #[error("format-2 digest lineage mismatch")]
+    Origin,
+    /// An exact sequence gap or overlap, with bounded numeric evidence.
+    #[error("format-2 sequence mismatch: expected {expected}, observed {observed}")]
+    Sequence {
+        /// Trusted next sequence.
+        expected: u64,
+        /// Header sequence after header-integrity validation.
+        observed: u64,
+    },
+    /// Snapshot sequence, offset or publication differs from selected control.
+    #[error("format-2 checkpoint boundary mismatch")]
+    SnapshotBoundary,
+    /// Fixed-field decoding failed; retains its owning typed cause.
+    #[error(transparent)]
+    Payload(#[from] selene_core::logical::CodecError),
     /// Encoded or expanded bytes exceed the configured ceiling.
     #[error("format-2 frame resource limit")]
     Limit,
@@ -162,18 +194,21 @@ pub fn decode<'a>(
     if bytes.get(..8).unwrap_or(bytes) != &MAGIC[..bytes.len().min(8)] {
         return Err(FrameError::Invalid("magic"));
     }
-    if bytes.len() >= 12 && bytes[8..12] != [2, 0, 0, 0] {
-        return Err(FrameError::Invalid("version"));
-    }
-    if bytes.len() >= 16 && (bytes[12] > 1 || bytes[13..16] != [0; 3]) {
-        return Err(FrameError::Invalid("codec/flags/reserved"));
-    }
     if bytes.len() < HEADER_LEN {
         return incomplete(boundary, HEADER_LEN);
     }
     let header = &bytes[..HEADER_LEN];
     if blake3::hash(&header[..128]).as_bytes() != &header[128..160] {
-        return Err(FrameError::Invalid("header integrity"));
+        return Err(FrameError::Integrity("header"));
+    }
+    if header[8..12] != [2, 0, 0, 0] {
+        return Err(FrameError::Unsupported("version"));
+    }
+    if header[12] > 1 {
+        return Err(FrameError::Unsupported("codec"));
+    }
+    if header[13..16] != [0; 3] {
+        return Err(FrameError::Invalid("reserved"));
     }
     let encoded = usize::try_from(number(header, 16)).map_err(|_| FrameError::Limit)?;
     let expanded = usize::try_from(number(header, 24)).map_err(|_| FrameError::Limit)?;
@@ -183,13 +218,23 @@ pub fn decode<'a>(
     if header[12] == 0 && encoded != expanded {
         return Err(FrameError::Invalid("raw length"));
     }
-    if number(header, 32) != context.sequence
-        || header[40..56] != *context.store.as_bytes()
-        || number(header, 56) != context.epoch.get()
-        || header[64..96] != context.segment
-        || header[96..128] != context.previous
-    {
-        return Err(FrameError::Context);
+    if header[40..56] != *context.store.as_bytes() {
+        return Err(FrameError::Store);
+    }
+    if number(header, 56) != context.epoch.get() {
+        return Err(FrameError::Epoch);
+    }
+    if header[64..96] != context.segment {
+        return Err(FrameError::Segment);
+    }
+    if number(header, 32) != context.sequence {
+        return Err(FrameError::Sequence {
+            expected: context.sequence,
+            observed: number(header, 32),
+        });
+    }
+    if header[96..128] != context.previous {
+        return Err(FrameError::Origin);
     }
     let total = encoded
         .checked_add(FRAME_OVERHEAD)
@@ -203,7 +248,7 @@ pub fn decode<'a>(
     }
     let digest = blake3::hash(&bytes[..trailer + 8]);
     if digest.as_bytes() != &bytes[trailer + 8..total] {
-        return Err(FrameError::Invalid("record integrity"));
+        return Err(FrameError::Integrity("record"));
     }
     let payload = &bytes[HEADER_LEN..trailer];
     let body = if header[12] == 0 {

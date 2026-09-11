@@ -13,6 +13,8 @@ use selene_persist::{
 
 #[path = "named_tests.rs"]
 mod named_tests;
+#[path = "public_recovery_tests.rs"]
+mod public_recovery_tests;
 
 fn identity() -> CompatibilityIdentity {
     CompatibilityIdentity::new("facade-commit-fixture", 1, [5; 32], [17, 0, 0], "binary", 1)

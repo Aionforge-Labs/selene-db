@@ -150,7 +150,7 @@ pub use diagnostic::{DiagnosticBundle, GqlStatusObject};
 pub use durable::{
     CheckpointOutcome, DatabaseDirectory, DurableStatus, PruneOutcome, RecoveryInfo,
     RetainedArtifact, RetentionReason, StorageArtifact, StorageError, StorageErrorKind,
-    StoragePhase,
+    StoragePhase, VerificationReport,
 };
 pub use error::{
     DurableCommitOutcome, DurableCommitPhase, DurableCommitPosition, DurableCommitState, Error,

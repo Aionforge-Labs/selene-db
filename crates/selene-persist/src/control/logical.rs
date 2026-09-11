@@ -5,6 +5,8 @@ use crate::logical_frame::Context;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 mod checkpoint;
+#[cfg(feature = "test-harness")]
+pub(crate) mod fixtures;
 mod prune;
 mod rotation;
 pub(crate) use checkpoint::{SnapshotDescriptor, publish_checkpoint};
@@ -126,7 +128,8 @@ pub(crate) fn select(
     expected.validate()?;
     let dir = guard.directory();
     let selected = select_in(dir, expected)?;
-    Ok((dir.open_read(selected.log_name())?, selected))
+    let name = selected.log_name();
+    Ok((dir.open_read(&name).map_err(|e| at(&name, e))?, selected))
 }
 
 pub(crate) fn select_in(
@@ -136,10 +139,14 @@ pub(crate) fn select_in(
     expected.validate()?;
     for name in dir.entries()? {
         let path = Path::new(&name);
-        dir.regular_metadata(path)?;
-        let text = name
-            .to_str()
-            .ok_or_else(|| ControlError::MixedArtifacts(path.into()))?;
+        dir.regular_metadata(path)
+            .map_err(|e| at(&name.to_string_lossy(), e))?;
+        let text = name.to_str().ok_or_else(|| {
+            at(
+                &name.to_string_lossy(),
+                ControlError::MixedArtifacts(path.into()).into(),
+            )
+        })?;
         if !matches!(
             text,
             CURRENT_FILE_NAME
@@ -155,11 +162,21 @@ pub(crate) fn select_in(
                 .and_then(|s| s.strip_suffix(".tmp"))
                 .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok())
         {
-            return Err(ControlError::MixedArtifacts(path.into()).into());
+            return Err(at(text, ControlError::MixedArtifacts(path.into()).into()));
         }
     }
-    let selector = CurrentSelector::decode(&read_bounded(dir, Path::new(CURRENT_FILE_NAME))?)?;
-    select_root(dir, selector, expected)
+    let selector = read_bounded(dir, Path::new(CURRENT_FILE_NAME))
+        .and_then(|bytes| CurrentSelector::decode(&bytes))
+        .map_err(|e| at(CURRENT_FILE_NAME, e))?;
+    let name = selector.manifest_name.clone();
+    select_root(dir, selector, expected).map_err(|e| at(&name, e))
+}
+
+fn at(name: &str, source: PersistError) -> PersistError {
+    PersistError::Artifact {
+        name: name.into(),
+        source: Box::new(source),
+    }
 }
 
 fn select_root(

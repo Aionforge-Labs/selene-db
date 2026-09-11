@@ -23,6 +23,19 @@ pub(super) struct DataManifest {
     snapshot: SnapshotDescriptor,
 }
 
+#[cfg(feature = "test-harness")]
+pub(super) fn fixture_encode(selected: &Selected) -> PersistResult<Vec<u8>> {
+    codec::encode(
+        &DataManifest {
+            metadata: selected.metadata.clone(),
+            segment: selected.context.segment,
+            origin: selected.context.previous,
+            snapshot: selected.checkpoint.clone().expect("fixture snapshot"),
+        },
+        *b"SLDM",
+    )
+}
+
 pub(super) fn is_snapshot_name(name: &str) -> bool {
     name.strip_prefix("SNAPSHOT-")
         .and_then(|s| s.strip_suffix(".logical"))

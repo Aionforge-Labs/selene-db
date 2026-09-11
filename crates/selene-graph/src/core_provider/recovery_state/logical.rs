@@ -91,13 +91,13 @@ pub(crate) fn logical_graph(
         match change {
             Change::NodeCreated { id, .. } => {
                 if id.get() < node_floor {
-                    return Err(E::Invalid("reused node identity"));
+                    return Err(E::Admission("reused node identity"));
                 }
                 node_floor = id.get().checked_add(1).ok_or(E::Limit)?;
             }
             Change::EdgeCreated { id, .. } => {
                 if id.get() < edge_floor {
-                    return Err(E::Invalid("reused edge identity"));
+                    return Err(E::Admission("reused edge identity"));
                 }
                 edge_floor = id.get().checked_add(1).ok_or(E::Limit)?;
             }
@@ -119,7 +119,7 @@ pub(crate) fn logical_graph(
         state.apply_change(change).map_err(|_| E::Semantic)?;
     }
     if delta.next_node_id < node_floor || delta.next_edge_id < edge_floor {
-        return Err(E::Invalid("element high water"));
+        return Err(E::Admission("element high water"));
     }
     state.schema_reset_to_open = false;
     charge_columns(state.nodes.len(), state.edges.len(), budget)?;
@@ -144,7 +144,7 @@ pub(crate) fn logical_graph(
         if let Some(edge) = graph.edge_record(*id)
             && (!graph.is_node_alive(edge.first) || !graph.is_node_alive(edge.second))
         {
-            return Err(E::Invalid("missing edge endpoint"));
+            return Err(E::Admission("missing edge endpoint"));
         }
     }
     Ok(graph)

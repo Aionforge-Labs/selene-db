@@ -349,7 +349,7 @@ impl Decoder<'_, '_> {
                 }
                 Value::Duration(Box::new(span))
             }
-            _ => return Err(E::Invalid("value tag")),
+            _ => return Err(E::Unsupported("value tag")),
         })
     }
 }

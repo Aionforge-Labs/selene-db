@@ -110,7 +110,11 @@ fn persisted_native_registration_tampering_fails_before_returning_a_database() {
     let before = std::fs::read(directory.path().join("CURRENT")).unwrap();
     let error = Database::open(directory.path()).err().unwrap();
     assert_eq!(error.phase, StoragePhase::Rebuild);
-    assert_eq!(error.kind, StorageErrorKind::InvalidState);
+    assert_eq!(error.kind, StorageErrorKind::NativeAdmission);
+    let verified = Database::verify(directory.path()).unwrap_err();
+    assert_eq!(verified.kind, error.kind);
+    assert_eq!(verified.phase, error.phase);
+    assert_eq!(verified.artifact, error.artifact);
     assert_eq!(
         std::fs::read(directory.path().join("CURRENT")).unwrap(),
         before

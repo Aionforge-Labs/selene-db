@@ -195,6 +195,19 @@ pub struct CurrentSelector {
 }
 
 impl CurrentSelector {
+    /// Validated immutable manifest basename; not filesystem authority.
+    pub fn manifest_name(&self) -> &str {
+        &self.manifest_name
+    }
+    /// Digest of the exact selected manifest bytes.
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
+    /// Selected control generation, not transaction sequence.
+    pub fn generation(&self) -> ManifestGeneration {
+        self.generation
+    }
+
     pub(super) fn from_manifest(manifest: &EmptyManifest, digest: [u8; 32]) -> Self {
         Self {
             store_id: manifest.store_id,

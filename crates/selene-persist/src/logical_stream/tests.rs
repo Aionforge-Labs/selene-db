@@ -11,6 +11,70 @@ mod process;
 mod prune;
 
 #[test]
+fn reader_missing_epoch_lock_is_non_destructive() {
+    let (_temp, dir, wal) = fixture();
+    drop(wal);
+    let path = dir.locator().join(crate::MANIFEST_LOCK_FILE_NAME);
+    std::fs::remove_file(&path).unwrap();
+    assert!(LogicalReader::open(&dir, &identity(), 1024).is_err());
+    assert!(!path.exists(), "a read must not repair coordination state");
+}
+
+#[test]
+fn selected_lease_failure_retains_artifact_and_native_io_cause() {
+    let (_temp, dir, wal) = fixture();
+    let name = wal.selected.manifest_name().to_owned();
+    dir.fail_with("reader.selected", std::io::ErrorKind::PermissionDenied);
+    let error = LogicalReader::open(&dir, &identity(), 1024).err().unwrap();
+    assert!(
+        matches!(error, StreamError::Artifact { name: actual, source, .. }
+        if actual == name && matches!(&*source, StreamError::Persist(crate::PersistError::Io(e))
+            if e.kind() == std::io::ErrorKind::PermissionDenied))
+    );
+}
+
+#[rstest::rstest]
+#[case::seek("reopen.seek")]
+#[case::sync("reopen.sync")]
+fn final_writer_establishment_io_failure_retains_wal_context(#[case] point: &'static str) {
+    let (_temp, dir, mut wal) = fixture();
+    wal.checkpoint(b"initial", 0).unwrap();
+    commit(&mut wal, &[b"one"]);
+    let position = wal.progress.synchronized;
+    let name = wal.selected.log_name();
+    drop(wal);
+    let before = checkpoint::artifacts(&dir);
+    let mut reopen = ReopeningWal::open(&dir, &identity(), 1024).unwrap();
+    reopen.snapshot_body().unwrap();
+    while reopen.next_body().unwrap().is_some() {}
+    dir.fail_with(point, std::io::ErrorKind::PermissionDenied);
+    let error = reopen.finish().err().expect("native operation seam failed");
+    assert!(
+        matches!(error, StreamError::Artifact { name: actual, offset, expected_sequence, source }
+        if actual == name && offset == Some(position.offset) && expected_sequence == Some(position.sequence)
+            && matches!(&*source, StreamError::Persist(crate::PersistError::Io(e))
+                if e.kind() == std::io::ErrorKind::PermissionDenied))
+    );
+    assert_eq!(checkpoint::artifacts(&dir), before);
+    drop(crate::StoreWriter::acquire_existing(&dir).unwrap());
+}
+
+#[test]
+fn failed_snapshot_cannot_be_ignored_to_finish_reopen() {
+    let (_temp, dir, mut wal) = fixture();
+    let image = wal.checkpoint(b"initial", 0).unwrap();
+    drop(wal);
+    let mut reopen = ReopeningWal::open(&dir, &identity(), 1024).unwrap();
+    std::fs::write(dir.locator().join(image.name), b"damaged").unwrap();
+    assert!(reopen.snapshot_body().is_err());
+    assert!(reopen.next_body().is_err(), "failure must not become EOF");
+    assert!(
+        reopen.finish().is_err(),
+        "failure must not grant write admission"
+    );
+}
+
+#[test]
 fn rotation_changes_segment_not_global_sequence_or_acknowledgment() {
     let (_temp, dir, mut wal) = fixture();
     wal.checkpoint(b"initial", 0).unwrap();
@@ -275,7 +339,10 @@ fn selected_control_is_independent_of_frame_bytes_and_unselected_ancestors() {
     file.write_all(b"x").unwrap();
     file.sync_all().unwrap();
     let mut reader = LogicalReader::open(&dir, &identity(), 1024).unwrap();
-    assert!(matches!(reader.next_body(), Err(StreamError::Frame(_))));
+    assert!(
+        matches!(reader.next_body(), Err(StreamError::Artifact { source, .. })
+        if matches!(*source, StreamError::Frame(_)))
+    );
     drop(reader);
     drop(owner);
 }
@@ -430,7 +497,8 @@ fn selected_manifest_does_not_trust_a_foreign_self_consistent_log() {
     let mut reader = LogicalReader::open(&dir, &identity(), 1024).unwrap();
     assert!(matches!(
         reader.next_body(),
-        Err(StreamError::Frame(logical_frame::FrameError::Context))
+        Err(StreamError::Artifact { source, .. })
+            if matches!(*source, StreamError::Frame(logical_frame::FrameError::Store))
     ));
 }
 

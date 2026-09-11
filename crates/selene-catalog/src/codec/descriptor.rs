@@ -119,7 +119,7 @@ pub(super) fn decode(d: &mut Decoder<'_, '_>) -> CodecResult<CatalogDescriptor> 
         7 => CatalogPayload::Procedure(native::decode(d)?),
         8 => CatalogPayload::Index(declaration::index_decode(d)?),
         9 => CatalogPayload::Constraint(declaration::constraint_decode(d)?),
-        _ => return Err(E::Invalid("catalog payload tag")),
+        _ => return Err(E::Unsupported("catalog payload tag")),
     };
     CatalogDescriptor::new(id, id.kind(), name, parent, revision, creation, payload)
         .map_err(|_| E::Semantic)
