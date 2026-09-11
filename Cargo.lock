@@ -1933,6 +1933,7 @@ name = "selene-db-graph"
 version = "2.0.0-alpha.1"
 dependencies = [
  "arc-swap",
+ "blake3",
  "criterion",
  "immutable-chunkmap",
  "jiff",

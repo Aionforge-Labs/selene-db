@@ -67,6 +67,7 @@ selene-db-core|value_clone|0
 selene-db-core|vector_wgpu|0
 selene-db-graph|single_graph|0
 selene-db-graph|mixed_edge_storage|0
+selene-db-graph|logical_wal|0
 selene-db-graph|vector_index_rebuild|0
 selene-db-graph|vector_pq|0
 selene-db-graph|vector_ivf_pq|0

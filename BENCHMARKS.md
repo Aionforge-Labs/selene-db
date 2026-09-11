@@ -15,6 +15,109 @@ iai-callgrind instruction-count layer — it needs valgrind, which never runs on
 the macOS dev machine, so it was dropped rather than left as a perpetually-TBD
 placeholder.
 
+## Format-2 logical transaction codec — logical_wal
+
+F02-PR03 measurement, **2026-09-10**, Apple M5 / 16 GiB / native macOS 27.0
+(26A5425a), pinned Rust 1.97.1, optimized Cargo bench profile, mimalloc. These
+are new codec measurements, not a refresh of the historical north-star above.
+
+```bash
+scripts/run-benches.sh --bench logical_wal --compile-only
+scripts/run-benches.sh --profile quick --bench logical_wal
+```
+
+The final run completed **80 Criterion rows**, 10 samples, 100 ms warm-up,
+500 ms requested measurement (the 256 MiB rejection row automatically extended
+to about 1.2 s for ten iterations). The host ran Cargo/fuzz/bench serially.
+Encode includes semantic body construction, framing, BLAKE3 and the selected
+compression policy; decode includes complete frame verification/decompression,
+semantic parsing/descriptor validation and output destruction. **No append,
+fsync, live publication, index rebuild or durable reopen is measured.** Isolated
+graph apply has separate correctness tests, not an end-to-end durability latency claim.
+
+Every transaction carries catalog creation plus **two graphs**, each with N nodes
+and N−1 mixed directed/undirected edges. Shapes are i64 scalar, 384-component
+finite vector, canonical JSON, 32-i64 list, named record with JSON/list/U128,
+and catalog-heavy (N inactive projection declarations plus scalar graph data).
+These deliberately repeat data, especially the shifted synthetic vectors; their
+compression ratios are **not real-embedding/corpus predictions**.
+
+Full frame bytes, **RAW / automatic Zstd**, including fixed 200-byte framing:
+
+| Shape | N=1 per graph | N=64 per graph | N=1024 per graph |
+|---|---:|---:|---:|
+| Scalar | 598 / 598 | 10,048 / 875 | 154,048 / 7,952 |
+| Vector | 3,662 / 3,662 | 206,144 / 11,087 | 3,291,584 / 25,572 |
+| JSON | 720 / 720 | 17,966 / 962 | 282,906 / 8,954 |
+| List | 1,166 / 1,166 | 46,400 / 2,707 | 735,680 / 44,640 |
+| Record | 860 / 860 | 26,926 / 1,135 | 426,266 / 10,600 |
+| Catalog-heavy | 787 / 787 | 22,254 / 1,342 | not selected |
+
+Selected final Criterion point estimates (µs per complete transaction; not a
+claim that the four columns have identical work):
+
+| Shape / N | RAW encode | Auto encode | RAW decode | Auto decode |
+|---|---:|---:|---:|---:|
+| Scalar / 1 | 0.826 | 0.843 | 1.165 | 1.158 |
+| Scalar / 64 | 10.620 | 18.256 | 27.528 | 27.962 |
+| Scalar / 1024 | 156.66 | 182.56 | 425.89 | 398.12 |
+| Vector / 1024 | 5,035.4 | 3,901.7 | 2,427.1 | 1,113.9 |
+| JSON / 1024 | 617.55 | 576.70 | 952.81 | 885.36 |
+| List / 1024 | 915.24 | 1,045.6 | 1,281.6 | 1,207.6 |
+| Record / 1024 | 821.83 | 768.39 | 1,406.2 | 1,308.7 |
+| Catalog-heavy / 64 | 22.760 | 26.957 | 52.059 | 49.586 |
+
+For example, scalar/1024 auto encode processes **803.69 MiB/s** of semantic body
+bytes; vector/1024 auto decode processes **2.752 GiB/s** (about 898 complete
+transactions/s). The latter's interval was 1.068–1.204 ms. Other selected intervals:
+scalar/1024 auto encode 178.82–190.20 µs; JSON/1024 auto decode 871.96–907.50 µs;
+catalog/64 auto decode 49.15–50.41 µs. Quick-run outliers and host variance remain.
+
+Threshold and rejection costs:
+
+| Row | Result bytes / codec | Encode / decode or rejection |
+|---|---|---|
+| Full body 4095 bytes, compressible | 4295 / RAW | auto encode 2.575 µs; decode 2.697 µs |
+| Full body 4096 bytes, compressible | 339 / Zstd | auto encode 3.943 µs; decode 3.013 µs |
+| Full body 8192 bytes, compressible | 340 / Zstd | auto encode 4.446 µs; decode 3.867 µs |
+| Framing-only 4096-byte entropy body | 4296 / RAW under both policies | RAW encode 2.275 µs; auto 4.373 µs |
+| Framing-only 65,536-byte entropy body | 65,736 / RAW under both policies | RAW encode 29.797 µs; auto 41.240 µs |
+| Complete 256 MiB frame with invalid semantic version | full encoded integrity scanned, then rejected | 115.15 ms (113.01–117.32 ms), 2.171 GiB/s |
+| Valid-checksum header with u64::MAX length | rejected before body allocation | 108.70 ns (106.78–111.70 ns) |
+
+Thus automatic level-1 compression at 4096 bytes avoids a size penalty for
+incompressible input but still pays attempt CPU. RAW is an explicit option. This
+is a correctness/space/default-policy result, not an fsync speedup.
+
+Memory evidence from fresh child processes, retaining the auto frame, expanded
+body and decoded transaction. Frame capacity and expanded bytes are exact buffer
+sizes. Charged bytes are **conservative enforced allocation accounting**, including
+large resident Change/catalog carriers and validation copies, **not allocator
+callback counts**. RSS delta includes allocator retention and process noise; it
+is not exact live heap size. RAW borrows its body rather than allocating expanded
+storage. The data below do not include an isolated graph materialization/rebuild.
+
+| Shape / N | Frame capacity | Expanded owned bytes | Allocation charge | RSS delta bytes |
+|---|---:|---:|---:|---:|
+| Scalar / 1024 | 7,952 | 153,848 | 26,911,072 | 851,968 |
+| Vector / 1024 | 25,572 | 3,291,384 | 39,493,984 | 6,979,584 |
+| JSON / 1024 | 8,954 | 282,706 | 45,549,872 | 2,457,600 |
+| List / 1024 | 44,640 | 735,480 | 52,076,896 | 1,572,864 |
+| Record / 1024 | 10,600 | 426,066 | 50,530,608 | 3,899,392 |
+| Catalog-heavy / 64 | 1,342 | 22,054 | 1,855,696 | 229,376 |
+
+An earlier exploratory codec draft lacked complete resident-type accounting and
+was faster: vector/1024 auto encode 2.087 ms versus final 3.902 ms; scalar/1024 auto
+encode 146.66 versus 182.56 µs. Criterion reported regressions against that local
+draft. It was not a correct/released baseline or controlled A/B/A experiment, and
+host drift is not separated from the extra checks. The required bounds are retained;
+no optimization or existing-product speedup is claimed. The checked scalar-write
+loop is a potential later measured optimization, not a reason to weaken admission.
+
+The [format/limits contract](docs/v2/format-2-logical-transactions.md) and independent
+goldens/atomic-apply tests define correctness. Long recovery campaigns and native
+cross-platform qualification remain with their owning work items.
+
 ## Running benchmarks
 
 `scripts/run-benches.sh` is the sanctioned entry point. Direct `cargo bench

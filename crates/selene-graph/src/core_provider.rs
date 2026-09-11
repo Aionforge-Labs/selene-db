@@ -28,6 +28,8 @@ use crate::error::{GraphError, GraphResult};
 use crate::graph::SeleneGraph;
 use crate::index_provider::{IndexProvider, ProviderError, ProviderTag, SubTag};
 
+pub(crate) use recovery_state::logical_graph;
+
 pub(crate) fn decode_schema_property(
     property: &selene_core::PropertyDef,
 ) -> Result<crate::PropertyTypeDef, ProviderError> {

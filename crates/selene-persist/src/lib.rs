@@ -19,6 +19,7 @@ mod directory_error;
 pub mod entry_header;
 pub mod error;
 pub mod file_header;
+pub mod logical_frame;
 pub mod manifest;
 mod manifest_lock;
 mod payload;
