@@ -28,7 +28,9 @@ use crate::typed_index::TypedIndex;
 
 mod change_replay;
 mod index_replay;
+mod logical;
 mod materialize;
+pub(crate) use logical::logical_graph;
 mod schema_replay;
 
 pub(super) fn decode_schema_property(

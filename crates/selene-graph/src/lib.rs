@@ -39,6 +39,7 @@ pub(crate) mod id_map;
 pub mod index_provider;
 pub mod json_search;
 mod json_search_candidates;
+pub mod logical_transaction;
 pub mod mutator;
 pub(crate) mod panic_payload;
 pub(crate) mod parallel_scan;

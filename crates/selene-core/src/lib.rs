@@ -33,6 +33,7 @@ pub mod identity;
 mod json_patch;
 mod json_value;
 pub mod label_set;
+pub mod logical;
 pub mod metrics;
 mod numeric_value;
 pub mod origin;

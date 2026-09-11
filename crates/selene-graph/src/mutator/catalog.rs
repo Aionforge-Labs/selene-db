@@ -321,7 +321,7 @@ fn endpoint_depends_on_shifted_node(endpoint: &EdgeEndpointDef, removed_index: u
     }
 }
 
-fn core_node_type_def(node_type: &NodeTypeDef) -> GraphResult<selene_core::NodeTypeDef> {
+pub(crate) fn core_node_type_def(node_type: &NodeTypeDef) -> GraphResult<selene_core::NodeTypeDef> {
     Ok(selene_core::NodeTypeDef {
         labels: node_type.key_labels.clone(),
         properties: core_node_properties(&node_type.properties)?,
@@ -330,7 +330,7 @@ fn core_node_type_def(node_type: &NodeTypeDef) -> GraphResult<selene_core::NodeT
     })
 }
 
-pub(super) fn core_edge_type_def(
+pub(crate) fn core_edge_type_def(
     graph_type: &GraphTypeDef,
     edge_type: &EdgeTypeDef,
 ) -> GraphResult<selene_core::EdgeTypeDef> {

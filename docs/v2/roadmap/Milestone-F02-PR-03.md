@@ -18,7 +18,17 @@ Provide a bounded, versioned logical transaction codec that can replay catalog a
 
 ## Start from what exists
 
-The current Value re-export is a documented bridge with bare-ID reference variants. F03-PR02 must settle runtime versus stored values before this codec is treated as format 2. Mixed edges and catalog metadata must also be present; persistence cannot encode only the easy graph mutations. Source: S05.
+F03-PR02 is merged: query values and the recursively validated `StoredValue`
+boundary are separate, references/paths are query-only, and stored named records
+do not use process-local record type IDs. F01-PR03 mixed edges, F02-PR01 retained
+directory/empty control, and F02-PR02 catalog declarations are also merged. The
+historical Value re-export bridge sentence is not a live prerequisite.
+
+The [format-2 logical transaction contract](../format-2-logical-transactions.md)
+specifies the explicit bytes, complete payload inventory, resource limits,
+isolated apply model and temporary semantic-adapter bridge. Automatic compression
+uses Zstd level 1 at 4096 bytes, retaining RAW unless compression is smaller,
+with independent eight-MiB decoder history and exact single-frame consumption.
 
 **Observed live entry points:** `crates/selene-persist/src/payload.rs`, `crates/selene-persist/src/entry_header.rs`, `crates/selene-persist/src/file_header.rs`, `crates/selene-persist/src/reader.rs`, `crates/selene-persist/src/recovery.rs`, `crates/selene-core/src`
 
@@ -34,12 +44,12 @@ Paths are navigation, not a closed edit inventory. New modules are implementatio
 
 ## Acceptance and concrete regression cases
 
-- [ ] A catalog change and mutations in every graph touched by the transaction recover together or not at all.
-- [ ] Mixed edges, deleted IDs, empty/null values and selected numeric/temporal representations survive independent decode fixtures.
-- [ ] Oversized, overflowing, nested, truncated, compressed-bomb and unknown-version inputs fail within configured work/memory bounds.
-- [ ] A missing sequence, foreign StoreId/epoch or invalid referential order fails before recovery publication.
-- [ ] An incomplete final unsealed frame is distinguishable from an interior or sealed corruption; checksum failure is not automatically a harmless tail.
-- [ ] The on-disk schema contains no Rust enum layout, pointer, candidate token or graph storage-row coordinate.
+- [x] A catalog change and mutations in every graph touched by the transaction recover together or not at all.
+- [x] Mixed edges, deleted IDs, empty/null values and selected numeric/temporal representations survive independent decode fixtures.
+- [x] Oversized, overflowing, nested, truncated, compressed-bomb and unknown-version inputs fail within configured work/memory bounds.
+- [x] A missing sequence, foreign StoreId/epoch or invalid referential order fails before recovery publication.
+- [x] An incomplete final unsealed frame is distinguishable from an interior or sealed corruption; checksum failure is not automatically a harmless tail.
+- [x] The on-disk schema contains no Rust enum layout, pointer, candidate token or graph storage-row coordinate.
 
 ## Validation and performance
 
@@ -56,6 +66,12 @@ No format-1 reader, arbitrary recovery salvage, heuristic skip of unknown author
 ## Bridge/deletion boundary
 
 Legacy codecs remain unreachable from new format-2 entry points and are deleted by F02-PR08. Keep the formats visibly separate during the transition.
+
+The isolated graph apply bridge reuses semantic conversion/data materialization,
+not legacy bytes or catalog replay. F02-PR08 owns replacing/extracting that bridge.
+F02-PR04 invokes pure draft preparation from the existing authority; PR05 rebuilds
+index contents and admits native bindings before durable facade open. No Ready
+descriptor alone activates a runtime, and GT03 remains unsupported.
 
 ## Standards and reviewer focus
 

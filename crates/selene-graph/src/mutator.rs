@@ -1,7 +1,7 @@
 //! Typed mutation funnel per spec 03 section 4.3.
 
 mod assignment;
-mod catalog;
+pub(crate) mod catalog;
 mod catalog_alter;
 mod composite_property_index;
 mod delete;

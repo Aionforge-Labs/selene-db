@@ -38,6 +38,7 @@ use crate::{
     database::{DatabaseInner, DatabaseState, GraphInstance, HighWaterMarks},
 };
 
+mod codec;
 mod state;
 
 pub(crate) use state::{DetachedTransaction, MutationMode, TransitionEvent, transition};
@@ -127,6 +128,7 @@ pub(crate) struct DatabaseDraft {
     pinned_graph: Option<PinnedGraph>,
     graph_removals: BTreeSet<GraphId>,
     graph_replacements: BTreeMap<GraphId, DetachedGraphReplacement>,
+    logical_changes: BTreeMap<GraphId, Vec<selene_core::Change>>,
     selected_graph: Option<Box<SeleneGraph>>,
     allocation: Option<GraphAllocationAuthority>,
     forget_graphs: BTreeSet<CoreGraphId>,
@@ -145,6 +147,7 @@ impl DatabaseDraft {
             pinned_graph: None,
             graph_removals: BTreeSet::new(),
             graph_replacements: BTreeMap::new(),
+            logical_changes: BTreeMap::new(),
             selected_graph: None,
             allocation: None,
             forget_graphs: BTreeSet::new(),
@@ -266,6 +269,7 @@ impl DatabaseDraft {
         self.modified = true;
         self.graph_removals.insert(id);
         self.graph_replacements.remove(&id);
+        self.logical_changes.remove(&id);
     }
 
     pub(crate) fn replace_graph(&mut self, id: GraphId, snapshot: SeleneGraph) -> Result<()> {
@@ -316,6 +320,10 @@ impl DatabaseDraft {
         }
         self.graph_removals.remove(&id);
         self.modified = true;
+        self.logical_changes
+            .entry(id)
+            .or_default()
+            .extend_from_slice(prepared.changes());
         self.graph_replacements
             .insert(id, DetachedGraphReplacement::Prepared(prepared));
         Ok(())

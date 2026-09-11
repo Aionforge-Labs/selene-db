@@ -43,6 +43,7 @@ wide.workspace = true
 metrics = ["selene-core/metrics"]
 
 [dev-dependencies]
+blake3.workspace = true
 criterion.workspace = true
 mimalloc.workspace = true
 proptest.workspace = true
@@ -57,6 +58,10 @@ harness = false
 
 [[bench]]
 name = "mixed_edge_storage"
+harness = false
+
+[[bench]]
+name = "logical_wal"
 harness = false
 
 [[bench]]

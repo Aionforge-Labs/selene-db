@@ -9,6 +9,14 @@ use crate::{ControlError, PersistResult};
 pub struct StoreId(pub(super) [u8; 16]);
 
 impl StoreId {
+    /// Validate canonical UUID-v4 bytes for a format-2 codec identity.
+    /// This constructs no store and grants no filesystem authority.
+    pub fn from_bytes(bytes: [u8; 16]) -> PersistResult<Self> {
+        if bytes[6] >> 4 != 4 || bytes[8] >> 6 != 2 {
+            return Err(ControlError::Lineage.into());
+        }
+        Ok(Self(bytes))
+    }
     pub(super) fn fresh() -> Self {
         Self(*uuid::Uuid::new_v4().as_bytes())
     }
@@ -31,6 +39,13 @@ impl std::fmt::Display for StoreId {
 pub struct StoreEpoch(pub(super) u64);
 
 impl StoreEpoch {
+    /// Construct a checked nonzero epoch for a format-2 codec context.
+    pub fn new(value: u64) -> PersistResult<Self> {
+        if value == 0 {
+            return Err(ControlError::Lineage.into());
+        }
+        Ok(Self(value))
+    }
     /// The validated nonzero epoch number.
     #[must_use]
     pub const fn get(self) -> u64 {

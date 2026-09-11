@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod codec;
 mod constraint;
 mod declaration;
 mod dependencies;

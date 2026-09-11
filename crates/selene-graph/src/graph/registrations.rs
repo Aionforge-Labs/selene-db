@@ -45,6 +45,56 @@ impl CompiledBindings {
 pub(crate) struct CatalogBinding(Arc<CompiledBindings>);
 
 impl SeleneGraph {
+    /// Validate logical declaration/backing agreement without constructing an
+    /// accelerator or granting query eligibility. Full runtime binding/rebuild
+    /// remains required before a recovered database can serve requests.
+    pub(crate) fn validate_logical_catalog(
+        &self,
+        catalog: &CatalogSnapshot,
+        backing: &[u64],
+    ) -> CatalogResult<()> {
+        let owner = GraphId::new(self.graph_id().get())?;
+        let mut ids = std::collections::BTreeSet::new();
+        let mut targets = std::collections::BTreeSet::new();
+        for raw in backing {
+            let id = selene_catalog::IndexId::new(*raw)?;
+            let descriptor = catalog
+                .descriptor(CatalogObjectId::Index(id))
+                .ok_or_else(|| invalid("missing_index_declaration"))?;
+            if descriptor.parent() != selene_catalog::CatalogParent::Graph(owner)
+                || !ids.insert(*raw)
+            {
+                return Err(invalid("wrong_or_duplicate_index_owner"));
+            }
+            let CatalogPayload::Index(index) = descriptor.payload() else {
+                return Err(invalid("wrong_index_kind"));
+            };
+            let mut properties = index.target.properties.clone();
+            properties.sort();
+            if !targets.insert((
+                index.target.element,
+                index.configuration.family(),
+                index.target.label.clone(),
+                properties,
+            )) {
+                return Err(invalid("ambiguous_index_implementation"));
+            }
+        }
+        let declarations: Vec<_> = catalog
+            .declarations(CatalogObjectId::Graph(owner))
+            .cloned()
+            .collect();
+        for descriptor in &declarations {
+            if let CatalogPayload::Index(index) = descriptor.payload()
+                && index.metadata.state == DeclarationState::Ready
+                && !ids.contains(&descriptor.id().get())
+            {
+                return Err(invalid("missing_index_implementation"));
+            }
+        }
+        self.validate_constraint_bindings(&declarations)
+    }
+
     /// Bind a detached runtime view to its authoritative catalog snapshot.
     ///
     /// Every physical registration must match exactly one declaration's owner,
