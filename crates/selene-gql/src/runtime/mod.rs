@@ -9,6 +9,15 @@
 //! propagation, and statement output shaping. See Spec 08 §5-§8 and Spec 14
 //! §3-§8.
 
+/// Pull-based batch execution substrate (F04-PR01, transition-only).
+///
+/// Test-gated like the earliest transition seams: the old row executor stays
+/// the production path until F04-PR09, so nothing outside tests can consume
+/// this yet without violating the bridge boundary. F04-PR02 owns production
+/// wiring and widens this gate (to `test-harness`, then ungated) when the
+/// first batch operator serves live queries.
+#[cfg(test)]
+pub(crate) mod batch;
 mod binding_table;
 mod binding_table_registry;
 mod builtin_registry;
