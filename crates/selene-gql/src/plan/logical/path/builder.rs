@@ -45,27 +45,6 @@ impl<'a> PatternBuilder<'a> {
         }
     }
 
-    /// Return the lexical scope that owns `binding`.
-    fn owning_scope(&self, binding: BindingId) -> ScopeId {
-        for scope in self.analyzed.scopes.scopes() {
-            if scope.locals.contains(&binding) || scope.imports.contains(&binding) {
-                let index = self
-                    .analyzed
-                    .scopes
-                    .scopes()
-                    .iter()
-                    .position(|candidate| {
-                        candidate.span == scope.span
-                            && candidate.locals == scope.locals
-                            && candidate.imports == scope.imports
-                    })
-                    .unwrap_or(0);
-                return ScopeId::new(index as u32);
-            }
-        }
-        self.scope_fallback
-    }
-
     /// Resolve one pattern name to its analyzer binding.
     ///
     /// Prefers the declaration at the exact source span, then falls back to a
@@ -128,7 +107,10 @@ impl<'a> PatternBuilder<'a> {
             .clone()
             .map(|name| self.resolve_decl(name, node.span, BindingDeclKind::NodePattern))
             .transpose()?;
-        let scope = binding.map_or(self.scope_fallback, |id| self.owning_scope(id));
+        // Occurrence scope, not declaration scope: an imported binding (GP03)
+        // is declared outside but occurs here, so the pattern scope
+        // (`scope_fallback`, deepest containing scope) is authoritative.
+        let scope = self.scope_fallback;
         let ty = binding
             .and_then(|id| self.analyzed.scopes.declaration(id))
             .map(|decl| decl.ty().clone())
@@ -175,7 +157,8 @@ impl<'a> PatternBuilder<'a> {
             .clone()
             .map(|name| self.resolve_decl(name, edge.span, BindingDeclKind::EdgePattern))
             .transpose()?;
-        let scope = binding.map_or(self.scope_fallback, |id| self.owning_scope(id));
+        // Occurrence scope (see `node_test`): imports occur here.
+        let scope = self.scope_fallback;
         let (quantifier, exposure) = match edge.quantifier {
             None => {
                 let hidden = binding.is_none().then(|| {

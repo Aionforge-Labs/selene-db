@@ -7,22 +7,15 @@
 //! operator carries parser nodes, physical row coordinates, storage positions,
 //! or execution policy.
 
-use std::collections::BTreeMap;
-
 use crate::{
-    LimitValue, PipelineStatement, ProcedureRegistry, SourceSpan, Statement,
-    analyze::{
-        AnalyzedStatement, AnalyzedType, BindingDeclKind, BindingId, ExprId, ScopeId,
-        StatementCategory,
-    },
+    LimitValue, ProcedureRegistry, SourceSpan, Statement,
+    analyze::{AnalyzedStatement, AnalyzedType, BindingDeclKind, ExprId, ScopeId},
     plan::{
         BindingTableColumn, BindingTableSchema, PlannerError,
         logical::{
+            descriptors::{LogicalCallDescriptor, LogicalScanDescriptor},
             effect::{EffectSummary, LogicalEffect, check_gp18, classify_analyzed},
-            operator::{
-                LogicalCallDescriptor, LogicalMutationDescriptor, LogicalOp, LogicalPageAmount,
-                LogicalPlan, LogicalScanDescriptor,
-            },
+            operator::{LogicalOp, LogicalPlan},
         },
     },
 };
@@ -56,13 +49,26 @@ pub fn lower_logical(
         }
         Statement::Composite { first, rest, .. } => {
             builder.lower_query_pipeline(first)?;
-            for (_, rhs) in rest {
+            for (op, rhs) in rest {
+                let rhs_span = rhs.span;
                 builder.lower_query_pipeline(rhs)?;
+                builder.push_union(*op, rhs_span)?;
             }
         }
         Statement::Chained { blocks, .. } => {
-            for block in blocks {
+            let Some((first, rest)) = blocks.split_first() else {
+                // Empty chain lowers to no operators; the empty plan below
+                // preserves the statement effect without claiming work.
+                return Ok(
+                    builder.finish(crate::plan::logical::path::lowering::LoweredPathSet::empty())
+                );
+            };
+            builder.lower_query_pipeline(first)?;
+            for block in rest {
+                let correlated = super::lowering_query::block_is_correlated(block.span, analyzed);
+                let span = block.span;
                 builder.lower_query_pipeline(block)?;
+                builder.push_chain(correlated, span)?;
             }
         }
         Statement::Mutate(pipeline) => {
@@ -71,37 +77,77 @@ pub fn lower_logical(
         Statement::Call(call) => {
             builder.lower_top_level_call(call)?;
         }
-        Statement::Ddl(_) | Statement::Explain { .. } => {
-            builder.note_catalog_or_explain()?;
+        Statement::Ddl(statement) => {
+            builder.lower_catalog(statement)?;
         }
-        Statement::StartTransaction { span }
-        | Statement::Commit { span }
-        | Statement::Rollback { span } => {
-            builder.finish_control(*span);
+        Statement::Explain { inner, span } => {
+            builder.lower_explain(inner, *span, registry)?;
         }
-        Statement::SessionSetValue { span, .. }
-        | Statement::SessionSetTimeZone { span, .. }
-        | Statement::SessionSetGraph { span, .. }
-        | Statement::SessionReset { span, .. }
-        | Statement::SessionClose { span } => {
-            builder.finish_control(*span);
+        Statement::StartTransaction { span } => {
+            builder.push_control(
+                crate::plan::logical::descriptors::LogicalControlKind::StartTransaction,
+                *span,
+            );
+        }
+        Statement::Commit { span } => {
+            builder.push_control(
+                crate::plan::logical::descriptors::LogicalControlKind::Commit,
+                *span,
+            );
+        }
+        Statement::Rollback { span } => {
+            builder.push_control(
+                crate::plan::logical::descriptors::LogicalControlKind::Rollback,
+                *span,
+            );
+        }
+        Statement::SessionSetValue { span, .. } => {
+            builder.push_control(
+                crate::plan::logical::descriptors::LogicalControlKind::SessionSetValue,
+                *span,
+            );
+        }
+        Statement::SessionSetTimeZone { span, .. } => {
+            builder.push_control(
+                crate::plan::logical::descriptors::LogicalControlKind::SessionSetTimeZone,
+                *span,
+            );
+        }
+        Statement::SessionSetGraph { span, .. } => {
+            builder.push_control(
+                crate::plan::logical::descriptors::LogicalControlKind::SessionSetGraph,
+                *span,
+            );
+        }
+        Statement::SessionReset { span, .. } => {
+            builder.push_control(
+                crate::plan::logical::descriptors::LogicalControlKind::SessionReset,
+                *span,
+            );
+        }
+        Statement::SessionClose { span } => {
+            builder.push_control(
+                crate::plan::logical::descriptors::LogicalControlKind::SessionClose,
+                *span,
+            );
         }
     }
-    Ok(builder.finish())
+    let paths = crate::plan::logical::path::lowering::lower_path_automata_with_defaults(analyzed)?;
+    Ok(builder.finish(paths))
 }
 
-struct LogicalBuilder<'a, 'r> {
-    analyzed: &'a AnalyzedStatement,
-    registry: &'r dyn ProcedureRegistry,
-    effects: EffectSummary,
-    operators: Vec<LogicalOp>,
-    current_schema: Vec<BindingTableColumn>,
-    input_width: usize,
-    scope: ScopeId,
+pub(crate) struct LogicalBuilder<'a, 'r> {
+    pub(crate) analyzed: &'a AnalyzedStatement,
+    pub(crate) registry: &'r dyn ProcedureRegistry,
+    pub(crate) effects: EffectSummary,
+    pub(crate) operators: Vec<LogicalOp>,
+    pub(crate) current_schema: Vec<BindingTableColumn>,
+    pub(crate) input_width: usize,
+    pub(crate) scope: ScopeId,
 }
 
 impl<'a, 'r> LogicalBuilder<'a, 'r> {
-    fn new(
+    pub(crate) fn new(
         analyzed: &'a AnalyzedStatement,
         registry: &'r dyn ProcedureRegistry,
         effects: EffectSummary,
@@ -118,128 +164,65 @@ impl<'a, 'r> LogicalBuilder<'a, 'r> {
         }
     }
 
-    fn lower_query_pipeline(
-        &mut self,
-        pipeline: &crate::QueryPipeline,
-    ) -> Result<(), PlannerError> {
-        self.lower_scan_seed()?;
-        for statement in &pipeline.statements {
-            match statement {
-                PipelineStatement::Match(_) => {
-                    // Graph-pattern expansion beyond the leading scan seed is
-                    // full family coverage owned by F03-PR04. The scan seed
-                    // above already carries the semantic binding descriptors;
-                    // this arm preserves ordering without inventing a second
-                    // path representation here.
-                }
-                PipelineStatement::Filter(value) => {
-                    let predicate = self.expr_id(value.span(), value)?;
-                    self.push(LogicalOp::Filter {
-                        predicate,
-                        scope: self.scope,
-                        output_schema: self.schema(),
-                        origin: value.span(),
-                    });
-                }
-                PipelineStatement::Let(bindings) => {
-                    let mut expressions = Vec::with_capacity(bindings.len());
-                    for binding in bindings {
-                        expressions.push(self.expr_id(binding.span, &binding.value)?);
-                    }
-                    // LET extends the row; each new alias becomes a column.
-                    for binding in bindings {
-                        let ty = self.binding_type_for_alias(&binding.alias);
-                        self.current_schema.push(BindingTableColumn {
-                            name: Some(binding.alias.clone()),
-                            hidden: None,
-                            ty,
-                        });
-                    }
-                    self.push(LogicalOp::Project {
-                        expressions,
-                        scope: self.scope,
-                        output_schema: self.schema(),
-                        origin: bindings
-                            .first()
-                            .map_or(SourceSpan::default(), |binding| binding.span),
-                    });
-                }
-                PipelineStatement::For(statement) => {
-                    let source = self.expr_id(statement.span, &statement.source)?;
-                    // Row expansion preserves duplicates by construction: one
-                    // output row per list element.
-                    self.current_schema.push(BindingTableColumn {
-                        name: Some(statement.alias.clone()),
-                        hidden: None,
-                        ty: AnalyzedType::Dynamic,
-                    });
-                    self.push(LogicalOp::Project {
-                        expressions: vec![source],
-                        scope: self.scope,
-                        output_schema: self.schema(),
-                        origin: statement.span,
-                    });
-                }
-                PipelineStatement::Sorting(_) => {
-                    // Ordering operators beyond page preservation are full
-                    // family coverage owned by F03-PR04. Page below never
-                    // reorders; sort preservation is documented in the
-                    // operator contracts.
-                }
-                PipelineStatement::Offset(offset) => {
-                    self.push_page(offset, &LimitValue::Count(u64::MAX, offset_span(offset)))?;
-                }
-                PipelineStatement::Limit(limit) => {
-                    self.push_page(&LimitValue::Count(0, limit_span(limit)), limit)?;
-                }
-                PipelineStatement::Return(clause) => {
-                    self.lower_return_projection(
-                        &clause
-                            .items
-                            .iter()
-                            .map(|item| (&item.expr, item.alias.clone(), item.span))
-                            .collect::<Vec<_>>(),
-                        clause.span,
-                    )?;
-                }
-                PipelineStatement::With(clause) => {
-                    self.lower_return_projection(
-                        &clause
-                            .items
-                            .iter()
-                            .map(|item| (&item.expr, item.alias.clone(), item.span))
-                            .collect::<Vec<_>>(),
-                        clause.span,
-                    )?;
-                }
-                PipelineStatement::Call(call) => {
-                    self.lower_nested_call(call)?;
-                }
-                PipelineStatement::CallSubquery(call) => {
-                    // `CALL { ... }` bodies lower as nested pipelines in the
-                    // old plan; the logical slice records the boundary scope
-                    // and preserves the outer schema. Full subquery operator
-                    // coverage stays with F03-PR04.
-                    self.push(LogicalOp::Project {
-                        expressions: Vec::new(),
-                        scope: self.scope,
-                        output_schema: self.schema(),
-                        origin: call.span,
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn lower_mutation_pipeline(
+    pub(crate) fn lower_mutation_pipeline(
         &mut self,
         pipeline: &crate::MutationPipeline,
     ) -> Result<(), PlannerError> {
         self.lower_scan_seed()?;
+        let mut has_pattern = false;
         for statement in &pipeline.statements {
             match statement {
-                crate::MutationStatement::Match(_) => {}
+                crate::MutationStatement::Match(clause) => {
+                    let visible: Vec<selene_core::DbString> = self
+                        .current_schema
+                        .iter()
+                        .filter_map(|column| column.name.clone())
+                        .collect();
+                    let clause_names =
+                        super::lowering_query::clause_binding_names(clause, self.analyzed);
+                    if has_pattern {
+                        let keys = super::lowering_query::join_keys(
+                            &visible,
+                            &clause_names,
+                            self.analyzed,
+                        );
+                        let join_schema = self.schema();
+                        self.push(LogicalOp::Join {
+                            keys,
+                            optional: clause.optional,
+                            output_schema: join_schema,
+                            scope: self.scope,
+                            origin: clause.span,
+                        });
+                    }
+                    for name in &clause_names {
+                        if visible.contains(name) {
+                            continue;
+                        }
+                        let ty = self.binding_type_for_alias(name);
+                        self.current_schema.push(BindingTableColumn {
+                            name: Some(name.clone()),
+                            hidden: None,
+                            ty,
+                        });
+                    }
+                    self.push(LogicalOp::Match {
+                        optional: clause.optional,
+                        output_schema: self.schema(),
+                        scope: self.scope,
+                        origin: clause.span,
+                    });
+                    has_pattern = true;
+                    if let Some(where_clause) = &clause.where_clause {
+                        let predicate = self.expr_id(where_clause.span(), where_clause)?;
+                        self.push(LogicalOp::Filter {
+                            predicate,
+                            scope: self.scope,
+                            output_schema: self.schema(),
+                            origin: where_clause.span(),
+                        });
+                    }
+                }
                 crate::MutationStatement::Filter(value) => {
                     let predicate = self.expr_id(value.span(), value)?;
                     self.push(LogicalOp::Filter {
@@ -272,8 +255,11 @@ impl<'a, 'r> LogicalBuilder<'a, 'r> {
         Ok(())
     }
 
-    fn lower_top_level_call(&mut self, call: &crate::ProcedureCall) -> Result<(), PlannerError> {
-        let descriptor = self.call_descriptor(&call.name, call.span)?;
+    pub(crate) fn lower_top_level_call(
+        &mut self,
+        call: &crate::ProcedureCall,
+    ) -> Result<(), PlannerError> {
+        let descriptor = self.call_descriptor(call)?;
         let span = call.span;
         let mut output_schema = self.schema();
         for resolved in &self.analyzed.calls {
@@ -300,9 +286,12 @@ impl<'a, 'r> LogicalBuilder<'a, 'r> {
         Ok(())
     }
 
-    fn lower_nested_call(&mut self, call: &crate::ProcedureCall) -> Result<(), PlannerError> {
+    pub(crate) fn lower_nested_call(
+        &mut self,
+        call: &crate::ProcedureCall,
+    ) -> Result<(), PlannerError> {
         let span = call.span;
-        let descriptor = self.call_descriptor(&call.name, span)?;
+        let descriptor = self.call_descriptor(call)?;
         // Nested calls extend the row with their yielded columns, resolved
         // from semantic yield declarations.
         for call in &self.analyzed.calls {
@@ -328,18 +317,89 @@ impl<'a, 'r> LogicalBuilder<'a, 'r> {
         Ok(())
     }
 
-    fn note_catalog_or_explain(&mut self) -> Result<(), PlannerError> {
-        // Catalog DDL and EXPLAIN carry no binding-table operators in this
-        // slice. Their effects remain classified (catalog vs query), their
-        // origins remain in the plan summary, and full operator coverage stays
-        // with F03-PR04. Recording no operator here is honest: the plan does
-        // not claim a scan it did not lower.
+    pub(crate) fn lower_catalog(
+        &mut self,
+        statement: &crate::DdlStatement,
+    ) -> Result<(), PlannerError> {
+        let kind = super::lowering_catalog::catalog_kind_for_ddl(statement);
+        let output_schema = super::lowering_catalog::catalog_output_schema(statement)?;
+        self.current_schema = output_schema.columns.clone();
+        self.push(LogicalOp::Catalog {
+            kind,
+            output_schema: self.schema(),
+            origin: statement.span(),
+        });
         Ok(())
     }
 
-    fn finish_control(&mut self, _span: SourceSpan) {}
+    pub(crate) fn lower_explain(
+        &mut self,
+        inner: &Statement,
+        span: SourceSpan,
+        registry: &dyn ProcedureRegistry,
+    ) -> Result<(), PlannerError> {
+        // EXPLAIN never executes its inner plan. Lower the inner statement
+        // through the same semantic route into a child logical plan so the
+        // wrapper transports — rather than rederives — its decisions.
+        let inner_plan = lower_inner_statement(self.analyzed, registry, inner)?;
+        let output_schema = super::lowering_catalog::explain_output_schema(span)?;
+        self.current_schema = output_schema.columns.clone();
+        self.push(LogicalOp::Explain {
+            inner: Box::new(inner_plan),
+            output_schema: self.schema(),
+            origin: span,
+        });
+        Ok(())
+    }
 
-    fn lower_scan_seed(&mut self) -> Result<(), PlannerError> {
+    pub(crate) fn push_union(
+        &mut self,
+        op: crate::SetOp,
+        origin: SourceSpan,
+    ) -> Result<(), PlannerError> {
+        // Set-composition arms are bound independently; column name-equality
+        // is enforced by the row adapter (SR v). The logical boundary records
+        // the operator so every supported family reaches logical planning.
+        let output_schema = self.schema();
+        self.push(LogicalOp::Union {
+            op,
+            output_schema,
+            origin,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn push_chain(
+        &mut self,
+        correlated: bool,
+        origin: SourceSpan,
+    ) -> Result<(), PlannerError> {
+        let output_schema = self.schema();
+        self.push(LogicalOp::Chain {
+            correlated,
+            output_schema,
+            origin,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn push_control(
+        &mut self,
+        kind: crate::plan::logical::descriptors::LogicalControlKind,
+        span: SourceSpan,
+    ) {
+        self.push(LogicalOp::Control { kind, origin: span });
+    }
+
+    #[allow(dead_code, reason = "retained for transition created before F03-PR04")]
+    pub(crate) fn note_catalog_or_explain(&mut self) -> Result<(), PlannerError> {
+        Ok(())
+    }
+
+    #[allow(dead_code, reason = "retained for transition created before F03-PR04")]
+    pub(crate) fn finish_control(&mut self, _span: SourceSpan) {}
+
+    pub(crate) fn lower_scan_seed(&mut self) -> Result<(), PlannerError> {
         // Seed scans from semantic binding declarations of matchable kinds.
         // Only the first seed per pipeline is emitted; subsequent MATCH
         // prefixes are ordering-preserving no-ops until F03-PR04 owns the
@@ -389,135 +449,30 @@ impl<'a, 'r> LogicalBuilder<'a, 'r> {
         Ok(())
     }
 
-    fn lower_return_projection(
-        &mut self,
-        items: &[(&crate::ValueExpr, Option<selene_core::DbString>, SourceSpan)],
-        span: SourceSpan,
-    ) -> Result<(), PlannerError> {
-        let mut expressions = Vec::with_capacity(items.len());
-        for (expr, _, expr_span) in items {
-            expressions.push(self.expr_id(*expr_span, expr)?);
-        }
-        // Projection output columns preserve aliases from semantics: an
-        // explicit `AS` alias wins, then a bare variable name, else the
-        // column stays anonymous. Types come from semantic expression cells.
-        let mut columns = Vec::with_capacity(items.len());
-        for (expr, alias, _) in items {
-            let ty = self
-                .analyzed
-                .expr_ids
-                .get(expr)
-                .map(|id| self.analyzed.expr_types.get(id).clone())
-                .unwrap_or(AnalyzedType::Dynamic);
-            let name = alias.clone().or_else(|| match expr {
-                crate::ValueExpr::Variable { name, .. } => Some(name.clone()),
-                _ => None,
-            });
-            columns.push(BindingTableColumn {
-                name,
-                hidden: None,
-                ty,
-            });
-        }
-        self.current_schema = columns;
-        self.push(LogicalOp::Project {
-            expressions,
-            scope: self.scope,
-            output_schema: self.schema(),
-            origin: span,
-        });
-        Ok(())
-    }
-
-    fn push_page(&mut self, offset: &LimitValue, limit: &LimitValue) -> Result<(), PlannerError> {
-        let (offset_amount, offset_span) = self.page_amount(offset)?;
-        let (count_amount, count_span) = self.page_amount(limit)?;
-        let origin = SourceSpan::merge(offset_span, count_span);
-        self.push(LogicalOp::Page {
-            offset: offset_amount,
-            count: count_amount,
-            output_schema: self.schema(),
-            origin,
-        });
-        Ok(())
-    }
-
-    fn page_amount(
+    pub(crate) fn call_descriptor(
         &self,
-        value: &LimitValue,
-    ) -> Result<(LogicalPageAmount, SourceSpan), PlannerError> {
-        match value {
-            LimitValue::Count(count, span) => Ok((LogicalPageAmount::Literal(*count), *span)),
-            LimitValue::Parameter { name, span, .. } => {
-                Ok((LogicalPageAmount::Parameter { name: name.clone() }, *span))
-            }
-        }
-    }
-
-    fn mutation_descriptor(
-        &self,
-        span: SourceSpan,
-    ) -> Result<LogicalMutationDescriptor, PlannerError> {
-        let Some(write_set) = self.analyzed.write_set.as_ref() else {
-            return Err(PlannerError::WriteSetMissing { span });
-        };
-        let mut inserts_node = false;
-        let mut inserts_edge = false;
-        let mut updates_graph = false;
-        let mut deletes_target = false;
-        for entry in &write_set.entries {
-            match &entry.kind {
-                crate::WriteKind::InsertNode { .. } => inserts_node = true,
-                crate::WriteKind::InsertEdge { .. } => inserts_edge = true,
-                crate::WriteKind::SetProperty { .. }
-                | crate::WriteKind::SetLabel { .. }
-                | crate::WriteKind::RemoveProperty { .. }
-                | crate::WriteKind::RemoveLabel { .. } => updates_graph = true,
-                crate::WriteKind::DeleteTarget { .. } => deletes_target = true,
-            }
-        }
-        Ok(LogicalMutationDescriptor {
-            write_entry_count: write_set.entries.len(),
-            inserts_node,
-            inserts_edge,
-            updates_graph,
-            deletes_target,
-            origin: span,
-        })
-    }
-
-    fn call_descriptor(
-        &self,
-        name: &[selene_core::DbString],
-        span: SourceSpan,
+        call: &crate::ProcedureCall,
     ) -> Result<LogicalCallDescriptor, PlannerError> {
+        let name = &call.name;
+        let span = call.span;
         let Some(resolved) = self.analyzed.calls.iter().find(|call| call.span() == span) else {
             return Err(PlannerError::ProcedureMetadataMismatch {
-                procedure: name.to_vec().into_boxed_slice(),
+                procedure: name.clone().into_vec().into_boxed_slice(),
                 detail: "call has no semantic application",
                 span,
             });
         };
         // Effects resolve from current registration metadata, never from the
         // recorded semantic copy alone. A drift between analysis and lowering
-        // must fail rather than execute with stale authority.
+        // must fail with row-adapter-identical diagnostics rather than
+        // execute with stale authority.
         let Some(current) = self.registry.lookup(name) else {
             return Err(PlannerError::UnknownProcedure {
-                procedure: name.to_vec().into_boxed_slice(),
+                procedure: name.clone().into_vec().into_boxed_slice(),
                 span,
             });
         };
-        if current.mutability != resolved.metadata().mutability
-            || current.tier != resolved.metadata().tier
-            || current.handle != resolved.metadata().handle
-            || !resolved.same_signature(&current)
-        {
-            return Err(PlannerError::ProcedureMetadataMismatch {
-                procedure: name.to_vec().into_boxed_slice(),
-                detail: "procedure metadata changed between analyze and plan",
-                span,
-            });
-        }
+        super::lowering_call::validate_call_drift(call, &current, resolved, self.analyzed)?;
         Ok(LogicalCallDescriptor {
             name: name
                 .iter()
@@ -530,44 +485,7 @@ impl<'a, 'r> LogicalBuilder<'a, 'r> {
         })
     }
 
-    fn projection_schema(&self) -> BindingTableSchema {
-        let mut columns = Vec::new();
-        for decl in self.analyzed.scopes.declarations() {
-            match decl.kind() {
-                BindingDeclKind::ProjectionAlias | BindingDeclKind::YieldColumn => {
-                    columns.push(BindingTableColumn {
-                        name: Some(decl.name()),
-                        hidden: None,
-                        ty: decl.ty().clone(),
-                    });
-                }
-                BindingDeclKind::NodePattern
-                | BindingDeclKind::EdgePattern
-                | BindingDeclKind::LetAlias
-                | BindingDeclKind::ForAlias
-                | BindingDeclKind::InsertNode
-                | BindingDeclKind::InsertEdge
-                | BindingDeclKind::PathBinding => {}
-            }
-        }
-        if columns.is_empty() {
-            self.schema()
-        } else {
-            BindingTableSchema { columns }
-        }
-    }
-
-    fn binding_type_for_alias(&self, name: &selene_core::DbString) -> AnalyzedType {
-        self.analyzed
-            .scopes
-            .declarations()
-            .iter()
-            .find(|decl| decl.name() == *name)
-            .map(|decl| decl.ty().clone())
-            .unwrap_or(AnalyzedType::Dynamic)
-    }
-
-    fn yield_type(&self, name: &selene_core::DbString) -> Option<AnalyzedType> {
+    pub(crate) fn yield_type(&self, name: &selene_core::DbString) -> Option<AnalyzedType> {
         self.analyzed
             .scopes
             .declarations()
@@ -576,7 +494,11 @@ impl<'a, 'r> LogicalBuilder<'a, 'r> {
             .map(|decl| decl.ty().clone())
     }
 
-    fn expr_id(&self, span: SourceSpan, expr: &crate::ValueExpr) -> Result<ExprId, PlannerError> {
+    pub(crate) fn expr_id(
+        &self,
+        span: SourceSpan,
+        expr: &crate::ValueExpr,
+    ) -> Result<ExprId, PlannerError> {
         // A span-based fallback is forbidden: expression identity comes only
         // from the semantic lookup. A missing cell is a lowering error, not a
         // cue to re-parse syntax.
@@ -586,23 +508,27 @@ impl<'a, 'r> LogicalBuilder<'a, 'r> {
             .ok_or(PlannerError::ExpressionTypeMissing { span })
     }
 
-    fn schema(&self) -> BindingTableSchema {
+    pub(crate) fn schema(&self) -> BindingTableSchema {
         BindingTableSchema {
             columns: self.current_schema.clone(),
         }
     }
 
-    fn push(&mut self, op: LogicalOp) {
+    pub(crate) fn push(&mut self, op: LogicalOp) {
         self.operators.push(op);
     }
 
-    fn finish(self) -> LogicalPlan {
+    pub(crate) fn finish(
+        self,
+        paths: crate::plan::logical::path::lowering::LoweredPathSet,
+    ) -> LogicalPlan {
         let output_schema = self
             .operators
             .last()
             .map_or_else(|| self.schema(), |op| op.output_schema().clone());
         LogicalPlan {
             operators: self.operators,
+            paths,
             effects: self.effects,
             output_schema,
             registry_version: self.analyzed.procedure_registry_version,
@@ -611,65 +537,112 @@ impl<'a, 'r> LogicalBuilder<'a, 'r> {
     }
 }
 
-fn offset_span(value: &LimitValue) -> SourceSpan {
+pub(crate) fn offset_span(value: &LimitValue) -> SourceSpan {
     match value {
         LimitValue::Count(_, span) | LimitValue::Parameter { span, .. } => *span,
     }
 }
 
-fn limit_span(value: &LimitValue) -> SourceSpan {
+pub(crate) fn limit_span(value: &LimitValue) -> SourceSpan {
     match value {
         LimitValue::Count(_, span) | LimitValue::Parameter { span, .. } => *span,
     }
 }
 
-/// Measure lowering cost without asserting a service-level objective.
+/// Lower one `EXPLAIN` inner statement shape with the outer semantics.
 ///
-/// Runs `lower_logical` once and returns the wall-clock microseconds plus the
-/// conservative dependency sizes the cache must compare. Callers report the
-/// numbers; they never gate correctness on them.
-#[must_use]
-pub fn measure_lowering_cost(
+/// The inner statement shares the outer analyzed tree (the analyzer binds the
+/// whole `EXPLAIN <stmt>` as one statement). Only ordering and spans come
+/// from `inner`; every identity, type, and effect comes from `analyzed`.
+pub(crate) fn lower_inner_statement(
     analyzed: &AnalyzedStatement,
     registry: &dyn ProcedureRegistry,
-) -> (u128, BTreeMap<&'static str, usize>) {
-    let start = std::time::Instant::now();
-    let plan = lower_logical(analyzed, registry);
-    let elapsed = start.elapsed().as_micros();
-    let mut sizes = BTreeMap::new();
-    sizes.insert("calls", analyzed.calls.len());
-    sizes.insert(
-        "write_entries",
-        analyzed
-            .write_set
-            .as_ref()
-            .map_or(0, |set| set.entries.len()),
-    );
-    sizes.insert("expressions", analyzed.expressions.len());
-    if let Ok(plan) = plan {
-        sizes.insert("operators", plan.operators.len());
-        sizes.insert("output_columns", plan.output_schema.columns.len());
+    inner: &Statement,
+) -> Result<LogicalPlan, PlannerError> {
+    use crate::plan::logical::{effect::classify_analyzed, path::lowering::LoweredPathSet};
+
+    let effects = classify_analyzed(analyzed);
+    let mut builder = LogicalBuilder::new(analyzed, registry, effects);
+    match inner {
+        Statement::Query(pipeline) => {
+            builder.lower_query_pipeline(pipeline)?;
+        }
+        Statement::Composite { first, rest, .. } => {
+            builder.lower_query_pipeline(first)?;
+            for (op, rhs) in rest {
+                let span = rhs.span;
+                builder.lower_query_pipeline(rhs)?;
+                builder.push_union(*op, span)?;
+            }
+        }
+        Statement::Chained { blocks, .. } => {
+            if let Some((first, rest)) = blocks.split_first() {
+                builder.lower_query_pipeline(first)?;
+                for block in rest {
+                    let correlated =
+                        super::lowering_query::block_is_correlated(block.span, analyzed);
+                    let span = block.span;
+                    builder.lower_query_pipeline(block)?;
+                    builder.push_chain(correlated, span)?;
+                }
+            }
+        }
+        Statement::Mutate(pipeline) => {
+            builder.lower_mutation_pipeline(pipeline)?;
+        }
+        Statement::Call(call) => {
+            builder.lower_top_level_call(call)?;
+        }
+        Statement::Ddl(statement) => {
+            builder.lower_catalog(statement)?;
+        }
+        Statement::Explain { inner, span } => {
+            // Nested EXPLAIN is rejected by the analyzer; this arm is a
+            // lowering backstop that preserves the outer span.
+            builder.lower_explain(inner, *span, registry)?;
+        }
+        Statement::StartTransaction { span }
+        | Statement::Commit { span }
+        | Statement::Rollback { span } => {
+            // Control statements inside EXPLAIN are still control effects;
+            // the outer EXPLAIN wrapper ensures they never execute.
+            builder.push_control(
+                match inner {
+                    Statement::StartTransaction { .. } => {
+                        super::descriptors::LogicalControlKind::StartTransaction
+                    }
+                    Statement::Commit { .. } => super::descriptors::LogicalControlKind::Commit,
+                    _ => super::descriptors::LogicalControlKind::Rollback,
+                },
+                *span,
+            );
+        }
+        Statement::SessionSetValue { span, .. } => {
+            builder.push_control(
+                super::descriptors::LogicalControlKind::SessionSetValue,
+                *span,
+            );
+        }
+        Statement::SessionSetTimeZone { span, .. } => {
+            builder.push_control(
+                super::descriptors::LogicalControlKind::SessionSetTimeZone,
+                *span,
+            );
+        }
+        Statement::SessionSetGraph { span, .. } => {
+            builder.push_control(
+                super::descriptors::LogicalControlKind::SessionSetGraph,
+                *span,
+            );
+        }
+        Statement::SessionReset { span, .. } => {
+            builder.push_control(super::descriptors::LogicalControlKind::SessionReset, *span);
+        }
+        Statement::SessionClose { span } => {
+            builder.push_control(super::descriptors::LogicalControlKind::SessionClose, *span);
+        }
     }
-    (elapsed, sizes)
+    Ok(builder.finish(LoweredPathSet::empty()))
 }
 
-#[allow(
-    dead_code,
-    reason = "category mapping is exercised through effect tests"
-)]
-const fn category_effect(category: StatementCategory) -> LogicalEffect {
-    LogicalEffect::from_category(category)
-}
-
-#[allow(
-    dead_code,
-    reason = "binding lookup helper documents the semantic path"
-)]
-fn binding_lookup(analyzed: &AnalyzedStatement, binding: BindingId) -> Option<ScopeId> {
-    analyzed
-        .scopes
-        .declarations()
-        .iter()
-        .find(|decl| decl.id() == binding)
-        .map(|_| analyzed.root_scope())
-}
+pub use super::lowering_cost::measure_lowering_cost;

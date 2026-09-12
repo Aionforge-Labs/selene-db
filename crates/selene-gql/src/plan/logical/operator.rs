@@ -10,12 +10,19 @@
 //! without re-deriving semantics.
 
 use crate::{
-    SourceSpan,
-    analyze::{AnalyzedType, BindingId, ScopeId},
+    SetOp, SourceSpan,
+    analyze::{BindingId, ExprId, ScopeId},
     plan::{BindingTableColumn, BindingTableSchema, LimitAmount},
 };
 
-use super::effect::{EffectSummary, LogicalEffect};
+use super::{
+    descriptors::{
+        LogicalAggregate, LogicalCallDescriptor, LogicalCatalogKind, LogicalControlKind,
+        LogicalMutationDescriptor, LogicalOrderKey, LogicalScanDescriptor,
+    },
+    effect::{EffectSummary, LogicalEffect},
+    path::lowering::LoweredPathSet,
+};
 
 /// Row-order contract for one logical operator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,69 +47,13 @@ pub enum LogicalMultiplicity {
     Distinct,
 }
 
-/// Graph-access descriptor built from a semantic binding declaration.
-///
-/// This names the binding-table input source without parser nodes or physical
-/// coordinates. The analyzer's `BindingId`,
-/// declaration type, and source origin identify the access; storage positions
-/// and runtime addresses never appear here.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LogicalScanDescriptor {
-    /// Semantic binding produced by this scan.
-    pub binding: BindingId,
-    /// Lexical scope that declares the binding.
-    pub scope: ScopeId,
-    /// Analyzer-inferred binding type.
-    pub ty: AnalyzedType,
-    /// True for node access, false for edge access.
-    pub is_node: bool,
-    /// Source origin of the declaring pattern.
-    pub origin: SourceSpan,
-}
-
-/// Ordinary mutation intent staged through the existing detached transaction.
-///
-/// Mutations describe intent only. Execution stages changes through the
-/// existing detached transaction state and the single publication funnel; no
-/// independent publication path exists at this layer.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LogicalMutationDescriptor {
-    /// Conservative count of analyzer write-set entries for this statement.
-    pub write_entry_count: usize,
-    /// True when at least one entry inserts a node.
-    pub inserts_node: bool,
-    /// True when at least one entry inserts an edge.
-    pub inserts_edge: bool,
-    /// True when at least one entry sets or removes labels/properties.
-    pub updates_graph: bool,
-    /// True when at least one entry deletes a target.
-    pub deletes_target: bool,
-    /// Source origin of the mutation pipeline.
-    pub origin: SourceSpan,
-}
-
-/// Named-procedure reference resolved from registration metadata.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LogicalCallDescriptor {
-    /// Dotted procedure name segments for stable diagnostics.
-    pub name: Vec<String>,
-    /// Effect resolved from registration metadata at plan time.
-    pub effect: LogicalEffect,
-    /// Number of evaluated arguments (explicit plus synthesized defaults).
-    pub argument_count: usize,
-    /// Number of yielded output columns.
-    pub yield_count: usize,
-    /// Source origin of the call.
-    pub origin: SourceSpan,
-}
-
 /// One logical binding-table operator.
 ///
-/// The slice covers scan, filter, project, page, one ordinary mutation path,
-/// and named-procedure calls. Full family coverage (joins, grouping,
-/// set operations beyond the carried schemas, path operators) stays with
-/// F03-PR04; the contracts here are sufficient for physical batches, path
-/// semantic nodes, and native adapters to build upon.
+/// Every supported statement/expression family lowers through these operators
+/// from semantic descriptors. Source syntax supplies only statement ordering
+/// and source spans; every identity, type, and effect comes from the frozen
+/// semantic tree. Operators never carry parser syntax nodes, physical row
+/// coordinates, storage positions, or execution policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LogicalOp {
     /// Graph access producing its declared binding column.
@@ -171,6 +122,148 @@ pub enum LogicalOp {
         /// Source origin.
         origin: SourceSpan,
     },
+    /// Extend the row with new aliases without dropping prior columns (`LET`).
+    Extend {
+        /// Semantic expression identities in binding order.
+        expressions: Vec<ExprId>,
+        /// Lexical scope that declares the new aliases.
+        scope: ScopeId,
+        /// Explicit output schema (input columns plus new aliases).
+        output_schema: BindingTableSchema,
+        /// Source origin.
+        origin: SourceSpan,
+    },
+    /// Expand one list expression into one row per element (`FOR`/`UNWIND`).
+    Unwind {
+        /// Semantic identity of the source list expression.
+        source: ExprId,
+        /// Semantic binding produced for each element.
+        alias: BindingId,
+        /// Semantic binding for the position output, when present.
+        position_alias: Option<BindingId>,
+        /// Explicit output schema after expansion.
+        output_schema: BindingTableSchema,
+        /// Lexical scope visible after expansion.
+        scope: ScopeId,
+        /// Source origin.
+        origin: SourceSpan,
+    },
+    /// Graph-pattern step carrying one `MATCH` clause's semantic coverage.
+    ///
+    /// The full element tests live in the plan-level [`LoweredPathSet`];
+    /// this operator records the clause boundary, its optionality, and the
+    /// schema it contributes so joins preserve ordering without rederiving
+    /// pattern semantics.
+    Match {
+        /// True for `OPTIONAL MATCH` (left-outer); false for inner.
+        optional: bool,
+        /// Explicit output schema after this pattern step.
+        output_schema: BindingTableSchema,
+        /// Lexical scope visible after this pattern step.
+        scope: ScopeId,
+        /// Source origin of the clause.
+        origin: SourceSpan,
+    },
+    /// Binary join between two pattern fragments on shared bindings.
+    Join {
+        /// Shared semantic bindings used as the join key.
+        keys: Vec<BindingId>,
+        /// True for left-outer (`OPTIONAL MATCH`); false for inner.
+        optional: bool,
+        /// Explicit output schema after the join.
+        output_schema: BindingTableSchema,
+        /// Lexical scope visible after the join.
+        scope: ScopeId,
+        /// Source origin of the right fragment.
+        origin: SourceSpan,
+    },
+    /// Group rows and compute aggregates (`GROUP BY` / implicit grouping).
+    Aggregate {
+        /// Semantic identities of the grouping keys in source order.
+        keys: Vec<ExprId>,
+        /// Aggregate applications in discovery order.
+        aggregates: Vec<LogicalAggregate>,
+        /// Explicit output schema after grouping.
+        output_schema: BindingTableSchema,
+        /// Lexical scope visible after grouping.
+        scope: ScopeId,
+        /// Source origin of the `RETURN`/`WITH` clause.
+        origin: SourceSpan,
+    },
+    /// Sort rows by semantic keys (`ORDER BY`).
+    Order {
+        /// Sort keys in source order.
+        keys: Vec<LogicalOrderKey>,
+        /// Explicit output schema (identical to the input schema).
+        output_schema: BindingTableSchema,
+        /// Source origin of the `ORDER BY` clause.
+        origin: SourceSpan,
+    },
+    /// Deduplicate rows (`DISTINCT`).
+    Distinct {
+        /// Explicit output schema (identical to the input schema).
+        output_schema: BindingTableSchema,
+        /// Source origin.
+        origin: SourceSpan,
+    },
+    /// Set-composition boundary between two query arms (`UNION`/`INTERSECT`/etc).
+    Union {
+        /// Parser set operator, preserved exactly for the row adapter.
+        op: SetOp,
+        /// Explicit output schema (left-arm schema; arms are column name-equal).
+        output_schema: BindingTableSchema,
+        /// Source origin of the right arm.
+        origin: SourceSpan,
+    },
+    /// `NEXT`-chain boundary between two query blocks.
+    Chain {
+        /// True when the right block references prior bindings (per-row).
+        correlated: bool,
+        /// Explicit output schema (final-block schema).
+        output_schema: BindingTableSchema,
+        /// Source origin of the right block.
+        origin: SourceSpan,
+    },
+    /// Inline `CALL { ... }` table subquery with explicit variable scope.
+    Subquery {
+        /// Imported outer bindings (`CALL (a, b) { ... }`); empty is isolated.
+        imports: Vec<BindingId>,
+        /// True for `OPTIONAL CALL`.
+        optional: bool,
+        /// Lowered body plan executed per input row.
+        body: Box<LogicalPlan>,
+        /// Explicit output schema (input columns plus yielded columns).
+        output_schema: BindingTableSchema,
+        /// Lexical scope visible after the subquery.
+        scope: ScopeId,
+        /// Source origin of the subquery.
+        origin: SourceSpan,
+    },
+    /// Catalog DDL with its logical kind and effect fixed here.
+    Catalog {
+        /// Statement family; payloads ride source syntax in the row adapter.
+        kind: LogicalCatalogKind,
+        /// Explicit output schema (`SHOW` columns, else empty).
+        output_schema: BindingTableSchema,
+        /// Source origin of the DDL statement.
+        origin: SourceSpan,
+    },
+    /// Transaction or session control.
+    Control {
+        /// Control family; payloads ride source syntax in the row adapter.
+        kind: LogicalControlKind,
+        /// Source origin.
+        origin: SourceSpan,
+    },
+    /// `EXPLAIN` wrapper over one lowered inner plan (never executed).
+    Explain {
+        /// Lowered inner plan.
+        inner: Box<LogicalPlan>,
+        /// Explicit output schema (single `plan` string column).
+        output_schema: BindingTableSchema,
+        /// Source origin of the `EXPLAIN` statement.
+        origin: SourceSpan,
+    },
 }
 
 impl LogicalOp {
@@ -178,11 +271,33 @@ impl LogicalOp {
     #[must_use]
     pub const fn effect(&self) -> LogicalEffect {
         match self {
-            Self::Scan { .. } | Self::Filter { .. } | Self::Project { .. } | Self::Page { .. } => {
-                LogicalEffect::Query
-            }
+            Self::Scan { .. }
+            | Self::Filter { .. }
+            | Self::Project { .. }
+            | Self::Extend { .. }
+            | Self::Unwind { .. }
+            | Self::Match { .. }
+            | Self::Join { .. }
+            | Self::Page { .. } => LogicalEffect::Query,
+            Self::Aggregate { .. } => LogicalEffect::Query,
+            Self::Order { .. } => LogicalEffect::Query,
+            Self::Distinct { .. } => LogicalEffect::Query,
+            Self::Union { op, .. } => match op {
+                SetOp::Union
+                | SetOp::UnionAll
+                | SetOp::Intersect
+                | SetOp::IntersectAll
+                | SetOp::Except
+                | SetOp::ExceptAll
+                | SetOp::Otherwise => LogicalEffect::Query,
+            },
+            Self::Chain { .. } => LogicalEffect::Query,
+            Self::Subquery { body, .. } => body.effects.effect,
             Self::Mutate { .. } => LogicalEffect::Data,
             Self::Call { descriptor, .. } => descriptor.effect,
+            Self::Catalog { kind, .. } => kind.effect(),
+            Self::Control { kind, .. } => kind.effect(),
+            Self::Explain { .. } => LogicalEffect::Query,
         }
     }
 
@@ -193,9 +308,27 @@ impl LogicalOp {
             Self::Scan { output_schema, .. }
             | Self::Filter { output_schema, .. }
             | Self::Project { output_schema, .. }
+            | Self::Extend { output_schema, .. }
+            | Self::Unwind { output_schema, .. }
+            | Self::Match { output_schema, .. }
+            | Self::Join { output_schema, .. }
+            | Self::Aggregate { output_schema, .. }
+            | Self::Order { output_schema, .. }
+            | Self::Distinct { output_schema, .. }
+            | Self::Union { output_schema, .. }
+            | Self::Chain { output_schema, .. }
+            | Self::Subquery { output_schema, .. }
             | Self::Page { output_schema, .. }
             | Self::Mutate { output_schema, .. }
-            | Self::Call { output_schema, .. } => output_schema,
+            | Self::Call { output_schema, .. }
+            | Self::Catalog { output_schema, .. }
+            | Self::Explain { output_schema, .. } => output_schema,
+            Self::Control { .. } => {
+                static EMPTY: BindingTableSchema = BindingTableSchema {
+                    columns: Vec::new(),
+                };
+                &EMPTY
+            }
         }
     }
 
@@ -206,10 +339,22 @@ impl LogicalOp {
             // Scan order is graph-iteration order: deterministic for a pinned
             // snapshot but not a semantic order promise.
             Self::Scan { .. } => LogicalOrdering::Unordered,
+            Self::Order { .. } | Self::Union { .. } => LogicalOrdering::Defined,
             Self::Filter { .. }
             | Self::Project { .. }
+            | Self::Extend { .. }
+            | Self::Unwind { .. }
+            | Self::Match { .. }
+            | Self::Join { .. }
+            | Self::Aggregate { .. }
+            | Self::Distinct { .. }
+            | Self::Chain { .. }
+            | Self::Subquery { .. }
             | Self::Mutate { .. }
-            | Self::Call { .. } => LogicalOrdering::Preserved,
+            | Self::Call { .. }
+            | Self::Catalog { .. }
+            | Self::Control { .. }
+            | Self::Explain { .. } => LogicalOrdering::Preserved,
             // Page never reorders; it only skips and takes in input order.
             Self::Page { .. } => LogicalOrdering::Preserved,
         }
@@ -219,16 +364,31 @@ impl LogicalOp {
     #[must_use]
     pub const fn multiplicity(&self) -> LogicalMultiplicity {
         match self {
-            // Filter, project, page, scan, ordinary mutation, and procedure
-            // calls in this slice all preserve duplicates. A future distinct
-            // operator will carry `Distinct`; nothing here silently
-            // deduplicates.
+            Self::Distinct { .. } | Self::Aggregate { .. } => LogicalMultiplicity::Distinct,
+            Self::Union { op, .. } => match op {
+                SetOp::Union | SetOp::Intersect | SetOp::Except | SetOp::Otherwise => {
+                    LogicalMultiplicity::Distinct
+                }
+                SetOp::UnionAll | SetOp::IntersectAll | SetOp::ExceptAll => {
+                    LogicalMultiplicity::PreservesDuplicates
+                }
+            },
             Self::Scan { .. }
             | Self::Filter { .. }
             | Self::Project { .. }
+            | Self::Extend { .. }
+            | Self::Unwind { .. }
+            | Self::Match { .. }
+            | Self::Join { .. }
+            | Self::Order { .. }
+            | Self::Chain { .. }
+            | Self::Subquery { .. }
             | Self::Page { .. }
             | Self::Mutate { .. }
-            | Self::Call { .. } => LogicalMultiplicity::PreservesDuplicates,
+            | Self::Call { .. }
+            | Self::Catalog { .. }
+            | Self::Control { .. }
+            | Self::Explain { .. } => LogicalMultiplicity::PreservesDuplicates,
         }
     }
 
@@ -239,9 +399,22 @@ impl LogicalOp {
             Self::Scan { origin, .. }
             | Self::Filter { origin, .. }
             | Self::Project { origin, .. }
+            | Self::Extend { origin, .. }
+            | Self::Unwind { origin, .. }
+            | Self::Match { origin, .. }
+            | Self::Join { origin, .. }
+            | Self::Aggregate { origin, .. }
+            | Self::Order { origin, .. }
+            | Self::Distinct { origin, .. }
+            | Self::Union { origin, .. }
+            | Self::Chain { origin, .. }
+            | Self::Subquery { origin, .. }
             | Self::Page { origin, .. }
             | Self::Mutate { origin, .. }
-            | Self::Call { origin, .. } => *origin,
+            | Self::Call { origin, .. }
+            | Self::Catalog { origin, .. }
+            | Self::Control { origin, .. }
+            | Self::Explain { origin, .. } => *origin,
         }
     }
 }
@@ -280,12 +453,18 @@ impl LogicalPageAmount {
 ///
 /// Operators execute in order against an initial unit table (one empty row)
 /// or a graph-access seed. The plan carries its overall effect summary, its
-/// final output schema, and the dependency inputs a cache needs to decide
-/// reuse. It carries no physical execution policy.
+/// final output schema, its lowered path automata, and the dependency inputs
+/// a cache needs to decide reuse. It carries no physical execution policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LogicalPlan {
     /// Logical operators in execution order.
     pub operators: Vec<LogicalOp>,
+    /// Lowered path automata in clause/pattern order (possibly empty).
+    ///
+    /// Every top-level `MATCH` pattern plus every `EXISTS`/`CALL`-subquery
+    /// graph pattern lowers here from semantic descriptors; `Match`
+    /// operators record the clause boundaries that consume them.
+    pub paths: LoweredPathSet,
     /// Conservative effect summary for the whole statement.
     pub effects: EffectSummary,
     /// Final output schema.

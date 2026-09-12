@@ -320,10 +320,9 @@ impl Session<'_> {
             .is_some_and(|txn| txn.has_schema_changes());
         if !explicit_request
             && !active_txn_has_schema_changes
-            && let Some(cached) = self
-                .plan_cache
-                .as_mut()
-                .and_then(|cache| cache.get(source, schema_version, profile_identity))
+            && let Some(cached) = self.plan_cache.as_mut().and_then(|cache| {
+                cache.get(source, schema_version, registry_version, profile_identity)
+            })
         {
             return execute_source_plan(&cached, self, registry, policy);
         }
@@ -356,6 +355,7 @@ impl Session<'_> {
                     Arc::from(source),
                     Arc::clone(&cached),
                     schema_version,
+                    registry_version,
                     profile_identity,
                 );
             }
@@ -464,6 +464,7 @@ impl Session<'_> {
                 Arc::clone(&source_arc),
                 Arc::clone(&plan),
                 schema_version,
+                registry_version,
                 profile_identity,
             );
         }

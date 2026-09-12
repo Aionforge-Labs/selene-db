@@ -56,6 +56,20 @@ pub struct LoweredPathSet {
 }
 
 impl LoweredPathSet {
+    /// Return an empty path set under the current contract and inventory.
+    ///
+    /// Used for statements without graph patterns so every logical plan
+    /// carries its (possibly empty) path metadata without a second lowering
+    /// pass.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            automata: Vec::new(),
+            inventory: supported_path_inventory(),
+            contract_version: PATH_AUTOMATA_CONTRACT_VERSION,
+        }
+    }
+
     /// Return true when every automaton and transition preserves duplicates.
     #[must_use]
     pub fn preserves_duplicates(&self) -> bool {
@@ -191,9 +205,10 @@ fn lower_one_pattern(
         });
     }
 
+    let scope_fallback = pattern_scope(analyzed, pattern.span);
     let mut builder = PatternBuilder {
         analyzed,
-        scope_fallback: analyzed.root_scope(),
+        scope_fallback,
         next_temp: 0,
         node_tests: 0,
         edge_tests: 0,
@@ -215,14 +230,43 @@ fn lower_one_pattern(
             }
         }
     }
+    // `scope_fallback` above already resolved the deepest containing scope;
+    // reuse it for the pattern so states and anonymous temporaries share the
+    // same anchor without a second scope pass.
+    let scope = scope_fallback;
     let semantic = PathSemanticPattern {
         path_binding,
         elements,
-        scope: analyzed.root_scope(),
+        scope,
         origin: pattern.span,
     };
 
     build_automaton(clause, semantic, clause_index, pattern_index)
+}
+
+/// Deepest lexical scope containing `span`, or the root.
+///
+/// Subquery bodies (CALL subqueries including GP03 imports, EXISTS/value
+/// bodies) own child scopes whose spans contain their patterns; top-level
+/// patterns resolve to the root. Picking the smallest containing span keeps
+/// anonymous inner patterns anchored correctly.
+fn pattern_scope(analyzed: &AnalyzedStatement, span: crate::SourceSpan) -> crate::analyze::ScopeId {
+    let mut best: Option<(crate::analyze::ScopeId, u32, usize)> = None;
+    for (index, scope) in analyzed.scopes.scopes().iter().enumerate() {
+        let outer = scope.span;
+        if outer.byte_offset <= span.byte_offset && span.end() <= outer.end() {
+            // Smaller spans are more specific; break ties by deeper index.
+            // Spans nest, so the smallest containing span is the deepest scope.
+            let len = outer.byte_len;
+            let better = best.is_none_or(|(_, best_len, best_index)| {
+                len < best_len || (len == best_len && index > best_index)
+            });
+            if better {
+                best = Some((crate::analyze::ScopeId::new(index as u32), len, index));
+            }
+        }
+    }
+    best.map_or_else(|| analyzed.root_scope(), |(scope, _, _)| scope)
 }
 
 fn build_automaton(
