@@ -15,7 +15,7 @@ pub(super) fn lower(
     analyzed: &AnalyzedStatement,
     ops: &mut Vec<PipelineOp>,
     visible: &mut Vec<BindingTableColumn>,
-    max_quantifier: u32,
+    max_quantifier: super::PathLowering<'_>,
 ) -> Result<(), PlannerError> {
     let left_names = visible
         .iter()

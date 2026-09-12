@@ -6,7 +6,7 @@ use crate::{
     analyze::BindingId,
     plan::{
         BindingDef, EdgeMatch, FilterPredicate, JoinTree, NodeOrEdgeScan, OrderAccess, OrderKey,
-        PipelineOp, RepeatEdgeMatch, ScanAccess, ScanKind,
+        PipelineOp, ScanAccess, ScanKind,
     },
 };
 
@@ -42,35 +42,7 @@ pub(super) fn join_tree_shape(tree: &JoinTree, bindings: &BTreeMap<BindingId, St
             binding_name(edge.binding, bindings, "_"),
             binding_name(edge.right_binding, bindings, "_")
         ),
-        JoinTree::Questioned { child, edge, .. } => format!(
-            "{}->Questioned({}->{})",
-            join_tree_shape(child, bindings),
-            binding_name(edge.binding, bindings, "_"),
-            binding_name(edge.right_binding, bindings, "_")
-        ),
-        JoinTree::Repeat {
-            child,
-            edge,
-            min,
-            max,
-            ..
-        } => format!(
-            "{}->Repeat({}->{};{}..{})",
-            join_tree_shape(child, bindings),
-            binding_name(edge.group_binding, bindings, "_"),
-            binding_name(edge.final_binding, bindings, "_"),
-            min,
-            max.map_or_else(|| "*".to_owned(), |max| max.to_string())
-        ),
-        JoinTree::PathSearch {
-            selector, child, ..
-        } => format!("{selector:?}({})", join_tree_shape(child, bindings)),
-        JoinTree::PathModeFilter {
-            path_mode, child, ..
-        } => format!("{path_mode:?}({})", join_tree_shape(child, bindings)),
-        JoinTree::MatchModeFilter {
-            match_mode, child, ..
-        } => format!("{match_mode:?}({})", join_tree_shape(child, bindings)),
+        JoinTree::Paths(program) => format!("ProductPaths(patterns={})", program.automata.len()),
         JoinTree::HashJoin { left, right, .. } => format!(
             "HashJoin({}, {})",
             join_tree_shape(left, bindings),
@@ -163,7 +135,7 @@ fn collect_scans(
     scans: &mut Vec<ScanSnapshot>,
 ) {
     match tree {
-        JoinTree::Unit => {}
+        JoinTree::Unit | JoinTree::Paths(_) => {}
         JoinTree::Scan(scan) => scans.push(scan_snapshot(scan, bindings)),
         JoinTree::Expand { child, edge, .. } => {
             collect_scans(child, bindings, scans);
@@ -178,39 +150,6 @@ fn collect_scans(
                     bounds_detail: None,
                 });
             }
-        }
-        JoinTree::Questioned { child, edge, .. } => {
-            collect_scans(child, bindings, scans);
-            scans.push(edge_snapshot(edge, bindings));
-            if !edge.right_property_predicates.is_empty() {
-                scans.push(ScanSnapshot {
-                    binding: binding_name(edge.right_binding, bindings, "<anonymous-node>"),
-                    kind: "Node",
-                    access: "Linear",
-                    residual_predicates: edge.right_property_predicates.len(),
-                    consumed_predicates: consumed_count(&edge.right_property_predicates),
-                    bounds_detail: None,
-                });
-            }
-        }
-        JoinTree::Repeat { child, edge, .. } => {
-            collect_scans(child, bindings, scans);
-            scans.push(repeat_edge_snapshot(edge, bindings));
-            if !edge.final_property_predicates.is_empty() {
-                scans.push(ScanSnapshot {
-                    binding: binding_name(edge.final_binding, bindings, "<anonymous-node>"),
-                    kind: "Node",
-                    access: "Linear",
-                    residual_predicates: edge.final_property_predicates.len(),
-                    consumed_predicates: consumed_count(&edge.final_property_predicates),
-                    bounds_detail: None,
-                });
-            }
-        }
-        JoinTree::PathSearch { child, .. }
-        | JoinTree::PathModeFilter { child, .. }
-        | JoinTree::MatchModeFilter { child, .. } => {
-            collect_scans(child, bindings, scans);
         }
         JoinTree::HashJoin { left, right, .. } | JoinTree::Outer { left, right, .. } => {
             collect_scans(left, bindings, scans);
@@ -255,21 +194,6 @@ fn edge_snapshot(edge: &EdgeMatch, bindings: &BTreeMap<BindingId, String>) -> Sc
         access: scan_access(&edge.access),
         residual_predicates: edge.property_predicates.len(),
         consumed_predicates: consumed_count(&edge.property_predicates),
-        bounds_detail: bounds_detail_for_access(&edge.access),
-    }
-}
-
-fn repeat_edge_snapshot(
-    edge: &RepeatEdgeMatch,
-    bindings: &BTreeMap<BindingId, String>,
-) -> ScanSnapshot {
-    ScanSnapshot {
-        binding: binding_name(edge.group_binding, bindings, "<anonymous-repeat-edge>"),
-        kind: "Edge",
-        access: scan_access(&edge.access),
-        residual_predicates: edge.property_predicates.len() + edge.inline_predicates.len(),
-        consumed_predicates: consumed_count(&edge.property_predicates)
-            + consumed_count(&edge.inline_predicates),
         bounds_detail: bounds_detail_for_access(&edge.access),
     }
 }

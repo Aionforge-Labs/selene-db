@@ -21,11 +21,9 @@
 //! traversal algorithm. There is no runtime traversal here, no grammar
 //! expansion, and no automaton-state-only visited rule.
 //!
-//! Bridge/deletion boundary: the old path planner (`plan::lowering` match,
-//! path-mode, path-search, repeat arms) and the old row-path runtime
-//! (`runtime::{expand, questioned, repeat, path_search, path_mode,
-//! match_mode}`) stay untouched by this contract and are deleted by F05-PR04
-//! after the new execution contract is complete.
+//! Physical planning transports this contract into `JoinTree::Paths`. The
+//! product-path batch operator is the only path evaluator; generic row callers
+//! enter the same operator until their own deletion in F04-PR09.
 
 pub mod automaton;
 mod builder;

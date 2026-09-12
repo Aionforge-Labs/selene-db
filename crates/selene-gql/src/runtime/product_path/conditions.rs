@@ -3,22 +3,12 @@
 //! group at transition exit, never an already selected topological shortest path.
 
 use super::{BoundedPathProgram, compile::invalid, state::SearchState};
+pub(super) use crate::PathConditions as Conditions;
 use crate::{
-    AnalyzedStatement, GraphPattern, PathAutomaton, PathSemanticElement, PatternElement, ValueExpr,
+    AnalyzedStatement, GraphPattern, PathAutomaton,
     runtime::{Binding, EvalCtx, ExecutorError, evaluator},
 };
-use selene_core::{DbString, Value};
-
-pub(super) struct Conditions {
-    properties: Vec<(DbString, ValueExpr)>,
-    inline: Option<ValueExpr>,
-}
-
-impl Conditions {
-    pub(super) fn is_empty(&self) -> bool {
-        self.properties.is_empty() && self.inline.is_none()
-    }
-}
+use selene_core::Value;
 
 #[derive(Clone, Copy)]
 pub(super) enum Phase {
@@ -35,67 +25,8 @@ pub(super) fn compile(
     automaton: &PathAutomaton,
     analyzed: &AnalyzedStatement,
 ) -> Result<Vec<Conditions>, ExecutorError> {
-    if source.span != automaton.origin || source.elements.len() != automaton.semantic.elements.len()
-    {
-        return Err(invalid("product path source/semantic shape mismatch"));
-    }
-    source
-        .elements
-        .iter()
-        .zip(&automaton.semantic.elements)
-        .map(|(source, semantic)| {
-            let (properties, inline, ids, inline_id) = match (source, semantic) {
-                (PatternElement::Node(n), PathSemanticElement::Node(t)) => (
-                    n.properties.as_slice(),
-                    n.inline_where.as_ref(),
-                    &t.property_predicates,
-                    t.inline_where,
-                ),
-                (PatternElement::Edge(e), PathSemanticElement::Edge(t)) => (
-                    e.properties.as_slice(),
-                    e.inline_where.as_ref(),
-                    &t.property_predicates,
-                    t.inline_where,
-                ),
-                _ => return Err(invalid("product path source/semantic element mismatch")),
-            };
-            if properties.len() != ids.len()
-                || properties
-                    .iter()
-                    .zip(ids)
-                    .any(|((_, e), id)| analyzed.expr_ids.get(e) != Some(*id))
-                || inline.and_then(|e| analyzed.expr_ids.get(e)) != inline_id
-            {
-                return Err(invalid("product path predicate identity mismatch"));
-            }
-            for expr in properties.iter().map(|(_, e)| e).chain(inline) {
-                reject_subqueries(expr)?;
-            }
-            Ok(Conditions {
-                properties: properties.to_vec(),
-                inline: inline.cloned(),
-            })
-        })
-        .collect()
-}
-
-fn reject_subqueries(expr: &ValueExpr) -> Result<(), ExecutorError> {
-    if matches!(
-        expr,
-        ValueExpr::Exists { .. } | ValueExpr::ValueSubquery { .. }
-    ) {
-        return Err(ExecutorError::FeatureNotSupportedYet {
-            feature: "product path expression subqueries",
-            span: expr.span(),
-        });
-    }
-    let mut result = Ok(());
-    expr.for_each_child(&mut |child| {
-        if result.is_ok() {
-            result = reject_subqueries(child);
-        }
-    });
-    result
+    crate::plan::lowering::path_program::conditions(source, automaton, analyzed)
+        .map_err(|_| invalid("product path predicate identity mismatch"))
 }
 
 pub(super) fn evaluate(

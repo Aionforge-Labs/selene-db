@@ -45,6 +45,16 @@ pub(super) fn possible_pairs(
         unreachable!()
     };
     let graph = ctx.snapshot()?;
+    // Do not use a later false constant to suppress an earlier expression
+    // error/effect. Tightening is safe only when every local condition is a
+    // literal property comparison; opaque predicates retain the coarse superset.
+    let literal_only = path.conditions.iter().all(|conditions| {
+        conditions.inline.is_none()
+            && conditions
+                .properties
+                .iter()
+                .all(|(_, expr)| matches!(expr, crate::ValueExpr::Literal(_)))
+    });
     let nodes = graph
         .live_node_candidates()
         .map_err(|_| super::compile::invalid("path completion candidates unavailable"))?;
@@ -55,6 +65,7 @@ pub(super) fn possible_pairs(
     let mut pairs = Pairs::new();
     for start in nodes.iter() {
         if bound(first.binding).is_some_and(|v| v != &Value::NodeRef(start))
+            || (literal_only && !literal_properties_possible(&path.conditions[0], start, graph))
             || !graph.node_labels(start).is_some_and(|labels| {
                 first
                     .label
@@ -69,6 +80,8 @@ pub(super) fn possible_pairs(
         while let Some(node) = pending.pop() {
             tick(ctx, path.automaton.origin, work, max_work)?;
             if bound(last.binding).is_none_or(|v| v == &Value::NodeRef(node))
+                && (!literal_only
+                    || literal_properties_possible(path.conditions.last().unwrap(), node, graph))
                 && (first.binding.is_none() || first.binding != last.binding || node == start)
                 && graph.node_labels(node).is_some_and(|labels| {
                     last.label
@@ -98,6 +111,30 @@ pub(super) fn possible_pairs(
         }
     }
     Ok(pairs)
+}
+
+// Constants have no binding dependencies, errors or effects. A false literal
+// property test proves an endpoint impossible without evaluating predicates
+// early. All other expressions remain opaque, so qualification/order is intact.
+fn literal_properties_possible(
+    conditions: &super::conditions::Conditions,
+    node: NodeId,
+    graph: &selene_graph::SeleneGraph,
+) -> bool {
+    conditions.properties.iter().all(|(key, expr)| {
+        let crate::ValueExpr::Literal(literal) = expr else {
+            return true;
+        };
+        let expected = crate::runtime::evaluator::literal_value(literal);
+        graph
+            .node_properties(node)
+            .and_then(|properties| properties.get(key))
+            .is_some_and(|actual| {
+                !matches!(actual, Value::Null)
+                    && !matches!(expected, Value::Null)
+                    && crate::runtime::value_compare::equal_non_null(actual, &expected)
+            })
+    })
 }
 
 fn tick(

@@ -1,15 +1,15 @@
 //! The native Path carrier is authoritative, not an endpoint/list adapter.
 
 use super::state::SearchState;
-use selene_core::{GraphId, Path, PathSegment, Value};
+use selene_core::{GraphId, PathSegment, Value};
 
 pub(super) fn path_value(state: &SearchState, graph: GraphId) -> Value {
     debug_assert_eq!(state.nodes.len(), state.edges.len() + 1);
     debug_assert_eq!(state.directions.len(), state.edges.len());
-    Value::Path(Box::new(Path {
+    super::value::finish(
         graph,
-        start: state.nodes[0],
-        segments: state
+        state.nodes[0],
+        state
             .edges
             .iter()
             .zip(&state.directions)
@@ -20,7 +20,7 @@ pub(super) fn path_value(state: &SearchState, graph: GraphId) -> Value {
                 node,
             })
             .collect(),
-    }))
+    )
 }
 
 pub(super) fn direction(

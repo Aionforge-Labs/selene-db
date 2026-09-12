@@ -236,12 +236,7 @@ mod tests {
     fn leading_scan_access(tree: &JoinTree) -> Option<&ScanAccess> {
         match tree {
             JoinTree::Scan(scan) => Some(&scan.access),
-            JoinTree::Expand { child, .. }
-            | JoinTree::Repeat { child, .. }
-            | JoinTree::Questioned { child, .. }
-            | JoinTree::PathSearch { child, .. }
-            | JoinTree::PathModeFilter { child, .. }
-            | JoinTree::MatchModeFilter { child, .. } => leading_scan_access(child),
+            JoinTree::Expand { child, .. } => leading_scan_access(child),
             _ => None,
         }
     }
@@ -362,12 +357,7 @@ mod tests {
                     }
                     break;
                 }
-                JoinTree::Expand { child, .. }
-                | JoinTree::Repeat { child, .. }
-                | JoinTree::Questioned { child, .. }
-                | JoinTree::PathSearch { child, .. }
-                | JoinTree::PathModeFilter { child, .. }
-                | JoinTree::MatchModeFilter { child, .. } => tree = child,
+                JoinTree::Expand { child, .. } => tree = child,
                 _ => break,
             }
         }

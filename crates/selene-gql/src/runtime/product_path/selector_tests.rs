@@ -353,6 +353,27 @@ fn exhaustive_enumerate_qualify_partition_select_small_directed_multigraphs() {
             actual.sort();
             expected.sort();
             assert_eq!(actual, expected, "mask {mask}: {source}");
+            for size in [1, 7] {
+                let table = super::differentials::statement_table(&f, &source, size);
+                let mut actual: Vec<_> = table
+                    .rows()
+                    .iter()
+                    .map(|row| {
+                        let Value::Path(path) = &row.values()[0] else {
+                            panic!("physical PATH")
+                        };
+                        (
+                            path.start,
+                            path.segments.iter().map(|s| s.edge).collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect();
+                actual.sort();
+                assert_eq!(
+                    actual, expected,
+                    "physical mask {mask}, batch {size}: {source}"
+                );
+            }
         }
     }
 }

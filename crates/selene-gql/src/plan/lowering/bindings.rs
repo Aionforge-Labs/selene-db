@@ -91,24 +91,6 @@ fn binding_for_pattern(
         })
 }
 
-pub(super) fn binding_for_decl(
-    name: DbString,
-    span: SourceSpan,
-    expected: BindingDeclKind,
-    analyzed: &AnalyzedStatement,
-) -> Result<BindingId, PlannerError> {
-    analyzed
-        .scopes
-        .declarations()
-        .iter()
-        .find(|decl| decl.name() == name && decl.span() == span && decl.kind() == expected)
-        .map(BindingDecl::id)
-        .ok_or(PlannerError::BindingResolutionLost {
-            binding: BindingId::new(u32::MAX),
-            span,
-        })
-}
-
 fn same_element(found: BindingDeclKind, expected: BindingDeclKind) -> bool {
     matches!(
         (found, expected),

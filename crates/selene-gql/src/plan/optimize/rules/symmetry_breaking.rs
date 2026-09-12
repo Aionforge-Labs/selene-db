@@ -40,7 +40,7 @@ impl Rule for SymmetryBreaking {
 
 fn rewrite_tree(tree: &mut JoinTree, cap: u32) -> bool {
     match tree {
-        JoinTree::Unit => false,
+        JoinTree::Unit | JoinTree::Paths(_) => false,
         JoinTree::WorstCaseOptimal {
             intersection,
             node_id_ordering,
@@ -68,15 +68,11 @@ fn rewrite_tree(tree: &mut JoinTree, cap: u32) -> bool {
             }
             true
         }
-        JoinTree::Expand { child, .. }
-        | JoinTree::Questioned { child, .. }
-        | JoinTree::Repeat { child, .. }
-        | JoinTree::PathModeFilter { child, .. }
-        | JoinTree::MatchModeFilter { child, .. } => rewrite_tree(child, cap),
+        JoinTree::Expand { child, .. } => rewrite_tree(child, cap),
         JoinTree::HashJoin { left, right, .. } | JoinTree::Outer { left, right, .. } => {
             rewrite_tree(left, cap) | rewrite_tree(right, cap)
         }
-        JoinTree::Scan(_) | JoinTree::PathSearch { .. } | JoinTree::Subplan(_) => false,
+        JoinTree::Scan(_) | JoinTree::Subplan(_) => false,
         // DisjunctiveScan branches are scan-shape leaves; no WCO under them.
         JoinTree::DisjunctiveScan { .. } => false,
     }

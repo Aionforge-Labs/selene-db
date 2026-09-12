@@ -6,7 +6,7 @@
 //! the pipeline index where row execution resumes. The plan runner executes
 //! any remaining (suffix) pipeline operators through the row dispatcher on
 //! that prefix table. Mutations now drain it through the physical mutation
-//! barrier (F04-PR05); write procedures, paths, and other not-yet-batched families
+//! barrier (F04-PR05); write procedures and other not-yet-batched families
 //! keep their exact row behavior while already
 //! receiving batch-produced input through the stable [`BindingTable`]
 //! interface.
@@ -22,9 +22,8 @@
 //! - Pattern phase: no pattern (unit seed), a single node/edge scan over any
 //!   optimizer access path, nested inner one-hop expansions, the
 //!   `JoinTree::Unit` anchor, inner hash joins, and left-outer joins over
-//!   batchable children. Anything else (variable-length repeats, path
-//!   selectors and modes, hash/outer-incompatible shapes, WCO, subplans,
-//!   disjunctive scans, optional/questioned forms) declines: the whole plan
+//!   batchable children, and complete logical path programs (F05-PR04).
+//!   WCO, subplans and disjunctive scans decline: the whole plan
 //!   stays on the row path. Seeded (correlated) top-level executions decline
 //!   for the same reason; correlation *inside* an unseeded execution runs
 //!   through nested batch contexts (see [`tree`](super::tree)).
@@ -45,7 +44,8 @@
 //!
 //! - No limit is pushed below any operator beyond the row path's own
 //!   proven-safe pushdown. The pattern phase truncates with exactly the
-//!   runner's shared `pattern_row_limit` bound (leading limits and safe
+//!   runner's shared `pattern_row_limit` bound (disabled for path failure barriers;
+//!   otherwise leading limits and safe
 //!   post-return projections) and runs in full otherwise; the page operator
 //!   then short-circuits the pull stream at its own pipeline position. A
 //!   small `LIMIT` after a multiplicity-producing expansion therefore sees

@@ -56,13 +56,20 @@ fn direction_matrix_preserves_pattern_direction() {
 }
 
 #[test]
-fn bounded_quantified_edge_lowers_to_repeat_with_group_list_binding() {
+fn bounded_quantified_edge_transports_logical_group_list_binding() {
     let plan = plan_one("MATCH (a)-[r:K*1..3]->(b) RETURN r");
     let pattern = plan.pattern_plan.as_ref().expect("pattern plan");
-    let (edge, min, max) = repeat(&plan);
-    assert!(edge.group_binding.is_some());
-    assert_eq!(min, 1);
-    assert_eq!(max, Some(3));
+    let program = path_program(&plan);
+    let selene_gql::PathSemanticElement::Edge(edge) = &program.automata[0].semantic.elements[1]
+    else {
+        panic!("edge")
+    };
+    assert!(edge.exposure.is_group());
+    assert!(edge.exposure.named().is_some());
+    assert_eq!(
+        edge.quantifier,
+        selene_gql::EdgeQuantifierKind::Bounded { min: 1, max: 3 }
+    );
 
     let group = pattern
         .bindings
@@ -92,10 +99,14 @@ fn optional_match_lowers_to_outer_join() {
 }
 
 #[test]
-fn path_binding_creates_path_plan_placeholder() {
+fn path_binding_is_part_of_the_executable_program() {
     let plan = plan_one("MATCH p = (a)-[:K]->(b) RETURN p");
-    let pattern = plan.pattern_plan.as_ref().expect("pattern plan");
-    assert_eq!(pattern.paths.len(), 1);
+    let program = path_program(&plan);
+    let id = program.automata[0]
+        .semantic
+        .path_binding
+        .expect("typed path binding");
+    assert!(program.bindings.contains(&id));
 }
 
 #[test]

@@ -80,22 +80,10 @@ fn push_to_node_scan_inner(
         }
         JoinTree::Unit
         | JoinTree::Scan(_)
-        | JoinTree::PathSearch { .. }
-        | JoinTree::PathModeFilter { .. }
+        | JoinTree::Paths(_)
         | JoinTree::WorstCaseOptimal { .. }
         | JoinTree::Subplan(_) => false,
-        // MatchModeFilter is a pattern-wide wrapper over the whole graph
-        // pattern (often the join-tree root for DIFFERENT EDGES). A
-        // single-node-binding property predicate pushed into a leaf node scan
-        // beneath it only narrows scan output; the pattern-wide edge-uniqueness
-        // filter then applies to the surviving rows, so descending is safe and
-        // lets the optimization fire for DIFFERENT EDGES patterns.
-        JoinTree::Expand { child, .. }
-        | JoinTree::Questioned { child, .. }
-        | JoinTree::Repeat { child, .. }
-        | JoinTree::MatchModeFilter { child, .. } => {
-            push_to_node_scan_inner(child, binding, pending)
-        }
+        JoinTree::Expand { child, .. } => push_to_node_scan_inner(child, binding, pending),
         JoinTree::HashJoin { left, right, .. } => {
             push_to_node_scan_inner(left, binding, pending)
                 || push_to_node_scan_inner(right, binding, pending)

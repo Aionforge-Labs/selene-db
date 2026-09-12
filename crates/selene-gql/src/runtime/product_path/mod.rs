@@ -1,7 +1,7 @@
 //! Bounded product-graph execution of the F05 automata contract.
 //!
 //! This native integration seam is not a new GQL surface. The statement driver
-//! retains legacy path routing until F05-PR04. Execution uses the existing batch
+//! uses this same engine through `BatchPath`. Execution uses the existing batch
 //! pin, cancellation, budget, lifecycle and materialization contracts. Only one
 //! MATCH clause's flat automata are accepted. Path-local predicates precede
 //! endpoint-partitioned selection; selected paths use the native typed value.
@@ -33,11 +33,15 @@
 mod compile;
 mod conditions;
 mod materialize;
+mod physical;
+pub(crate) use physical::BatchPath;
 mod search;
 mod selection;
 mod state;
 mod telemetry;
 mod termination;
+mod value;
+pub(crate) use value::construct_path;
 
 pub use compile::BoundedPathProgram;
 pub use telemetry::{CheapestCostProjection, PathExecutionStats, PathObservation};
@@ -113,10 +117,11 @@ impl BoundedPathProgram<'_> {
             MemoryBudget::unlimited(),
         );
         let subqueries = crate::SubqueryRegistry::default();
+        let (_, subqueries) = tx.plan_metadata().unwrap_or((&self.expr_ids, &subqueries));
         let eval = super::EvalCtx {
             tx,
             expr_ids: &self.expr_ids,
-            subqueries: &subqueries,
+            subqueries,
         };
         let qualify = |state: &state::SearchState, entity: &selene_core::Value, phase| {
             conditions::evaluate(self, state, entity, phase, &eval)
@@ -133,8 +138,8 @@ impl BoundedPathProgram<'_> {
     }
 }
 
-/// Eager failure barrier followed by ordinary bounded batch pulls. F05-PR04
-/// can compose this source with the existing pipeline operators without rows
+/// Native eager failure barrier followed by ordinary bounded batch pulls.
+/// Statement execution shares the same search with `BatchPath`, without rows
 /// or search frames becoming an intermediate public result.
 pub(crate) struct ProductPathOperator<'a, 'p> {
     program: &'a BoundedPathProgram<'p>,
@@ -177,7 +182,7 @@ impl PhysicalOperator for ProductPathOperator<'_, '_> {
         }
         self.lifecycle = OperatorState::Failed;
         ctx.ensure_generation()?;
-        let result = search::execute(self.program, self.limits, ctx, self.qualify)?;
+        let result = search::execute(self.program, self.limits, ctx, self.qualify, None)?;
         self.stats = result.stats;
         self.observations = result.observations;
         self.reserved = result.reserved;

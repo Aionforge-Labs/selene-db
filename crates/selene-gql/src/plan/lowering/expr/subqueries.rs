@@ -24,7 +24,7 @@ pub(crate) fn populate_plan_subqueries(
     plan: &mut ExecutionPlan,
     analyzed: &AnalyzedStatement,
     registry: &dyn ProcedureRegistry,
-    max_quantifier: u32,
+    max_quantifier: super::super::PathLowering<'_>,
 ) -> Result<(), PlannerError> {
     let mut entries = Vec::new();
     if let Some(pattern) = plan.pattern_plan.as_mut() {
@@ -50,7 +50,7 @@ fn collect_subqueries_in_pipeline_op(
     analyzed: &AnalyzedStatement,
     registry: &dyn ProcedureRegistry,
     entries: &mut Vec<(ExprId, PlannedSubquery)>,
-    max_quantifier: u32,
+    max_quantifier: super::super::PathLowering<'_>,
 ) -> Result<(), PlannerError> {
     match op {
         PipelineOp::Filter(predicate) => {
@@ -142,7 +142,7 @@ fn collect_subqueries_in_pattern_plan(
     analyzed: &AnalyzedStatement,
     registry: &dyn ProcedureRegistry,
     entries: &mut Vec<(ExprId, PlannedSubquery)>,
-    max_quantifier: u32,
+    max_quantifier: super::super::PathLowering<'_>,
 ) -> Result<(), PlannerError> {
     for filter in &pattern.filters {
         collect_subqueries_in_expr(&filter.expr, analyzed, registry, entries, max_quantifier)?;
@@ -161,7 +161,7 @@ fn collect_subqueries_in_join_tree(
     analyzed: &AnalyzedStatement,
     registry: &dyn ProcedureRegistry,
     entries: &mut Vec<(ExprId, PlannedSubquery)>,
-    max_quantifier: u32,
+    max_quantifier: super::super::PathLowering<'_>,
 ) -> Result<(), PlannerError> {
     match tree {
         JoinTree::Unit => {}
@@ -197,61 +197,17 @@ fn collect_subqueries_in_join_tree(
                 )?;
             }
         }
-        JoinTree::Questioned { child, edge, .. } => {
-            collect_subqueries_in_join_tree(child, analyzed, registry, entries, max_quantifier)?;
-            for predicate in &edge.property_predicates {
-                collect_subqueries_in_expr(
-                    &predicate.expr,
-                    analyzed,
-                    registry,
-                    entries,
-                    max_quantifier,
-                )?;
+        JoinTree::Paths(program) => {
+            for conditions in program.conditions.iter().flatten() {
+                for expr in conditions
+                    .properties
+                    .iter()
+                    .map(|(_, e)| e)
+                    .chain(&conditions.inline)
+                {
+                    collect_subqueries_in_expr(expr, analyzed, registry, entries, max_quantifier)?;
+                }
             }
-            for predicate in &edge.right_property_predicates {
-                collect_subqueries_in_expr(
-                    &predicate.expr,
-                    analyzed,
-                    registry,
-                    entries,
-                    max_quantifier,
-                )?;
-            }
-        }
-        JoinTree::Repeat { child, edge, .. } => {
-            collect_subqueries_in_join_tree(child, analyzed, registry, entries, max_quantifier)?;
-            for predicate in &edge.property_predicates {
-                collect_subqueries_in_expr(
-                    &predicate.expr,
-                    analyzed,
-                    registry,
-                    entries,
-                    max_quantifier,
-                )?;
-            }
-            for predicate in &edge.inline_predicates {
-                collect_subqueries_in_expr(
-                    &predicate.expr,
-                    analyzed,
-                    registry,
-                    entries,
-                    max_quantifier,
-                )?;
-            }
-            for predicate in &edge.final_property_predicates {
-                collect_subqueries_in_expr(
-                    &predicate.expr,
-                    analyzed,
-                    registry,
-                    entries,
-                    max_quantifier,
-                )?;
-            }
-        }
-        JoinTree::PathSearch { child, .. }
-        | JoinTree::PathModeFilter { child, .. }
-        | JoinTree::MatchModeFilter { child, .. } => {
-            collect_subqueries_in_join_tree(child, analyzed, registry, entries, max_quantifier)?;
         }
         JoinTree::HashJoin { left, right, .. } => {
             collect_subqueries_in_join_tree(left, analyzed, registry, entries, max_quantifier)?;
@@ -304,7 +260,7 @@ fn collect_subqueries_in_mutation(
     analyzed: &AnalyzedStatement,
     registry: &dyn ProcedureRegistry,
     entries: &mut Vec<(ExprId, PlannedSubquery)>,
-    max_quantifier: u32,
+    max_quantifier: super::super::PathLowering<'_>,
 ) -> Result<(), PlannerError> {
     match op {
         MutationOp::InsertNode { property_inits, .. }
@@ -335,7 +291,7 @@ fn collect_subqueries_in_catalog(
     analyzed: &AnalyzedStatement,
     registry: &dyn ProcedureRegistry,
     entries: &mut Vec<(ExprId, PlannedSubquery)>,
-    max_quantifier: u32,
+    max_quantifier: super::super::PathLowering<'_>,
 ) -> Result<(), PlannerError> {
     match op {
         CatalogOp::CreateNodeType { properties, .. }
@@ -376,7 +332,7 @@ fn collect_subqueries_in_project(
     analyzed: &AnalyzedStatement,
     registry: &dyn ProcedureRegistry,
     entries: &mut Vec<(ExprId, PlannedSubquery)>,
-    max_quantifier: u32,
+    max_quantifier: super::super::PathLowering<'_>,
 ) -> Result<(), PlannerError> {
     collect_subqueries_in_expr(&project.expr, analyzed, registry, entries, max_quantifier)
 }
@@ -386,7 +342,7 @@ fn collect_subqueries_in_expr(
     analyzed: &AnalyzedStatement,
     registry: &dyn ProcedureRegistry,
     entries: &mut Vec<(ExprId, PlannedSubquery)>,
-    max_quantifier: u32,
+    max_quantifier: super::super::PathLowering<'_>,
 ) -> Result<(), PlannerError> {
     match expr {
         // Subquery bodies are `MatchClause` / `QueryPipeline`, not `ValueExpr`
@@ -467,7 +423,7 @@ fn collect_planned_match_subquery(
     analyzed: &AnalyzedStatement,
     registry: &dyn ProcedureRegistry,
     entries: &mut Vec<(ExprId, PlannedSubquery)>,
-    max_quantifier: u32,
+    max_quantifier: super::super::PathLowering<'_>,
 ) -> Result<(), PlannerError> {
     let expr_id = analyzed
         .expr_ids
@@ -501,13 +457,17 @@ fn collect_planned_query_subquery(
     analyzed: &AnalyzedStatement,
     registry: &dyn ProcedureRegistry,
     entries: &mut Vec<(ExprId, PlannedSubquery)>,
-    max_quantifier: u32,
+    max_quantifier: super::super::PathLowering<'_>,
 ) -> Result<(), PlannerError> {
     let expr_id = analyzed
         .expr_ids
         .get(expr)
         .ok_or(PlannerError::ExpressionTypeMissing { span })?;
     let mut plan = super::super::lower_query_pipeline(body, registry, analyzed, max_quantifier)?;
+    // An expression query is read-only even inside a mutation. Do not inherit
+    // the enclosing statement's category; actual procedure effects remain
+    // classified from registration metadata by the read-only runner.
+    plan.category = crate::StatementCategory::ReadOnly;
     populate_plan_subqueries(&mut plan, analyzed, registry, max_quantifier)?;
     entries.push((
         expr_id,

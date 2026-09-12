@@ -1,10 +1,10 @@
-# Native selected paths (F05-PR03)
+# Native selected paths (F05-PR03, statement integration F05-PR04)
 
 `runtime::product_path::BoundedPathProgram` executes one lowered MATCH clause.
 The name is retained: execution is resource-bounded even when a source edge
-quantifier has no upper bound. The statement driver's legacy path dispatch is
-still deletion-owned by **F05-PR04**. This seam does not claim that cutover,
-correlated-subquery planning, or grouped/alternating pattern syntax has landed.
+quantifier has no upper bound. [Statement batch execution](path-batches.md) uses
+the same engine, including correlated inputs and planned expression subqueries.
+Grouped/alternating pattern syntax remains unsupported.
 
 ## Qualification, selection, and values
 
@@ -63,7 +63,10 @@ would be lost; it is never substituted as a successful source quantifier bound.
 
 Open selective WALK uses complete hop layers. A conservative reachability
 certificate over the **union** of the automaton's edge tests over-approximates
-possible endpoint pairs. It supplies no distances and never accepts paths or
+possible endpoint pairs. When all local conditions are literal property
+comparisons, impossible literal endpoints are excluded without expression
+evaluation. Opaque predicates retain the coarse superset, so an early error is
+never hidden by a later false constant. The certificate supplies no distances and never accepts paths or
 prunes history/predicates. Early completion requires every possible partition's
 quota and completion of its last length layer, including all ties. Otherwise
 execution exhausts naturally or reports a resource error. An over-approximation
@@ -95,7 +98,8 @@ conversion and check declared types, ownership, parallel identity and deletion.
 The Python selector reference is supplemental finite-model evidence, not a parser
 or complete GQL conformance oracle.
 
-The existing `bounded_paths` benchmark binary now includes many-tie, long-path and
+The existing `bounded_paths` benchmark binary includes whole-query filter/join
+rows as well as many-tie, long-path and
 rejected-shortest rows. See `BENCHMARKS.md` for commands, scales, measured phase
 times and retained-byte estimates. No shared-predecessor rewrite, new dependency,
 profile change, persistent-format change, or new benchmark target was needed.

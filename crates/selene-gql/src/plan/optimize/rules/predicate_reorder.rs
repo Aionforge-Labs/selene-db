@@ -44,33 +44,17 @@ fn reorder_tree(tree: &mut JoinTree, bindings: &[BindingDef], ctx: &OptimizeCont
         catalog: ctx.index_catalog,
     };
     match tree {
-        JoinTree::Unit => false,
+        JoinTree::Unit | JoinTree::Paths(_) => false,
         JoinTree::Scan(scan) => reorder_bucket(&mut scan.property_predicates, ctx, &scan_ctx),
         JoinTree::Expand { child, edge, .. } => {
             reorder_tree(child, bindings, ctx)
                 | reorder_bucket(&mut edge.property_predicates, ctx, &scan_ctx)
                 | reorder_bucket(&mut edge.right_property_predicates, ctx, &scan_ctx)
         }
-        JoinTree::Questioned { child, edge, .. } => {
-            reorder_tree(child, bindings, ctx)
-                | reorder_bucket(&mut edge.property_predicates, ctx, &scan_ctx)
-                | reorder_bucket(&mut edge.right_property_predicates, ctx, &scan_ctx)
-        }
-        JoinTree::Repeat { child, edge, .. } => {
-            reorder_tree(child, bindings, ctx)
-                | reorder_bucket(&mut edge.property_predicates, ctx, &scan_ctx)
-                | reorder_bucket(&mut edge.inline_predicates, ctx, &scan_ctx)
-                | reorder_bucket(&mut edge.final_property_predicates, ctx, &scan_ctx)
-        }
         JoinTree::HashJoin { left, right, .. } | JoinTree::Outer { left, right, .. } => {
             reorder_tree(left, bindings, ctx) | reorder_tree(right, bindings, ctx)
         }
-        JoinTree::PathModeFilter { child, .. } | JoinTree::MatchModeFilter { child, .. } => {
-            reorder_tree(child, bindings, ctx)
-        }
-        JoinTree::PathSearch { .. } | JoinTree::WorstCaseOptimal { .. } | JoinTree::Subplan(_) => {
-            false
-        }
+        JoinTree::WorstCaseOptimal { .. } | JoinTree::Subplan(_) => false,
         // Reorder each branch's residual predicates independently. After
         // index-rule rewrites, each branch's `property_predicates` carries
         // only the residual (non-consumed) filters; selectivity ordering

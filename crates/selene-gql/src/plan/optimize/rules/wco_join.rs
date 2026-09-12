@@ -40,11 +40,7 @@ fn rewrite_tree(tree: &mut JoinTree, cap: u32) -> bool {
     if matches!(
         tree,
         JoinTree::Unit
-            | JoinTree::Repeat { .. }
-            | JoinTree::Questioned { .. }
-            | JoinTree::PathSearch { .. }
-            | JoinTree::PathModeFilter { .. }
-            | JoinTree::MatchModeFilter { .. }
+            | JoinTree::Paths(_)
             | JoinTree::WorstCaseOptimal { .. }
             | JoinTree::Subplan(_)
     ) {
@@ -72,11 +68,7 @@ fn rewrite_tree(tree: &mut JoinTree, cap: u32) -> bool {
         JoinTree::Outer { left, .. } => rewrite_tree(left, cap),
         JoinTree::Unit
         | JoinTree::Scan(_)
-        | JoinTree::Repeat { .. }
-        | JoinTree::Questioned { .. }
-        | JoinTree::PathSearch { .. }
-        | JoinTree::PathModeFilter { .. }
-        | JoinTree::MatchModeFilter { .. }
+        | JoinTree::Paths(_)
         | JoinTree::WorstCaseOptimal { .. }
         | JoinTree::Subplan(_) => false,
         // DisjunctiveScan is a scan-shape leaf; not a cyclic expand chain
@@ -134,11 +126,7 @@ fn detect_cycle(
         }
         JoinTree::HashJoin { .. }
         | JoinTree::Outer { .. }
-        | JoinTree::Repeat { .. }
-        | JoinTree::Questioned { .. }
-        | JoinTree::PathSearch { .. }
-        | JoinTree::PathModeFilter { .. }
-        | JoinTree::MatchModeFilter { .. }
+        | JoinTree::Paths(_)
         | JoinTree::WorstCaseOptimal { .. }
         | JoinTree::Subplan(_) => None,
         // DisjunctiveScan can't appear inside a cyclic expand chain — it
@@ -180,11 +168,7 @@ fn collect_cycle_nodes(
         }
         JoinTree::HashJoin { .. }
         | JoinTree::Outer { .. }
-        | JoinTree::Repeat { .. }
-        | JoinTree::Questioned { .. }
-        | JoinTree::PathSearch { .. }
-        | JoinTree::PathModeFilter { .. }
-        | JoinTree::MatchModeFilter { .. }
+        | JoinTree::Paths(_)
         | JoinTree::WorstCaseOptimal { .. }
         | JoinTree::Subplan(_) => None,
         // DisjunctiveScan can't appear inside the cycle the collector walks

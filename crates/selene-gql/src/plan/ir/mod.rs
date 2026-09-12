@@ -7,12 +7,13 @@ mod catalog;
 mod execution;
 mod filter;
 mod mutation;
+mod path;
 mod session;
 mod subquery;
 mod tx;
 
 use crate::{
-    EdgeDirection, LabelExpr, MatchMode, PathMode, PathSelector, SetOp, SourceSpan,
+    EdgeDirection, LabelExpr, SetOp, SourceSpan,
     analyze::{AnalyzedType, BindingId},
 };
 
@@ -26,6 +27,7 @@ pub use filter::{
     ProjectExpr,
 };
 pub use mutation::{DeleteTargetPlan, InsertEndpointRef, InsertSiteId, MutationOp, PropertyInit};
+pub use path::{PathConditions, PathProgram};
 pub use session::SessionOp;
 pub use subquery::{
     OuterBindingRef, PlannedSubquery, PlannedTableSubquery, PlannedTableSubqueryYield,
@@ -42,8 +44,6 @@ pub struct PatternPlan {
     pub join_tree: JoinTree,
     /// Inline and clause-level predicates attached to the pattern phase.
     pub filters: Vec<FilterPredicate>,
-    /// Path-binding placeholders carried for later path execution work.
-    pub paths: Vec<PathPlan>,
 }
 
 /// Named binding defined by pattern analysis.
@@ -74,101 +74,12 @@ pub enum BindingElement {
     Path,
 }
 
-/// Binding endpoint used by path-level operators.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TailBinding {
-    /// Named pattern binding.
-    Named(BindingId),
-    /// Executor-private hidden binding.
-    Hidden(HiddenBindingId),
-}
-
-impl TailBinding {
-    /// Return the named binding, if any.
-    #[must_use]
-    pub const fn named(self) -> Option<BindingId> {
-        match self {
-            Self::Named(binding) => Some(binding),
-            Self::Hidden(_) => None,
-        }
-    }
-
-    /// Return the hidden binding, if any.
-    #[must_use]
-    pub const fn hidden(self) -> Option<HiddenBindingId> {
-        match self {
-            Self::Named(_) => None,
-            Self::Hidden(binding) => Some(binding),
-        }
-    }
-}
-
-/// Source of one hop-count contribution for a path-search row.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum HopContributor {
-    /// Static hop count from a fixed-length chain segment.
-    Fixed(u32),
-    /// One fixed hop from a named edge binding.
-    EdgeNamed(BindingId),
-    /// One fixed hop from an anonymous edge hidden binding.
-    EdgeHidden(HiddenBindingId),
-    /// Optional hop from a named questioned edge binding.
-    QuestionedNamed(BindingId),
-    /// Optional hop from an anonymous questioned edge hidden binding.
-    QuestionedHidden(HiddenBindingId),
-    /// Runtime hop count from a named quantified-edge group binding.
-    GroupNamed(BindingId),
-    /// Runtime hop count from an anonymous quantified-edge hidden binding.
-    GroupHidden(HiddenBindingId),
-}
-
-/// Source of one ordered path-mode validation contribution.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PathContributor {
-    /// Node binding in binding-path order.
-    Node(TailBinding),
-    /// Fixed edge identity from a named edge binding.
-    EdgeNamed(BindingId),
-    /// Fixed edge identity from an executor-private edge binding.
-    EdgeHidden(HiddenBindingId),
-    /// Optional edge identity and final node from a named questioned edge binding.
-    QuestionedEdgeNamed {
-        /// Runtime binding containing either `EdgeRef` or `NULL`.
-        binding: BindingId,
-        /// Node binding on the final side when the edge is present.
-        final_binding: TailBinding,
-    },
-    /// Optional edge identity and final node from an anonymous questioned edge binding.
-    QuestionedEdgeHidden {
-        /// Runtime hidden slot containing either `EdgeRef` or `NULL`.
-        hidden: HiddenBindingId,
-        /// Node binding on the final side when the edge is present.
-        final_binding: TailBinding,
-    },
-    /// Quantified edge group with enough topology to rebuild intermediate nodes.
-    EdgeGroupNamed {
-        /// Runtime group binding containing `LIST<EdgeRef>`.
-        binding: BindingId,
-        /// Node binding at the source side of the quantified segment.
-        source: TailBinding,
-        /// Direction requested by the quantified edge pattern.
-        direction: EdgeDirection,
-    },
-    /// Anonymous quantified edge group with enough topology to rebuild intermediate nodes.
-    EdgeGroupHidden {
-        /// Runtime hidden slot containing `LIST<EdgeRef>`.
-        hidden: HiddenBindingId,
-        /// Node binding at the source side of the quantified segment.
-        source: TailBinding,
-        /// Direction requested by the quantified edge pattern.
-        direction: EdgeDirection,
-    },
-}
-
 /// Pattern join tree.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum JoinTree {
+    /// A complete logical path clause executed by the product-path batch operator.
+    Paths(Box<PathProgram>),
     /// One-row, all-null anchor used to model leading optional graph patterns.
     Unit,
     /// Scan nodes or edges.
@@ -181,91 +92,6 @@ pub enum JoinTree {
         edge: EdgeMatch,
         /// Direction requested by the source pattern.
         direction: EdgeDirection,
-    },
-    /// Optional single-edge expansion for ISO questioned path primary (`?`).
-    ///
-    /// The skipped row binds the edge as `NULL` and unifies the final node
-    /// with the source node. The taken row behaves like a one-hop expansion.
-    Questioned {
-        /// Input side of the expansion.
-        child: Box<JoinTree>,
-        /// Edge pattern to traverse when the optional edge is present.
-        edge: EdgeMatch,
-        /// Direction requested by the source pattern.
-        direction: EdgeDirection,
-        /// Binding for the source-side node.
-        source_binding: TailBinding,
-        /// Binding for the final node after the questioned edge.
-        final_binding: TailBinding,
-    },
-    /// Bounded or future variable-length expansion across one edge pattern.
-    ///
-    /// `max: None` represents an ISO unbounded quantifier after the analyzer's
-    /// 16.4 legality gate has authorized it.
-    Repeat {
-        /// Input side of the expansion.
-        child: Box<JoinTree>,
-        /// Quantified edge pattern to traverse.
-        edge: RepeatEdgeMatch,
-        /// Direction requested by the source pattern.
-        direction: EdgeDirection,
-        /// Minimum number of hops.
-        min: u32,
-        /// Maximum number of hops, or `None` for future unbounded forms.
-        max: Option<u32>,
-        /// Path mode in scope for this repeat.
-        path_mode: PathMode,
-    },
-    /// Selector wrapper over one complete path pattern.
-    ///
-    /// The child materializes every candidate row. `PathSearch` then applies
-    /// endpoint partitioning and hop-count selection for `ANY` / `SHORTEST`
-    /// without changing the child join-tree shape.
-    PathSearch {
-        /// Selector to apply to the child path pattern.
-        selector: PathSelector,
-        /// Complete path-pattern child.
-        child: Box<JoinTree>,
-        /// Binding for the first node in the selected path.
-        source_binding: TailBinding,
-        /// Binding for the final node in the selected path.
-        final_binding: TailBinding,
-        /// Hop-count contributors in path order.
-        hop_contributors: Vec<HopContributor>,
-    },
-    /// Restrictive path-mode wrapper over one complete path pattern.
-    ///
-    /// The child materializes every candidate row. `PathModeFilter` then applies
-    /// per-row binding-path validation for `TRAIL`, `SIMPLE`, or `ACYCLIC` using
-    /// the explicit ordered contributors captured during lowering.
-    PathModeFilter {
-        /// Restrictive path mode to validate.
-        path_mode: PathMode,
-        /// Complete path-pattern child.
-        child: Box<JoinTree>,
-        /// Ordered node and edge contributors in binding-path order.
-        path_contributors: Vec<PathContributor>,
-    },
-    /// Pattern-wide match-mode wrapper over a whole `<graph pattern>`.
-    ///
-    /// Per ISO/IEC 39075:2024 §16.4, a `<match mode>` is a prefix on the entire
-    /// comma-separated path-pattern list of one MATCH (not a per-path-pattern
-    /// modifier like [`Self::PathModeFilter`]). The child materializes every
-    /// candidate row across all path patterns; this wrapper then applies the
-    /// pattern-wide edge-uniqueness filter for `DIFFERENT EDGES` (§16.4 GR4 /
-    /// GR8(a)) over the union of every edge column in the row. `REPEATABLE
-    /// ELEMENTS` installs no filter (GR8(b): BINDINGS = INNER), so the lowering
-    /// never constructs this variant for that mode.
-    MatchModeFilter {
-        /// Match mode to enforce. Only [`MatchMode::DifferentEdges`] reaches a
-        /// constructed wrapper; the variant is kept mode-tagged for EXPLAIN and
-        /// for an exhaustive runtime match.
-        match_mode: MatchMode,
-        /// Complete graph-pattern child spanning all path patterns of the MATCH.
-        child: Box<JoinTree>,
-        /// Every edge contributor across all path patterns, in binding-path
-        /// order. The union enables pattern-wide deduplication per §16.4 GR4.
-        path_contributors: Vec<PathContributor>,
     },
     /// Binary join between two pattern fragments.
     HashJoin {
@@ -425,37 +251,6 @@ pub struct EdgeMatch {
     pub span: SourceSpan,
 }
 
-/// Quantified edge pattern in a variable-length expansion.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RepeatEdgeMatch {
-    /// Named group edge binding, or `None` for anonymous quantified edges.
-    pub group_binding: Option<BindingId>,
-    /// Hidden group edge binding for anonymous quantified edges under selectors.
-    pub group_hidden_binding: Option<HiddenBindingId>,
-    /// Label predicate attached to each traversed edge.
-    pub label_predicate: Option<LabelExpr>,
-    /// Property-map predicates evaluated against each traversed edge.
-    pub property_predicates: Vec<FilterPredicate>,
-    /// Inline edge predicates evaluated once per traversed edge.
-    pub inline_predicates: Vec<FilterPredicate>,
-    /// Binding on the syntactic left side of the repeat, if named.
-    pub left_binding: Option<BindingId>,
-    /// Executor-private slot on the syntactic left side of the repeat.
-    pub left_hidden_binding: Option<HiddenBindingId>,
-    /// Binding on the syntactic final node, if named.
-    pub final_binding: Option<BindingId>,
-    /// Executor-private slot on the syntactic final node.
-    pub final_hidden_binding: Option<HiddenBindingId>,
-    /// Label predicate on the syntactic final node, if any.
-    pub final_label_predicate: Option<LabelExpr>,
-    /// Property-map equality predicates on the syntactic final node.
-    pub final_property_predicates: Vec<FilterPredicate>,
-    /// Optimizer-selected access path for future repeat-aware planning.
-    pub access: ScanAccess,
-    /// Source span.
-    pub span: SourceSpan,
-}
-
 /// Pipeline operation over binding tables.
 ///
 /// `#[non_exhaustive]` so future planner work (e.g., MERGE lowering, CALL
@@ -578,62 +373,4 @@ pub struct BindingTableColumn {
     pub hidden: Option<HiddenBindingId>,
     /// Analyzer-inferred column type.
     pub ty: AnalyzedType,
-}
-
-/// Path binding placeholder.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PathPlan {
-    /// Analyzer path binding.
-    pub binding: BindingId,
-    /// Source span.
-    pub span: SourceSpan,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn repeat_join_tree_carries_group_and_final_node_slots_separately() {
-        let tree = JoinTree::Repeat {
-            child: Box::new(JoinTree::Scan(NodeOrEdgeScan {
-                binding: None,
-                hidden_binding: Some(HiddenBindingId::new(0)),
-                kind: ScanKind::Node,
-                label_predicate: None,
-                property_predicates: Vec::new(),
-                access: ScanAccess::Linear,
-                span: SourceSpan::default(),
-            })),
-            edge: RepeatEdgeMatch {
-                group_binding: None,
-                group_hidden_binding: None,
-                label_predicate: None,
-                property_predicates: Vec::new(),
-                inline_predicates: Vec::new(),
-                left_binding: None,
-                left_hidden_binding: Some(HiddenBindingId::new(0)),
-                final_binding: None,
-                final_hidden_binding: Some(HiddenBindingId::new(1)),
-                final_label_predicate: None,
-                final_property_predicates: Vec::new(),
-                access: ScanAccess::Linear,
-                span: SourceSpan::default(),
-            },
-            direction: EdgeDirection::Right,
-            min: 0,
-            max: Some(2),
-            path_mode: PathMode::Walk,
-        };
-
-        let JoinTree::Repeat { edge, min, max, .. } = tree else {
-            panic!("expected repeat");
-        };
-        assert_eq!(edge.group_binding, None);
-        assert_eq!(edge.group_hidden_binding, None);
-        assert_eq!(edge.left_hidden_binding, Some(HiddenBindingId::new(0)));
-        assert_eq!(edge.final_hidden_binding, Some(HiddenBindingId::new(1)));
-        assert_eq!(min, 0);
-        assert_eq!(max, Some(2));
-    }
 }

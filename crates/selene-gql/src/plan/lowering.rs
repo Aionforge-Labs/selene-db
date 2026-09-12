@@ -20,20 +20,24 @@ mod call;
 mod catalog;
 mod expr;
 mod match_clause;
-mod match_mode;
 mod mutation;
 mod optional_filters;
-mod path_mode;
-mod path_search;
+pub(crate) mod path_program;
 mod query;
 #[cfg(test)]
 mod rejections;
-mod repeat;
 mod sequential_match;
 mod set_op;
 
 use query::{lower_query_pipeline, lower_return, nullable_call_yield_type, visible_after_pattern};
 use set_op::assert_arms_column_name_equal;
+
+/// Immutable logical path authority shared by every nested physical lowerer.
+#[derive(Clone, Copy)]
+pub(crate) struct PathLowering<'a> {
+    paths: &'a crate::LoweredPathSet,
+    max_quantifier: u32,
+}
 
 use crate::{
     GqlType, ProcedureRegistry, QueryPipeline, SourceSpan, Statement,
@@ -90,10 +94,14 @@ pub fn plan_with_caps(
     // useful spans; supported families fix their identities, types, effects,
     // scopes, and path automata in logical IR before row lowering runs.
     let logical = crate::plan::logical::lower_logical(analyzed, registry)?;
-    let mut plan = lower_statement_kind(analyzed.source(), registry, analyzed, caps)?;
+    let paths = PathLowering {
+        paths: &logical.paths,
+        max_quantifier: caps.max_quantifier,
+    };
+    let mut plan = lower_statement_kind(analyzed.source(), registry, analyzed, caps, paths)?;
     plan.category = analyzed.category;
     plan.expr_ids = analyzed.expr_ids.clone();
-    expr::populate_plan_subqueries(&mut plan, analyzed, registry, caps.max_quantifier)?;
+    expr::populate_plan_subqueries(&mut plan, analyzed, registry, paths)?;
     // Why: only the top-level plan's caps are consumed — statement.rs builds the
     // runtime TxContext and the optimizer's OptimizeContext from
     // `plan.impl_defined_caps`, and nested plans execute under that same context.
@@ -127,11 +135,12 @@ fn lower_statement_kind(
     registry: &dyn ProcedureRegistry,
     analyzed: &AnalyzedStatement,
     caps: &ImplDefinedCaps,
+    paths: PathLowering<'_>,
 ) -> Result<ExecutionPlan, PlannerError> {
     // The quantifier gate is the only cap threaded recursively mid-lowering; the
     // DDL key-label-set IL003 gate needs the full caps, so `lower_ddl` receives
     // `caps` directly.
-    let max_quantifier = caps.max_quantifier;
+    let max_quantifier = paths;
     match statement {
         Statement::Query(pipeline) => {
             lower_query_pipeline(pipeline, registry, analyzed, max_quantifier)
@@ -162,7 +171,9 @@ fn lower_statement_kind(
         Statement::Mutate(pipeline) => mutation::lower_mutation(pipeline, analyzed, max_quantifier),
         Statement::Ddl(statement) => catalog::lower_ddl(statement, analyzed, caps),
         Statement::Call(call) => call::lower_top_level_call(call, registry, analyzed),
-        Statement::Explain { inner, span } => lower_explain(inner, *span, registry, analyzed, caps),
+        Statement::Explain { inner, span } => {
+            lower_explain(inner, *span, registry, analyzed, caps, paths)
+        }
         Statement::StartTransaction { span } => Ok(tx_plan(TxOp::Start { span: *span })),
         Statement::Commit { span } => Ok(tx_plan(TxOp::Commit { span: *span })),
         Statement::Rollback { span } => Ok(tx_plan(TxOp::Rollback { span: *span })),
@@ -225,8 +236,9 @@ fn lower_explain(
     registry: &dyn ProcedureRegistry,
     analyzed: &AnalyzedStatement,
     caps: &ImplDefinedCaps,
+    paths: PathLowering<'_>,
 ) -> Result<ExecutionPlan, PlannerError> {
-    let inner = lower_statement_kind(inner, registry, analyzed, caps)?;
+    let inner = lower_statement_kind(inner, registry, analyzed, caps, paths)?;
     Ok(ExecutionPlan {
         category: StatementCategory::ReadOnly,
         pattern_plan: None,
@@ -247,7 +259,7 @@ fn lower_chained(
     blocks: &[QueryPipeline],
     registry: &dyn ProcedureRegistry,
     analyzed: &AnalyzedStatement,
-    max_quantifier: u32,
+    max_quantifier: PathLowering<'_>,
 ) -> Result<ExecutionPlan, PlannerError> {
     let Some((first, rest)) = blocks.split_first() else {
         return Ok(empty_plan());

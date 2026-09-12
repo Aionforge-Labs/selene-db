@@ -100,20 +100,26 @@ fn non_leading_optional_match_lowers_to_pipeline_optional_match() {
 }
 
 #[test]
-fn lifted_quantifiers_lower_to_questioned_and_unbounded_repeat() {
+fn lifted_quantifiers_transport_conditional_singleton_and_open_group() {
     let questioned = plan_one("MATCH (a)-[:K?]->(b) RETURN b");
-    let questioned_pattern = questioned.pattern_plan.as_ref().expect("pattern plan");
-    assert!(matches!(
-        questioned_pattern.join_tree,
-        JoinTree::Questioned { .. }
-    ));
+    let selene_gql::PathSemanticElement::Edge(edge) =
+        &path_program(&questioned).automata[0].semantic.elements[1]
+    else {
+        panic!("edge")
+    };
+    assert!(edge.exposure.is_conditional_singleton());
 
     let unbounded = plan_one("MATCH TRAIL (a)-[:K+]->(b) RETURN b");
-    let unbounded_pattern = unbounded.pattern_plan.as_ref().expect("pattern plan");
-    let JoinTree::PathModeFilter { child, .. } = &unbounded_pattern.join_tree else {
-        panic!("expected path-mode wrapper");
+    let automaton = &path_program(&unbounded).automata[0];
+    assert_eq!(automaton.mode.mode, selene_gql::PathMode::Trail);
+    let selene_gql::PathSemanticElement::Edge(edge) = &automaton.semantic.elements[1] else {
+        panic!("edge")
     };
-    assert!(matches!(child.as_ref(), JoinTree::Repeat { max: None, .. }));
+    assert!(edge.exposure.is_group());
+    assert_eq!(
+        edge.quantifier,
+        selene_gql::EdgeQuantifierKind::Unbounded { min: 1 }
+    );
 }
 
 #[test]
@@ -121,19 +127,16 @@ fn restrictive_path_mode_single_node_lowers_to_filter() {
     let plan = plan_one("MATCH SIMPLE (n) RETURN n");
     let pattern = plan.pattern_plan.as_ref().expect("pattern plan");
 
-    assert!(matches!(pattern.join_tree, JoinTree::PathModeFilter { .. }));
+    assert!(matches!(pattern.join_tree, JoinTree::Paths(_)));
 }
 
 #[test]
-fn different_edges_match_mode_lowers_to_match_mode_filter() {
-    // ISO 39075:2024 §16.4 GR8(a): an explicit DIFFERENT EDGES installs the
-    // pattern-wide edge-uniqueness wrapper.
+fn different_edges_match_mode_is_clause_scoped_in_the_path_program() {
     let plan = plan_one("MATCH DIFFERENT EDGES (a)-[:K]->(b) RETURN a");
-    let pattern = plan.pattern_plan.as_ref().expect("pattern plan");
-    assert!(matches!(
-        pattern.join_tree,
-        JoinTree::MatchModeFilter { .. }
-    ));
+    assert_eq!(
+        path_program(&plan).automata[0].match_mode.mode,
+        Some(selene_gql::MatchMode::DifferentEdges)
+    );
 }
 
 #[test]
@@ -147,11 +150,6 @@ fn repeatable_elements_and_default_install_no_match_mode_filter() {
     ] {
         let plan = plan_one(source);
         let pattern = plan.pattern_plan.as_ref().expect("pattern plan");
-        assert!(
-            !matches!(pattern.join_tree, JoinTree::MatchModeFilter { .. }),
-            "{source} must not install a MatchModeFilter; got {:?}",
-            pattern.join_tree
-        );
         assert!(matches!(pattern.join_tree, JoinTree::Expand { .. }));
     }
 }

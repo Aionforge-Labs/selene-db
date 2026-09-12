@@ -9,6 +9,128 @@ use crate::runtime::batch::{filter::BatchFilter, page::BatchPage, project::Batch
 use crate::runtime::{EvalCtx, execute_pattern, execute_pipeline};
 use crate::{EmptyProcedureRegistry, ImplDefinedCaps, lower_path_automata_with_defaults, plan};
 
+/// Actual statement lowering and production batch assembly, not the direct
+/// native constructor. The independent models call this as a second consumer.
+pub(super) fn statement_table(f: &Fixture, source: &str, size: usize) -> BindingTable {
+    let a = analyzed(source);
+    let plan = plan(&a, &EmptyProcedureRegistry).unwrap();
+    let caps = ImplDefinedCaps::default();
+    let tx = TxContext::read_only(
+        f.graph.read(),
+        &caps,
+        &EmptyProcedureRegistry,
+        f.graph.index_providers(),
+    );
+    let result = crate::runtime::batch::query::execute_with_test_policy(
+        &plan,
+        &tx,
+        BatchPolicy::new(size, 1 << 20).unwrap(),
+    )
+    .unwrap()
+    .expect("path statement must not decline batch execution");
+    assert_eq!(
+        result.suffix_from,
+        plan.pipeline.len(),
+        "{source}: unexpected row suffix"
+    );
+    result.table
+}
+
+#[test]
+fn physical_path_charges_recursive_input_storage_and_rejects_missing_binding_metadata() {
+    use selene_core::Value;
+    let f = Fixture::new(2, &[(0, 1, true, true)]);
+    let a = analyzed("MATCH p = (a)-[r{0,1}]->(b) RETURN p");
+    let plan = plan(&a, &EmptyProcedureRegistry).unwrap();
+    let pattern = plan.pattern_plan.as_ref().unwrap();
+    let crate::JoinTree::Paths(program) = &pattern.join_tree else {
+        panic!("path program")
+    };
+    let mut malformed = program.as_ref().clone();
+    malformed.bindings.clear();
+    malformed.schema.columns.clear();
+    assert!(BoundedPathProgram::from_plan(&malformed).is_err());
+    let caps = ImplDefinedCaps::default();
+    let tx = TxContext::read_only(
+        f.graph.read(),
+        &caps,
+        &EmptyProcedureRegistry,
+        f.graph.index_providers(),
+    );
+    let eval = EvalCtx {
+        tx: &tx,
+        expr_ids: &plan.expr_ids,
+        subqueries: &plan.subqueries,
+    };
+    let mut schema = crate::runtime::pattern::schema_for_pattern(pattern);
+    schema.columns.push(crate::BindingTableColumn {
+        name: Some(selene_core::db_string("payload").unwrap()),
+        hidden: None,
+        ty: crate::AnalyzedType::Resolved(crate::GqlType::List(Box::new(crate::GqlType::Integer))),
+    });
+    let mut values = vec![Value::Null; schema.columns.len() - 1];
+    values.push(Value::List(vec![Value::Int(0); 256]));
+    let mut operator = BatchPath::new(
+        program,
+        eval,
+        schema,
+        Some(crate::Binding::new(values)),
+        BatchPolicy::default_policy(),
+    );
+    let mut ctx = BatchExecutionContext::borrowed(
+        tx.snapshot(),
+        tx.batch_cancel(),
+        MemoryBudget::new(32 * 1024),
+    );
+    assert!(matches!(
+        trace_operator_to_table(&mut operator, &mut ctx),
+        Err(ExecutorError::ProgramLimitExceeded {
+            detail: "batch memory budget exceeded",
+            ..
+        })
+    ));
+    assert_eq!(ctx.budget_used(), 0);
+    assert!(ctx.is_closed());
+}
+
+#[test]
+fn statement_batches_keep_correlation_multiplicity_and_bound_null_across_pulls() {
+    let f = Fixture::new(3, &vec![(0, 1, true, true); 30]);
+    let source = "MATCH (input), (replica) FILTER input IS NOT NULL MATCH ALL SHORTEST p = (input)-[r{0,1}]->(b) RETURN input, r, p";
+    for size in [1, 2, 7, 1024] {
+        let table = statement_table(&f, source, size);
+        assert_eq!(table.row_count(), 99);
+        let mut counts = [0; 3];
+        for row in table.rows() {
+            let [
+                selene_core::Value::NodeRef(input),
+                selene_core::Value::List(group),
+                selene_core::Value::Path(path),
+            ] = row.values()
+            else {
+                panic!("typed path batch")
+            };
+            assert_eq!(*input, path.start);
+            assert_eq!(group.len(), path.segments.len());
+            counts[f.nodes.iter().position(|n| n == input).unwrap()] += 1;
+        }
+        assert_eq!(counts, [93, 3, 3]);
+        let nulls = statement_table(
+            &f,
+            "MATCH (a:Root)-[r?]->(b) FILTER r IS NULL MATCH (c)-[r?]->(d) RETURN r, c, d",
+            size,
+        );
+        assert_eq!(
+            nulls.row_count(),
+            3,
+            "a bound questioned NULL must not become unbound"
+        );
+        for row in nulls.rows() {
+            assert_eq!(row.values()[0], selene_core::Value::Null);
+        }
+    }
+}
+
 #[test]
 fn product_source_and_row_patterns_agree_through_shared_batch_operators() {
     let f = Fixture::new(

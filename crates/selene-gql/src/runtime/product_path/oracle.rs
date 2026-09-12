@@ -239,7 +239,11 @@ fn query(segments: &[Segment], mode: &str, match_mode: &str) -> String {
             s.min, s.max
         ));
     }
-    source.push_str(" RETURN a");
+    source.push_str(if segments.len() == 1 {
+        " RETURN a, r, b"
+    } else {
+        " RETURN a, r, m, s, b"
+    });
     source
 }
 
@@ -258,9 +262,17 @@ fn compare(f: &Fixture, segments: &[Segment]) {
                         .map(|r| r.values().to_vec())
                         .collect()
                 ),
-                canonical(expected),
+                canonical(expected.clone()),
                 "{source}"
             );
+            for size in [1, 7] {
+                let table = super::differentials::statement_table(f, &source, size);
+                assert_eq!(
+                    canonical(table.rows().iter().map(|r| r.values().to_vec()).collect()),
+                    canonical(expected.clone()),
+                    "physical batch size {size}: {source}"
+                );
+            }
         }
     }
 }
@@ -322,7 +334,7 @@ fn singleton_and_questioned_exposures_match_independent_walks() {
         for mode in ["WALK", "TRAIL", "SIMPLE", "ACYCLIC"] {
             for questioned in [false, true] {
                 let q = if questioned { "?" } else { "" };
-                let source = format!("MATCH {mode} (a){left}[r{q}]{right}(b) RETURN a");
+                let source = format!("MATCH {mode} (a){left}[r{q}]{right}(b) RETURN a, r, b");
                 let actual = run(&f.graph, &source, PathExecutionLimits::default()).unwrap();
                 let mut expected = reference(
                     &f,
@@ -350,8 +362,14 @@ fn singleton_and_questioned_exposures_match_independent_walks() {
                             .map(|r| r.values().to_vec())
                             .collect()
                     ),
-                    canonical(expected),
+                    canonical(expected.clone()),
                     "{source}"
+                );
+                let table = super::differentials::statement_table(&f, &source, 2);
+                assert_eq!(
+                    canonical(table.rows().iter().map(|r| r.values().to_vec()).collect()),
+                    canonical(expected),
+                    "physical: {source}"
                 );
             }
         }

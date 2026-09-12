@@ -159,8 +159,7 @@ where
 /// Recurses only into `Expand` children, both `HashJoin` sides, and the
 /// preserved (`left`) side of `Outer`. Every other join-tree node terminates
 /// the walk: `Scan` and `DisjunctiveScan` (leaf scans with no `Expand`
-/// underneath), `Repeat` / `Questioned` / `PathSearch` / `PathModeFilter`
-/// (path-shaped wrappers whose edges are not plain pushdown targets), and the
+/// underneath), `Paths` (a complete semantic clause, not a pushdown target), and the
 /// `WorstCaseOptimal` / `Subplan` boundaries (rules don't reach across those).
 /// The optional (`right`) side of `Outer` is likewise skipped.
 ///
@@ -177,21 +176,13 @@ pub(crate) fn walk_expand_nodes(
     match tree {
         JoinTree::Unit
         | JoinTree::Scan(_)
-        | JoinTree::Repeat { .. }
-        | JoinTree::Questioned { .. }
-        | JoinTree::PathSearch { .. }
-        | JoinTree::PathModeFilter { .. }
+        | JoinTree::Paths(_)
         | JoinTree::WorstCaseOptimal { .. }
         | JoinTree::Subplan(_) => false,
         JoinTree::Expand { child, edge, .. } => {
             let changed_child = walk_expand_nodes(child, visit);
             visit(edge) | changed_child
         }
-        // MatchModeFilter wraps the whole graph pattern (the join-tree root for
-        // DIFFERENT EDGES). Descend so edge-filter pushdown still reaches the
-        // Expand nodes beneath it; the pattern-wide filter runs afterward on the
-        // surviving rows, so narrowing edge candidates first is safe.
-        JoinTree::MatchModeFilter { child, .. } => walk_expand_nodes(child, visit),
         JoinTree::HashJoin { left, right, .. } => {
             walk_expand_nodes(left, visit) | walk_expand_nodes(right, visit)
         }
@@ -206,13 +197,11 @@ fn recurse_join_tree_subplans(
     visit: &mut impl FnMut(ExecutionPlan) -> Transformed<ExecutionPlan>,
 ) -> bool {
     match tree {
-        JoinTree::Unit | JoinTree::Scan(_) | JoinTree::WorstCaseOptimal { .. } => false,
-        JoinTree::Expand { child, .. }
-        | JoinTree::Questioned { child, .. }
-        | JoinTree::Repeat { child, .. }
-        | JoinTree::PathSearch { child, .. }
-        | JoinTree::PathModeFilter { child, .. }
-        | JoinTree::MatchModeFilter { child, .. } => recurse_join_tree_subplans(child, visit),
+        JoinTree::Unit
+        | JoinTree::Scan(_)
+        | JoinTree::Paths(_)
+        | JoinTree::WorstCaseOptimal { .. } => false,
+        JoinTree::Expand { child, .. } => recurse_join_tree_subplans(child, visit),
         JoinTree::HashJoin { left, right, .. } | JoinTree::Outer { left, right, .. } => {
             recurse_join_tree_subplans(left, visit) | recurse_join_tree_subplans(right, visit)
         }
@@ -262,22 +251,9 @@ fn walk_join_tree_exprs(
                 | walk_predicates(&mut edge.right_property_predicates, bindings, visit);
             changed_child | changed_edge
         }
-        JoinTree::Questioned { child, edge, .. } => {
-            let changed_child = walk_join_tree_exprs(child, bindings, visit);
-            let changed_edge = walk_predicates(&mut edge.property_predicates, bindings, visit)
-                | walk_predicates(&mut edge.right_property_predicates, bindings, visit);
-            changed_child | changed_edge
-        }
-        JoinTree::Repeat { child, edge, .. } => {
-            let changed_child = walk_join_tree_exprs(child, bindings, visit);
-            let changed_edge = walk_predicates(&mut edge.property_predicates, bindings, visit)
-                | walk_predicates(&mut edge.inline_predicates, bindings, visit)
-                | walk_predicates(&mut edge.final_property_predicates, bindings, visit);
-            changed_child | changed_edge
-        }
-        JoinTree::PathSearch { child, .. }
-        | JoinTree::PathModeFilter { child, .. }
-        | JoinTree::MatchModeFilter { child, .. } => walk_join_tree_exprs(child, bindings, visit),
+        // Path predicates retain their compiler identities and evaluation order.
+        // Rewriting them independently of semantic IDs would split authority.
+        JoinTree::Paths(_) => false,
         JoinTree::HashJoin { left, right, .. } => {
             walk_join_tree_exprs(left, bindings, visit)
                 | walk_join_tree_exprs(right, bindings, visit)

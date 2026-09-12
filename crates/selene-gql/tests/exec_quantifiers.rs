@@ -197,18 +197,16 @@ fn unbounded_cap_exceed_returns_program_limit() {
     assert!(matches!(
         err,
         ExecutorError::ProgramLimitExceeded {
-            detail: "max_quantifier",
+            detail: "max_path_hops",
             ..
         }
     ));
     assert_eq!(err.gqlstatus().as_str(), "5GQL1");
 }
 
-// FU-2: an UNBOUNDED minimum-length shortest selector (ANY/ALL SHORTEST) must
-// downshift its repeat traversal from the default WALK to TRAIL so it terminates
-// on a cyclic graph — and the TRAIL traversal is result-equivalent because every
-// minimum-hop path is simple (hence a trail). See
-// `plan::lowering::match_clause::repeat_path_mode_under_filter`.
+// Open shortest selectors now enumerate complete hop layers with a conservative
+// completion certificate, without changing WALK into TRAIL. On this simple cycle
+// the minimum-length results coincide, but lower bounds/counts may reuse edges.
 
 /// `(b, edge-id-list)` rows, sorted, for order-independent comparison.
 fn shortest_rows(table: &BindingTable) -> Vec<(Option<u64>, Option<Vec<u64>>)> {
@@ -332,34 +330,29 @@ fn bounded_shortest_unchanged_on_cycle() {
 }
 
 #[test]
-fn unbounded_counted_shortest_still_program_limit_on_cycle() {
-    // SCOPE: counted shortest (G019 SHORTEST N) is runtime-supported. It counts paths by
-    // hop-rank INCLUDING non-simple paths (ISO §22.4), so it must stay WALK and
-    // keep raising 5GQL1 on an unbounded cyclic graph (downshifting to TRAIL would
-    // silently change its semantics to count trails, inconsistent with bounded
-    // counted-shortest). Pins the implementation-defined cap behavior.
+fn unbounded_counted_shortest_includes_non_simple_walks_on_cycle() {
     let graph = cycle_graph();
     let plan = planned("MATCH SHORTEST 2 (a:N {name: 'A'})-[r:K+]->(b:N) RETURN r");
 
-    let err = execute_on_graph(&graph, &plan).expect_err("counted shortest still capped");
-
-    assert!(matches!(
-        err,
-        ExecutorError::ProgramLimitExceeded {
-            detail: "max_quantifier",
-            ..
-        }
-    ));
-    assert_eq!(err.gqlstatus().as_str(), "5GQL1");
+    let table = execute_on_graph(&graph, &plan).expect("complete selected hop layers");
+    let mut paths = edge_lists_for(&table, "r");
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec![
+            Some(vec![1]),
+            Some(vec![1, 2]),
+            Some(vec![1, 2, 1]),
+            Some(vec![1, 2, 1, 2])
+        ]
+    );
 }
 
 // FU-2 (Codex PR #245 r2, P2): the count-1 counted spellings are ISO §16.6 SR2c
 // EQUIVALENT to the keyword forms — `SHORTEST 1 [PATH]` == `ANY SHORTEST`
 // (`CountedShortest { paths: 1 }`) and `SHORTEST [1] GROUP[S]` == `ALL SHORTEST`
 // (`CountedShortestGroup { groups: 1 }`). They are min-length shortest selectors,
-// so on a cyclic graph they must downshift to TRAIL and TERMINATE identically to
-// their keyword twins, not raise 5GQL1. The downshift predicate matches on the
-// count-1 *semantics*, not the surface keyword, so equivalent forms agree.
+// so on a cyclic graph they terminate identically to their keyword twins.
 
 #[test]
 fn unbounded_counted_shortest_one_terminates_and_equals_any_shortest_on_cycle() {
@@ -417,37 +410,32 @@ fn unbounded_shortest_bare_group_defaults_to_one_and_terminates_on_cycle() {
 }
 
 #[test]
-fn unbounded_counted_shortest_group_two_still_program_limit_on_cycle() {
-    // Boundary pin (complements the SHORTEST 2 PATH deferral above): a count-`>= 2`
-    // GROUP form admits a strictly-longer second length-group, which can be
-    // non-simple — so it is NOT downshiftable and stays DEFERRED (5GQL1) on an
-    // unbounded cyclic graph. Only count-1 downshifts.
+fn unbounded_counted_shortest_group_two_keeps_non_simple_second_groups() {
     let graph = cycle_graph();
     let plan = planned("MATCH SHORTEST 2 GROUPS (a:N {name: 'A'})-[r:K+]->(b:N) RETURN r");
 
-    let err = execute_on_graph(&graph, &plan).expect_err("count>=2 group form still capped");
-
-    assert!(matches!(
-        err,
-        ExecutorError::ProgramLimitExceeded {
-            detail: "max_quantifier",
-            ..
-        }
-    ));
-    assert_eq!(err.gqlstatus().as_str(), "5GQL1");
+    let table = execute_on_graph(&graph, &plan).expect("complete selected length groups");
+    let mut paths = edge_lists_for(&table, "r");
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec![
+            Some(vec![1]),
+            Some(vec![1, 2]),
+            Some(vec![1, 2, 1]),
+            Some(vec![1, 2, 1, 2])
+        ]
+    );
 }
 
 #[test]
 fn different_edges_makes_counted_shortest_finite_on_cycle() {
-    // The counted-shortest DEFERRAL (5GQL1, pinned above) is specific to plain WALK,
-    // whose candidate set over a cycle is infinite. With DIFFERENT EDGES (G002, ISO
+    // With DIFFERENT EDGES (G002, ISO
     // §16.4 NOTE 222) the candidate set is constrained to edge-distinct paths (TRAIL),
     // which is finite — so `SHORTEST N DIFFERENT EDGES` over a cycle TERMINATES and
     // counts the N shortest edge-distinct paths. Correct AND complete: node-repeating-
     // but-edge-distinct trails are still counted (DIFFERENT EDGES forbids only edge
-    // reuse, not node reuse), so it is NOT the deferred plain-WALK case. The
-    // pre-existing different_edges -> TRAIL downshift handles this; the FU-2 shortest
-    // downshift is OR-composed and does not change it.
+    // reuse, not node reuse). The mode is enforced during product traversal.
     let graph = cycle_graph();
     let plan = planned("MATCH SHORTEST 2 DIFFERENT EDGES (a:N {name: 'A'})-[r:K+]->(b:N) RETURN r");
 
@@ -455,36 +443,24 @@ fn different_edges_makes_counted_shortest_finite_on_cycle() {
         .expect("DIFFERENT EDGES bounds the candidate set to trails, so it terminates");
 
     // The 2 shortest edge-distinct paths from A: A->B [1] and A->B->A [1, 2].
-    assert_eq!(
-        edge_lists_for(&table, "r"),
-        vec![Some(vec![1]), Some(vec![1, 2])]
-    );
+    let mut paths = edge_lists_for(&table, "r");
+    paths.sort();
+    assert_eq!(paths, vec![Some(vec![1]), Some(vec![1, 2])]);
 }
 
 #[test]
-fn lower_bounded_shortest_over_cycle_is_deferred_not_wrong() {
+fn lower_bounded_shortest_over_cycle_preserves_required_edge_reuse() {
     // Codex (PR #245, P2): the WALK->TRAIL downshift is only result-equivalent when
     // the quantifier lower bound is <= 1. With `min >= 2`, removing a cycle would
     // drop below the bound, so the shortest WALK satisfying the bound can legitimately
     // REUSE an edge (e.g. on the A<->B cycle the shortest >=2-hop walk to B is the
     // edge-reusing A->B->A->B [1,2,1]). A TRAIL downshift would drop those rows and
-    // return a WRONG (under-)result. So `min >= 2` shortest is NOT downshifted: it
-    // stays WALK and, over a cyclic graph, is DEFERRED (5GQL1, ProgramLimitExceeded) —
-    // the same posture as plain counted-shortest (both need ordered length-enumeration
-    // over an infinite WALK candidate set). The point is that the engine never returns
-    // a silently-truncated result here.
+    // return a WRONG (under-)result. Complete hop layers now retain both endpoints.
     let graph = cycle_graph();
     let plan = planned("MATCH ALL SHORTEST (a:N {name: 'A'})-[r:K*2..]->(b:N) RETURN r");
 
-    let err = execute_on_graph(&graph, &plan)
-        .expect_err("lower-bounded shortest over a cycle is deferred, not wrongly truncated");
-
-    assert!(matches!(
-        err,
-        ExecutorError::ProgramLimitExceeded {
-            detail: "max_quantifier",
-            ..
-        }
-    ));
-    assert_eq!(err.gqlstatus().as_str(), "5GQL1");
+    let table = execute_on_graph(&graph, &plan).expect("lower-bound-aware shortest");
+    let mut paths = edge_lists_for(&table, "r");
+    paths.sort();
+    assert_eq!(paths, vec![Some(vec![1, 2]), Some(vec![1, 2, 1])]);
 }
