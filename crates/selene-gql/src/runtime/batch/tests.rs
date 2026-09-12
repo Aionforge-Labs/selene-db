@@ -1,12 +1,13 @@
-//! F04-PR01 acceptance regressions for the batch substrate.
+//! Batch substrate acceptance regressions (F04-PR01, carried forward).
 //!
-//! Each test maps to one acceptance case: boundary cardinalities, the
-//! zero-column unit table, null/selection alignment through filtering and
-//! buffer reuse, declared types and preferred order (including empty
-//! results), cancellation/error release without partial output, and the
-//! batch-position API surface. The differential tests compare the batch scan
-//! against the existing row executor on the same pinned snapshot; the row
-//! path is the oracle and the batch path must match it exactly.
+//! Substrate-contract tests: policy construction, the zero-column unit
+//! table, null/selection alignment through filtering and buffer reuse,
+//! declared types and preferred order, and cancellation/error release
+//! without partial output. Scan-behavior tests live in [`super::scan_tests`];
+//! F04-PR02 acceptance differentials (indexed access, filters, paging,
+//! expansion, mixed edges, staleness) live in [`super::differentials`].
+//! Every differential compares against the row executor on the same pinned
+//! snapshot; the row path is the oracle and the batch path must match it.
 
 use std::{
     sync::Arc,
@@ -19,19 +20,18 @@ use selene_graph::SharedGraph;
 use crate::{
     AnalyzedType,
     plan::{BindingTableColumn, BindingTableSchema},
-    runtime::{Binding, BindingTable, ExecutionOutcome, ExecutorError, StatementOutput},
+    runtime::{Binding, BindingTable, ExecutorError, TxContext},
 };
 
 use super::binding_batch::BatchColumn;
 use super::fixtures::{
-    TEST_TARGET_ROWS, assert_all_aligned, execute_row_plan, plan_source, pull_scan, row_table,
-    rows_into_bindings, seed_nodes, test_policy,
+    assert_all_aligned, eval_for, plan_source, row_table, scan_parts, seed_nodes, test_policy,
 };
+use super::scan::BatchScan;
 use super::{
-    BatchBuffer, BatchCancel, BatchError, BatchExecutionContext, BatchNodeScan, BatchPolicy,
-    BatchPolicyError, BatchScanSpec, BindingBatch, MemoryBudget, MemoryBudgetError, OperatorState,
-    PhysicalOperator, assert_same_rows, assert_same_schema, assert_tables_equivalent, collect_rows,
-    descriptor_for, trace_scan_to_table,
+    BatchBuffer, BatchCancel, BatchError, BatchExecutionContext, BatchPolicy, BatchPolicyError,
+    BindingBatch, MemoryBudget, MemoryBudgetError, OperatorState, PhysicalOperator, descriptor_for,
+    trace_scan_to_table,
 };
 
 #[test]
@@ -41,205 +41,6 @@ fn policy_rejects_degenerate_construction() {
         Err(BatchPolicyError::ZeroTargetRows)
     );
     assert_eq!(BatchPolicy::new(8, 0), Err(BatchPolicyError::ZeroMaxBytes));
-}
-
-#[test]
-fn scan_cardinality_is_exact_at_batch_boundaries() {
-    // Empty, one row, exactly one batch, and one row past the boundary.
-    for count in [0usize, 1, TEST_TARGET_ROWS, TEST_TARGET_ROWS + 1] {
-        let graph = SharedGraph::new(GraphId::new(41_000 + count as u64));
-        seed_nodes(&graph, count, None);
-        let expected = row_table(&graph, "MATCH (n) RETURN n");
-        assert_eq!(expected.row_count(), count);
-
-        let pulled = pull_scan(
-            graph.read(),
-            None,
-            expected.schema(),
-            test_policy(),
-            BatchCancel::disabled(),
-            MemoryBudget::unlimited(),
-        )
-        .expect("batch scan executes");
-        assert_eq!(
-            pulled.rows.len(),
-            count,
-            "count {count}: logical total diverged"
-        );
-        assert_same_rows(&collect_rows(&expected), &pulled.rows, "boundary scan");
-        let expected_batches = if count == 0 {
-            0
-        } else {
-            count.div_ceil(TEST_TARGET_ROWS)
-        };
-        assert_eq!(pulled.batches as usize, expected_batches, "count {count}");
-        assert_eq!(
-            pulled.batch_sizes.iter().sum::<usize>(),
-            count,
-            "count {count}"
-        );
-        if count == TEST_TARGET_ROWS + 1 {
-            assert_eq!(pulled.batch_sizes, vec![TEST_TARGET_ROWS, 1]);
-        }
-        assert_eq!(pulled.recycled_batches as usize, expected_batches);
-    }
-}
-
-#[test]
-fn logical_tables_match_across_batch_shapes() {
-    // The independent review question: logical table semantics must not
-    // depend on physical batch shape.
-    let graph = SharedGraph::new(GraphId::new(41_100));
-    seed_nodes(&graph, 10, None);
-    let expected = row_table(&graph, "MATCH (n) RETURN n");
-
-    let mut shapes = Vec::new();
-    for target in [1usize, 3, TEST_TARGET_ROWS, 1024] {
-        let policy = BatchPolicy::new(target, 1 << 20).unwrap();
-        let pulled = pull_scan(
-            graph.read(),
-            None,
-            expected.schema(),
-            policy,
-            BatchCancel::disabled(),
-            MemoryBudget::unlimited(),
-        )
-        .expect("batch scan executes");
-        shapes.push(pulled.rows);
-    }
-    for rows in &shapes {
-        assert_same_rows(&collect_rows(&expected), rows, "shape independence");
-    }
-}
-
-#[test]
-fn label_scan_matches_row_path_for_mixed_labels() {
-    let graph = SharedGraph::new(GraphId::new(41_200));
-    seed_nodes(&graph, 3, Some("Person"));
-    seed_nodes(&graph, 2, None);
-    let expected = row_table(&graph, "MATCH (n:Person) RETURN n");
-    assert_eq!(expected.row_count(), 3);
-
-    let pulled = pull_scan(
-        graph.read(),
-        Some(db_string("Person").unwrap()),
-        expected.schema(),
-        test_policy(),
-        BatchCancel::disabled(),
-        MemoryBudget::unlimited(),
-    )
-    .expect("batch scan executes");
-    assert_tables_equivalent(
-        &expected,
-        &BindingTable::new(expected.schema().clone(), rows_into_bindings(&pulled.rows)),
-        "label scan",
-    );
-}
-
-#[test]
-fn scan_to_result_tracer_matches_row_path_end_to_end() {
-    let graph = SharedGraph::new(GraphId::new(41_300));
-    seed_nodes(&graph, 2, Some("Person"));
-    seed_nodes(&graph, 1, None);
-    let expected = row_table(&graph, "MATCH (n:Person) RETURN n");
-
-    let mut scan = BatchNodeScan::new(
-        BatchScanSpec::new(
-            Some(db_string("Person").unwrap()),
-            expected.schema().clone(),
-        )
-        .unwrap(),
-        test_policy(),
-    );
-    let mut ctx = BatchExecutionContext::new(
-        graph.read(),
-        BatchCancel::disabled(),
-        MemoryBudget::unlimited(),
-    );
-    let actual = trace_scan_to_table(&mut scan, &mut ctx).expect("tracer executes");
-    assert!(ctx.is_closed());
-    assert_eq!(scan.state(), OperatorState::Closed);
-    // Two rows under a four-row target complete in one batch.
-    assert_eq!(ctx.completed(), (1, 2));
-    assert_tables_equivalent(&expected, &actual, "scan-to-result tracer");
-    assert_eq!(
-        descriptor_for(&expected),
-        descriptor_for(&actual),
-        "tracer preserves declared types and preferred order"
-    );
-
-    // The materialized table re-enters the stable result API unchanged.
-    let outcome = ExecutionOutcome::from_statement(StatementOutput::Rows(actual), Vec::new());
-    let ExecutionOutcome::RegularResult {
-        table, declared, ..
-    } = outcome
-    else {
-        panic!("expected a regular result");
-    };
-    assert_eq!(table.row_count(), 2);
-    assert_eq!(declared.fields().len(), 1);
-}
-
-#[test]
-fn scan_reports_candidates_schema_and_completion() {
-    let graph = SharedGraph::new(GraphId::new(41_350));
-    seed_nodes(&graph, 3, Some("Person"));
-    let expected = row_table(&graph, "MATCH (n:Person) RETURN n");
-
-    let mut scan = BatchNodeScan::new(
-        BatchScanSpec::new(
-            Some(db_string("Person").unwrap()),
-            expected.schema().clone(),
-        )
-        .unwrap(),
-        BatchPolicy::new(2, 1 << 20).unwrap(),
-    );
-    assert_eq!(scan.output_schema(), expected.schema());
-    let mut ctx = BatchExecutionContext::new(
-        graph.read(),
-        BatchCancel::disabled(),
-        MemoryBudget::unlimited(),
-    );
-    let mut buffer = BatchBuffer::new();
-    scan.init(&mut ctx).unwrap();
-    assert_eq!(scan.candidate_count(), 3);
-    let mut total = 0;
-    while let Some(batch) = scan.next_batch(&mut ctx, &mut buffer).unwrap() {
-        total += 1;
-        batch.recycle(&mut buffer);
-    }
-    assert_eq!(total, 2, "three rows under a two-row target take two pulls");
-    assert_eq!(ctx.completed(), (2, 3));
-    scan.close(&mut ctx);
-}
-
-#[test]
-fn empty_scan_keeps_declared_schema() {
-    let graph = SharedGraph::new(GraphId::new(41_400));
-    let expected = row_table(&graph, "MATCH (n:Missing) RETURN n");
-    assert_eq!(expected.row_count(), 0);
-
-    let mut scan = BatchNodeScan::new(
-        BatchScanSpec::new(
-            Some(db_string("Missing").unwrap()),
-            expected.schema().clone(),
-        )
-        .unwrap(),
-        test_policy(),
-    );
-    let mut ctx = BatchExecutionContext::new(
-        graph.read(),
-        BatchCancel::disabled(),
-        MemoryBudget::unlimited(),
-    );
-    let actual = trace_scan_to_table(&mut scan, &mut ctx).expect("tracer executes");
-    assert_eq!(actual.row_count(), 0);
-    assert_same_schema(&expected, &actual, "empty scan");
-    assert_eq!(
-        descriptor_for(&expected),
-        descriptor_for(&actual),
-        "empty results keep declared types and preferred order"
-    );
 }
 
 #[test]
@@ -430,21 +231,32 @@ fn descriptors_keep_types_and_preferred_order() {
 fn cancelled_scan_releases_snapshot_without_partial_output() {
     let graph = SharedGraph::new(GraphId::new(41_500));
     seed_nodes(&graph, 10, None);
+    let plan = plan_source("MATCH (n) RETURN n");
     let schema = row_table(&graph, "MATCH (n) RETURN n").schema().clone();
     let before = graph.read().node_count();
+    let (scan_ir, pattern) = scan_parts(&plan);
 
     // Pre-cancelled token: the tracer fails before producing anything.
     let token = CancellationToken::new();
     token.cancel();
-    let snapshot = graph.read();
     // `SharedGraph` retains its own snapshot handle(s), so release is
-    // observed relatively against this baseline: the context's clone must
+    // observed relatively against this baseline, which already includes the
+    // evaluation context's clone: only the execution context's move must
     // come and go while the retained handles stay put.
-    let baseline = Arc::strong_count(&snapshot);
+    let snapshot = graph.read();
+    let tx = TxContext::read_only(
+        snapshot.clone(),
+        &plan.impl_defined_caps,
+        &crate::EmptyProcedureRegistry,
+        graph.index_providers(),
+    );
     let probe = Arc::clone(&snapshot);
-    assert_eq!(Arc::strong_count(&probe), baseline + 1);
-    let mut scan = BatchNodeScan::new(
-        BatchScanSpec::new(None, schema.clone()).unwrap(),
+    let baseline = Arc::strong_count(&snapshot);
+    let mut scan = BatchScan::new(
+        scan_ir,
+        pattern,
+        schema.clone(),
+        eval_for(&tx, &plan),
         test_policy(),
     );
     let mut ctx = BatchExecutionContext::new(
@@ -452,7 +264,11 @@ fn cancelled_scan_releases_snapshot_without_partial_output() {
         BatchCancel::new(Some(&token), None, None),
         MemoryBudget::unlimited(),
     );
-    assert_eq!(Arc::strong_count(&probe), baseline + 1);
+    assert_eq!(
+        Arc::strong_count(&probe),
+        baseline,
+        "moving the snapshot into the execution context clones nothing"
+    );
     assert!(
         std::ptr::eq(ctx.snapshot().expect("context holds the snapshot"), &*probe),
         "the context pins this exact snapshot allocation"
@@ -462,12 +278,13 @@ fn cancelled_scan_releases_snapshot_without_partial_output() {
     assert_eq!(err.gqlstatus().as_str(), "5GQL2");
     assert!(ctx.is_closed(), "tracer closes the context on error");
     assert_eq!(scan.state(), OperatorState::Closed);
-    drop(ctx);
     drop(scan);
+    drop(tx);
+    drop(ctx);
     assert_eq!(
         Arc::strong_count(&probe),
-        baseline,
-        "error paths release the pinned snapshot"
+        baseline - 2,
+        "error paths release the execution move and the evaluation clone"
     );
     assert_eq!(graph.read().node_count(), before, "no partial mutation");
 
@@ -475,10 +292,19 @@ fn cancelled_scan_releases_snapshot_without_partial_output() {
     // close still releases everything.
     let live = CancellationToken::new();
     let snapshot = graph.read();
-    let baseline = Arc::strong_count(&snapshot);
+    let tx = TxContext::read_only(
+        snapshot.clone(),
+        &plan.impl_defined_caps,
+        &crate::EmptyProcedureRegistry,
+        graph.index_providers(),
+    );
     let probe = Arc::clone(&snapshot);
-    let mut scan = BatchNodeScan::new(
-        BatchScanSpec::new(None, schema.clone()).unwrap(),
+    let baseline = Arc::strong_count(&snapshot);
+    let mut scan = BatchScan::new(
+        scan_ir,
+        pattern,
+        schema.clone(),
+        eval_for(&tx, &plan),
         BatchPolicy::new(3, 1 << 20).unwrap(),
     );
     let mut ctx = BatchExecutionContext::new(
@@ -486,7 +312,7 @@ fn cancelled_scan_releases_snapshot_without_partial_output() {
         BatchCancel::new(Some(&live), None, None),
         MemoryBudget::unlimited(),
     );
-    assert_eq!(Arc::strong_count(&probe), baseline + 1);
+    assert_eq!(Arc::strong_count(&probe), baseline);
     let mut buffer = BatchBuffer::new();
     scan.init(&mut ctx).unwrap();
     let first = scan.next_batch(&mut ctx, &mut buffer).unwrap().unwrap();
@@ -500,13 +326,14 @@ fn cancelled_scan_releases_snapshot_without_partial_output() {
     assert!(scan.next_batch(&mut ctx, &mut buffer).is_err());
     scan.close(&mut ctx);
     assert!(ctx.is_closed());
-    drop(ctx);
     drop(scan);
+    drop(tx);
+    drop(ctx);
     drop(buffer);
     assert_eq!(
         Arc::strong_count(&probe),
-        baseline,
-        "closing releases the pinned snapshot"
+        baseline - 2,
+        "closing releases the execution move and the evaluation clone"
     );
     assert_eq!(graph.read().node_count(), before, "no partial mutation");
 }
@@ -515,32 +342,56 @@ fn cancelled_scan_releases_snapshot_without_partial_output() {
 fn scan_budget_timeout_and_memory_cap_surface_without_writes() {
     let graph = SharedGraph::new(GraphId::new(41_600));
     seed_nodes(&graph, 8, None);
+    let plan = plan_source("MATCH (n) RETURN n");
     let schema = row_table(&graph, "MATCH (n) RETURN n").schema().clone();
     let before = graph.read().node_count();
+    let (scan_ir, pattern) = scan_parts(&plan);
 
     // Deterministic node-scan budget trips during init accounting.
     let budget = NodeScanBudget::new(3);
-    let mut scan = BatchNodeScan::new(
-        BatchScanSpec::new(None, schema.clone()).unwrap(),
+    let snapshot = graph.read();
+    let tx = TxContext::read_only(
+        snapshot.clone(),
+        &plan.impl_defined_caps,
+        &crate::EmptyProcedureRegistry,
+        graph.index_providers(),
+    );
+    let mut scan = BatchScan::new(
+        scan_ir,
+        pattern,
+        schema.clone(),
+        eval_for(&tx, &plan),
         test_policy(),
     );
     let mut ctx = BatchExecutionContext::new(
-        graph.read(),
+        snapshot,
         BatchCancel::new(None, None, Some(&budget)),
         MemoryBudget::unlimited(),
     );
     let err = trace_scan_to_table(&mut scan, &mut ctx).unwrap_err();
     assert!(matches!(err, ExecutorError::ProgramLimitExceeded { .. }));
     assert!(ctx.is_closed());
+    drop(scan);
+    drop(tx);
 
     // Elapsed deadline surfaces as a timeout, not a cancellation.
     let past = Instant::now() - Duration::from_secs(1);
-    let mut scan = BatchNodeScan::new(
-        BatchScanSpec::new(None, schema.clone()).unwrap(),
+    let snapshot = graph.read();
+    let tx = TxContext::read_only(
+        snapshot.clone(),
+        &plan.impl_defined_caps,
+        &crate::EmptyProcedureRegistry,
+        graph.index_providers(),
+    );
+    let mut scan = BatchScan::new(
+        scan_ir,
+        pattern,
+        schema.clone(),
+        eval_for(&tx, &plan),
         test_policy(),
     );
     let mut ctx = BatchExecutionContext::new(
-        graph.read(),
+        snapshot,
         BatchCancel::new(None, Some(past), None),
         MemoryBudget::unlimited(),
     );
@@ -548,109 +399,34 @@ fn scan_budget_timeout_and_memory_cap_surface_without_writes() {
     assert!(matches!(err, ExecutorError::Timeout { .. }));
     assert_eq!(err.gqlstatus().as_str(), "5GQL3");
     assert!(ctx.is_closed());
+    drop(scan);
+    drop(tx);
 
     // A zero-room memory budget aborts before materializing rows.
     assert!(matches!(
         MemoryBudget::new(1).reserve(2),
         Err(MemoryBudgetError::Exceeded { .. })
     ));
-    let mut scan = BatchNodeScan::new(BatchScanSpec::new(None, schema).unwrap(), test_policy());
+    let snapshot = graph.read();
+    let tx = TxContext::read_only(
+        snapshot.clone(),
+        &plan.impl_defined_caps,
+        &crate::EmptyProcedureRegistry,
+        graph.index_providers(),
+    );
+    let mut scan = BatchScan::new(
+        scan_ir,
+        pattern,
+        schema,
+        eval_for(&tx, &plan),
+        test_policy(),
+    );
     let mut ctx =
-        BatchExecutionContext::new(graph.read(), BatchCancel::disabled(), MemoryBudget::new(1));
+        BatchExecutionContext::new(snapshot, BatchCancel::disabled(), MemoryBudget::new(1));
     let err = trace_scan_to_table(&mut scan, &mut ctx).unwrap_err();
     assert!(matches!(err, ExecutorError::ProgramLimitExceeded { .. }));
     assert!(ctx.is_closed());
+    drop(scan);
+    drop(tx);
     assert_eq!(graph.read().node_count(), before, "no partial mutation");
-}
-
-#[test]
-fn batch_positions_never_escape_as_graph_identities() {
-    // API-surface regression: batch coordinates are crate-private offsets
-    // with no conversion into graph identities, and every public surface the
-    // tracer feeds (rows, schema, descriptor) carries only stable values.
-    let graph = SharedGraph::new(GraphId::new(41_700));
-    seed_nodes(&graph, 5, Some("Person"));
-    let expected = row_table(&graph, "MATCH (n:Person) RETURN n");
-
-    let pulled = pull_scan(
-        graph.read(),
-        Some(db_string("Person").unwrap()),
-        expected.schema(),
-        test_policy(),
-        BatchCancel::disabled(),
-        MemoryBudget::unlimited(),
-    )
-    .expect("batch scan executes");
-
-    // Every materialized value is the stable graph identity the row path
-    // produced — no position, no storage row, no synthetic id.
-    assert_same_rows(&collect_rows(&expected), &pulled.rows, "identity surface");
-    for row in &pulled.rows {
-        assert_eq!(row.len(), 1);
-        assert!(
-            matches!(row[0], Value::NodeRef(_)),
-            "scan output carries only stable node identities, got {:?}",
-            row[0]
-        );
-    }
-    // The descriptor exposes names and declared types only.
-    let descriptor = descriptor_for(&expected);
-    assert_eq!(descriptor.fields().len(), 1);
-    assert_eq!(descriptor.preferred_columns(), &[0]);
-
-    // `BatchPosition` has no addressable conversion: this function could not
-    // name a `From<BatchPosition> for NodeId`-style impl if one existed
-    // without changing this assertion block, and the module is `pub(crate)`
-    // so external crates fail to compile against any batch coordinate.
-    fn position_is_not_an_identity(_: &[Vec<Value>]) {}
-    position_is_not_an_identity(&pulled.rows);
-}
-
-#[allow(clippy::print_stdout)]
-#[test]
-fn perf_probe_reports_observed_numbers() {
-    // Observed numbers only: no timing assertions. Run with
-    // `cargo nextest run -p selene-db-gql perf_probe -- --nocapture`
-    // (or `cargo test`) to read the report. A throughput win that wrecks
-    // tiny queries must come back as a design adjustment, never as a hidden
-    // fallback to the old executor.
-    for (graph_no, count) in [(1u64, 1usize), (2, 1_000), (3, 20_000)] {
-        let graph = SharedGraph::new(GraphId::new(41_800 + graph_no));
-        seed_nodes(&graph, count, None);
-        let planned = plan_source("MATCH (n) RETURN n");
-        let schema = execute_row_plan(&graph, &planned).schema().clone();
-
-        // Row-reference timing (single sample, execution only: the plan is
-        // shared, so parse/analyze/plan cost is excluded on both sides).
-        let row_started = Instant::now();
-        let rowed = execute_row_plan(&graph, &planned);
-        let row_elapsed = row_started.elapsed();
-        assert_eq!(rowed.row_count(), count);
-
-        let started = Instant::now();
-        let pulled = pull_scan(
-            graph.read(),
-            None,
-            &schema,
-            BatchPolicy::default_policy(),
-            BatchCancel::disabled(),
-            MemoryBudget::unlimited(),
-        )
-        .expect("batch scan executes");
-        let elapsed = started.elapsed();
-        assert_eq!(pulled.rows.len(), count);
-        assert_eq!(pulled.batch_sizes.iter().sum::<usize>(), count);
-        println!(
-            "batch-scan probe: rows={count} batches={} \
-             batch_us={} row_us={} reserve_events={} peak_budget_bytes={} \
-             recycled_batches={}             retained_capacity_bytes={}",
-            pulled.batches,
-            elapsed.as_micros(),
-            row_elapsed.as_micros(),
-            pulled.reserve_events,
-            pulled.peak_bytes,
-            pulled.recycled_batches,
-            pulled.retained_bytes,
-        );
-    }
 }

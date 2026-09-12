@@ -18,8 +18,11 @@ use super::scan_resolve::{
 use super::{EvalCtx, evaluator, scan_bind, scan_seed, value_compare};
 
 /// Stable identifier of a node or edge matched during scan.
+///
+/// Shared with the batch scan family, which resolves and slices the same
+/// candidate sequences.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ScanEntityId {
+pub(crate) enum ScanEntityId {
     Node(NodeId),
     Edge(EdgeId),
 }

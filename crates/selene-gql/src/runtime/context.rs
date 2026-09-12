@@ -16,6 +16,7 @@ use selene_core::{
 };
 use selene_graph::{IndexProvider, Mutator, SeleneGraph, SharedGraph, WriteTxn};
 
+use super::batch::budget::BatchCancel;
 use crate::{
     GqlStatus, ProcedureRegistry, SourceSpan,
     analyze::{ExprId, ExprIdLookup},
@@ -82,7 +83,9 @@ pub struct TxContext<'a, 'g> {
 /// Expression subqueries are planned into side tables on the execution plan.
 /// The evaluator borrows those side tables through this wrapper while all
 /// graph, parameter, and procedure access continues to flow through
-/// [`TxContext`].
+/// [`TxContext`]. Reference-only, so batch operator trees share one value per
+/// execution.
+#[derive(Clone, Copy)]
 pub struct EvalCtx<'a, 'ctx, 'g, 'plan> {
     /// Transaction context for graph and parameter access.
     pub tx: &'a TxContext<'ctx, 'g>,
@@ -263,6 +266,17 @@ impl<'a, 'g> TxContext<'a, 'g> {
             self.deadline,
             self.node_scan_budget,
         )
+    }
+
+    /// Build the cooperative batch-execution checkpoint for this statement.
+    ///
+    /// Batch operators observe the same cancellation token, deadline, and
+    /// deterministic node-scan budget as the row executor, with the identical
+    /// GQLSTATUS mapping (`5GQL2` cancel, `5GQL3` timeout, `5GQL1`
+    /// scan-budget exhaustion).
+    #[must_use]
+    pub(crate) fn batch_cancel(&self) -> BatchCancel<'_> {
+        BatchCancel::new(self.cancellation, self.deadline, self.node_scan_budget)
     }
 
     /// Return the configured absolute deadline for this statement, if any.

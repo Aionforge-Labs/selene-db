@@ -34,7 +34,11 @@ fn project_value(
     evaluator::evaluate(&item.expr, row, schema, ctx)
 }
 
-pub(super) fn schema_for_items(items: &[ProjectExpr]) -> BindingTableSchema {
+/// Derive the output schema for a projection item list.
+///
+/// Shared with the batch project operator so both paths declare identical
+/// column names, order, and types for the same plan.
+pub(crate) fn schema_for_items(items: &[ProjectExpr]) -> BindingTableSchema {
     BindingTableSchema {
         columns: items
             .iter()

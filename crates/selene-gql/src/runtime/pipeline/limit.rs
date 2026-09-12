@@ -24,7 +24,11 @@ pub(super) fn execute(
     Ok(BindingTable::new(schema, rows.split_off(start)))
 }
 
-pub(super) fn resolve_amount(
+/// Resolve a pipeline limit/offset amount against bound parameters.
+///
+/// Shared with the batch page operator so both paths report identical
+/// diagnostics for null, negative, mistyped, and out-of-range parameters.
+pub(crate) fn resolve_amount(
     amount: &LimitAmount,
     ctx: &TxContext<'_, '_>,
 ) -> Result<u64, ExecutorError> {

@@ -24,11 +24,7 @@ pub(crate) fn collect_rows(table: &BindingTable) -> Vec<Vec<Value>> {
 /// # Panics
 ///
 /// Panics with `what` context when schemas differ.
-pub(crate) fn assert_same_schema(
-    expected: &BindingTable,
-    actual: &BindingTable,
-    what: &'static str,
-) {
+pub(crate) fn assert_same_schema(expected: &BindingTable, actual: &BindingTable, what: &str) {
     assert_eq!(
         expected.schema(),
         actual.schema(),
@@ -44,7 +40,7 @@ pub(crate) fn assert_same_schema(
 /// # Panics
 ///
 /// Panics with `what` context and a bounded diff on mismatch.
-pub(crate) fn assert_same_rows(expected: &[Vec<Value>], actual: &[Vec<Value>], what: &'static str) {
+pub(crate) fn assert_same_rows(expected: &[Vec<Value>], actual: &[Vec<Value>], what: &str) {
     assert_eq!(
         expected.len(),
         actual.len(),
@@ -66,11 +62,7 @@ pub(crate) fn assert_same_rows(expected: &[Vec<Value>], actual: &[Vec<Value>], w
 /// # Panics
 ///
 /// Panics with `what` context on any divergence.
-pub(crate) fn assert_tables_equivalent(
-    expected: &BindingTable,
-    actual: &BindingTable,
-    what: &'static str,
-) {
+pub(crate) fn assert_tables_equivalent(expected: &BindingTable, actual: &BindingTable, what: &str) {
     assert_same_schema(expected, actual, what);
     assert_same_rows(&collect_rows(expected), &collect_rows(actual), what);
 }

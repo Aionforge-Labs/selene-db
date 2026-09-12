@@ -38,9 +38,13 @@ impl BatchPolicy {
 
     /// Build a policy from explicit bounds, rejecting degenerate inputs.
     ///
+    /// Test seam for boundary-cardinality matrices; production uses the
+    /// workload-derived default.
+    ///
     /// # Errors
     ///
     /// Returns [`BatchPolicyError`] when either bound is zero.
+    #[cfg(test)]
     pub(crate) const fn new(
         target_rows: usize,
         max_batch_bytes: usize,
@@ -58,12 +62,18 @@ impl BatchPolicy {
     }
 
     /// Return the configured row target.
+    ///
+    /// Test seam for policy assertions.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn target_rows(self) -> usize {
         self.target_rows
     }
 
     /// Return the configured per-batch byte cap.
+    ///
+    /// Test seam for policy assertions.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn max_batch_bytes(self) -> usize {
         self.max_batch_bytes
@@ -90,6 +100,9 @@ impl BatchPolicy {
 }
 
 /// Rejected batch-policy construction input.
+///
+/// Test-only while [`BatchPolicy::new`] is a test seam.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub(crate) enum BatchPolicyError {
     /// The row target was zero, which would stall every operator.

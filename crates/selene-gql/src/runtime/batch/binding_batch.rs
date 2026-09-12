@@ -75,12 +75,19 @@ impl BatchColumn {
     }
 
     /// Borrow values in physical order.
+    ///
+    /// Test seam for alignment assertions; production reads rows through
+    /// [`BindingBatch::logical_row`].
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn values(&self) -> &[Value] {
         &self.values
     }
 
     /// Borrow the null bitmap in physical order.
+    ///
+    /// Test seam for alignment assertions.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn nulls(&self) -> &[bool] {
         &self.nulls
@@ -93,6 +100,7 @@ impl BatchColumn {
     }
 
     /// Return true when the column holds no physical rows.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn is_empty(&self) -> bool {
         self.values.is_empty()
@@ -105,6 +113,9 @@ impl BatchColumn {
     }
 
     /// Retained capacity in elements, for reuse reporting.
+    ///
+    /// Test seam for buffer-reuse assertions.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn retained_capacity(&self) -> usize {
         self.values.capacity()
@@ -225,18 +236,27 @@ impl BindingBatch {
     }
 
     /// Return true for the zero-column single-row unit table.
+    ///
+    /// Test seam for unit-table contract assertions.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn is_unit(&self) -> bool {
         self.schema.columns.is_empty() && self.logical_rows == 1
     }
 
     /// Borrow the declared schema (column types and order).
+    ///
+    /// Test seam; production operators carry their declared schema separately.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn schema(&self) -> &BindingTableSchema {
         &self.schema
     }
 
     /// Return the number of columns.
+    ///
+    /// Test seam for alignment assertions.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn width(&self) -> usize {
         self.columns.len()
@@ -249,18 +269,27 @@ impl BindingBatch {
     }
 
     /// Return the physical row count backing this batch.
+    ///
+    /// Test seam for alignment assertions.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn physical_len(&self) -> usize {
         self.columns.first().map_or(0, BatchColumn::len)
     }
 
     /// Borrow the active selection, when the batch is sparsely filtered.
+    ///
+    /// Test seam for alignment assertions.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn selection(&self) -> Option<&Vec<BatchPosition>> {
         self.selection.as_ref()
     }
 
     /// Borrow one column by index.
+    ///
+    /// Test seam for alignment assertions.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn column(&self, index: usize) -> Option<&BatchColumn> {
         self.columns.get(index)
@@ -339,10 +368,14 @@ impl BindingBatch {
     /// contract: a unit input yields exactly one row, an empty input yields
     /// none. `schema` must describe exactly one column.
     ///
+    /// Test seam: production projection evaluates per-row expressions
+    /// through [`super::project::BatchProject`].
+    ///
     /// # Errors
     ///
     /// Returns [`BatchError::SchemaWidthMismatch`] unless `schema` has one
     /// column.
+    #[cfg(test)]
     pub(crate) fn project_literal(
         &self,
         schema: BindingTableSchema,
@@ -450,12 +483,18 @@ impl BatchBuffer {
     }
 
     /// Return the number of batches recycled through this buffer.
+    ///
+    /// Test seam for buffer-reuse assertions.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn recycled_batches(&self) -> u64 {
         self.recycled_batches
     }
 
     /// Estimate retained (allocated but idle or live-pooled) bytes.
+    ///
+    /// Test seam for the performance probe.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn retained_capacity_bytes(&self) -> usize {
         self.value_columns
@@ -475,7 +514,10 @@ impl BatchBuffer {
 ///
 /// Every variant is a caller bug (the safe constructors), never a data
 /// error: operators map these to `ImplementationDefined` at the boundary and
-/// hot loops rely on the validated invariants.
+/// hot loops rely on the validated invariants. The shared `Mismatch` postfix
+/// is intentional: every variant reports a caller-side shape disagreement, as
+/// distinct from data or execution failures.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub(crate) enum BatchError {
     /// Column count disagreed with the schema width.
@@ -490,6 +532,9 @@ pub(crate) enum BatchError {
     #[error("batch columns disagree in physical length")]
     ColumnLengthMismatch,
     /// A selection position addressed no physical row.
+    ///
+    /// Test-only while selections are built internally by [`BindingBatch::select`].
+    #[cfg(test)]
     #[error("batch selection position {position} exceeds physical length {physical_len}")]
     SelectionOutOfBounds {
         /// Offending position.
@@ -498,6 +543,9 @@ pub(crate) enum BatchError {
         physical_len: usize,
     },
     /// A selection vector covered the wrong logical row count.
+    ///
+    /// Test-only while selections are built internally by [`BindingBatch::select`].
+    #[cfg(test)]
     #[error("batch selection length {selection_len} disagrees with {logical_rows} logical rows")]
     SelectionLengthMismatch {
         /// Positions supplied.
@@ -520,6 +568,7 @@ pub(crate) enum BatchError {
 /// Safe constructors build selections internally, but this entry point lets
 /// future operators validate foreign selections once at the boundary. Tests
 /// exercise it for malformed internal selections.
+#[cfg(test)]
 pub(crate) fn validate_selection(
     selection: &[BatchPosition],
     physical_len: usize,

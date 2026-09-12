@@ -18,6 +18,30 @@ pub(crate) fn execute_plan_with_seed(
     seed: Option<BindingTable>,
     ctx: &mut TxContext<'_, '_>,
 ) -> Result<BindingTable, ExecutorError> {
+    // F04-PR02 production seam: unseeded plans whose pattern and leading
+    // pipeline prefix fall in the batch families run through the batch
+    // driver. The driver declines (`Ok(None)`) anything outside those
+    // families — including every seeded (correlated) execution — and the row
+    // path below runs unchanged. Errors never fall back: a batch failure
+    // aborts with the row path's diagnostics.
+    let batch_prefix = if seed.is_none() {
+        super::batch::query::try_execute_prefix(plan, ctx)?
+    } else {
+        None
+    };
+    if let Some(prefix) = batch_prefix {
+        let remaining = &plan.pipeline[prefix.suffix_from..];
+        if remaining.is_empty() {
+            return Ok(prefix.table);
+        }
+        return pipeline::execute_pipeline_with_plan(
+            remaining,
+            prefix.table,
+            ctx,
+            &plan.expr_ids,
+            &plan.subqueries,
+        );
+    }
     let row_limit = pattern_row_limit(plan);
     let table = {
         let eval_ctx = EvalCtx {
@@ -75,6 +99,27 @@ pub(crate) fn execute_plan_read_only_with_seed(
     seed: Option<BindingTable>,
     ctx: &TxContext<'_, '_>,
 ) -> Result<BindingTable, ExecutorError> {
+    // Same batch seam as the read-write path, resuming through the read-only
+    // dispatcher so write-bearing suffix operators keep their read-only
+    // rejection diagnostics.
+    let batch_prefix = if seed.is_none() {
+        super::batch::query::try_execute_prefix(plan, ctx)?
+    } else {
+        None
+    };
+    if let Some(prefix) = batch_prefix {
+        let remaining = &plan.pipeline[prefix.suffix_from..];
+        if remaining.is_empty() {
+            return Ok(prefix.table);
+        }
+        return pipeline::execute_pipeline_read_only_with_plan(
+            remaining,
+            prefix.table,
+            ctx,
+            &plan.expr_ids,
+            &plan.subqueries,
+        );
+    }
     let row_limit = pattern_row_limit(plan);
     let table = {
         let eval_ctx = EvalCtx {
@@ -157,7 +202,14 @@ fn column_exists(schema: &BindingTableSchema, column: &crate::BindingTableColumn
     }
 }
 
-fn pattern_row_limit(plan: &ExecutionPlan) -> Option<usize> {
+/// Proven-safe pattern row limit shared with the batch driver.
+///
+/// The batch query driver truncates its pattern phase with exactly this
+/// bound (and only this bound): replicating the row path's pushdown cases
+/// exactly keeps `LIMIT` queries observably identical, while never pushing a
+/// limit below an operator the row path left untruncated. See the row-limit
+/// helpers below for the safety cases.
+pub(crate) fn pattern_row_limit(plan: &ExecutionPlan) -> Option<usize> {
     leading_pattern_row_limit(plan.pipeline.as_slice()).or_else(|| {
         plan.pattern_plan
             .as_ref()
