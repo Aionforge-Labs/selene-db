@@ -11,6 +11,7 @@
 
 mod error;
 mod ir;
+pub mod logical;
 mod lowering;
 pub mod optimize;
 
@@ -25,6 +26,12 @@ pub use ir::{
     PlannedTableSubqueryYield, PlannedTypePropertyConstraint, PlannedTypePropertyDef,
     PlannedYieldItem, ProjectExpr, PropertyInit, RepeatEdgeMatch, ScanAccess, ScanKind, SessionOp,
     SubqueryBody, SubqueryKind, SubqueryRegistry, TailBinding, TxOp, TypedIndexBounds, YieldKind,
+};
+pub use logical::{
+    EffectSummary, LogicalCallDescriptor, LogicalEffect, LogicalMultiplicity,
+    LogicalMutationDescriptor, LogicalOp, LogicalOrdering, LogicalPageAmount, LogicalPlan,
+    LogicalScanDescriptor, check_gp18, classify_analyzed, classify_plan,
+    explain as explain_logical, lower_logical, measure_lowering_cost, verify_plan_effects,
 };
 pub use lowering::{plan, plan_with_caps};
 pub use optimize::{

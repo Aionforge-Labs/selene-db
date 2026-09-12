@@ -85,6 +85,13 @@ pub fn plan_with_caps(
     // `max_quantifier`, so a post-lowering stamp here covers every statement kind.
     plan.impl_defined_caps = *caps;
     plan.refresh_pipeline_op_high_water();
+    // F03-PR03: verify that the lowered plan's metadata-resolved effects agree
+    // with the semantic summary. A parser-only check of the top-level shape
+    // would miss an effectful nested CALL; this check resolves every planned
+    // call from registration metadata and enforces the GP18 no-mix policy
+    // before the facade can route the plan to execution.
+    let semantic = crate::plan::logical::classify_analyzed(analyzed);
+    crate::plan::logical::verify_plan_effects(&semantic, &plan)?;
     Ok(plan)
 }
 
