@@ -171,7 +171,23 @@ impl Session {
         prepared: PreparedCatalogRequest,
         slot: &mut TransactionCheckout<'_>,
     ) -> Result<ExecutionOutcome> {
-        match prepared.kind() {
+        // F03-PR03: resolve effects from the lowered plan's registration
+        // metadata, not from the top-level category alone. A read-only
+        // category carrying hidden data/catalog effects (registry drift or a
+        // lowering bug) must not execute with query authority, and a single
+        // statement mixing data and catalog effects must fail under the
+        // selected GP18 policy instead of being silently split.
+        let plan_effects = prepared.logical_effects();
+        if plan_effects.is_mixed_data_catalog() {
+            let error = Error::transaction_mixing();
+            if let Some(transaction) = slot.as_mut()
+                && transaction.descriptor().state() == TransactionState::Active
+            {
+                return Err(Self::fail_statement(transaction, error));
+            }
+            return Err(error);
+        }
+        match prepared.effective_kind() {
             PreparedCatalogRequestKind::TransactionControl(control) => {
                 self.execute_transaction_control(control, slot)
             }
@@ -226,6 +242,32 @@ impl Session {
                 Err(Error::in_failed_transaction())
             }
             Some(transaction) if transaction.descriptor().state() == TransactionState::Active => {
+                // F03-PR03: read-only transactions reject direct mutations and
+                // indirect writes through procedure calls before publication,
+                // publishing nothing. The check resolves from the lowered
+                // plan's registration metadata so a query-category plan
+                // carrying hidden data/catalog/maintenance effects cannot gain
+                // write authority through a nested call.
+                if transaction.descriptor().access_mode() == TransactionAccessMode::ReadOnly
+                    && prepared.logical_effects().rejects_in_read_only()
+                {
+                    return Err(Self::fail_statement(
+                        transaction,
+                        Error::read_only_transaction(),
+                    ));
+                }
+                // A read-only routing carrying hidden write effects is a drift
+                // or lowering bug; fail before execution rather than running
+                // it with query authority.
+                if prepared.logical_effects().rejects_in_read_only()
+                    && matches!(prepared.kind(), PreparedCatalogRequestKind::ReadOnly)
+                    && prepared.effective_kind() != PreparedCatalogRequestKind::ReadOnly
+                {
+                    return Err(Self::fail_statement(
+                        transaction,
+                        Error::transaction_mixing(),
+                    ));
+                }
                 let result = self.inner.execute_prepared_detached_read(
                     transaction,
                     self.audit_bytes(),

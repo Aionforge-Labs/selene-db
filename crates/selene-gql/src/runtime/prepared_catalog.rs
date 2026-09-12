@@ -256,6 +256,55 @@ impl PreparedCatalogRequest {
         self.plan.category == StatementCategory::ReadOnly
     }
 
+    /// Borrow the lowered execution plan for effect inspection.
+    ///
+    /// The facade uses this to resolve named-procedure effects from the
+    /// plan's stored registration metadata rather than trusting the top-level
+    /// category alone.
+    #[must_use]
+    pub fn execution_plan(&self) -> &ExecutionPlan {
+        &self.plan
+    }
+
+    /// Classify this request's lowered plan from operator metadata.
+    ///
+    /// Named-procedure effects resolve from each planned call's registration
+    /// metadata, never from the procedure name or from observed implementation
+    /// behavior. Nested bodies are visited so an effectful nested call cannot
+    /// hide behind a read-only top-level category.
+    #[must_use]
+    pub fn logical_effects(&self) -> crate::plan::logical::EffectSummary {
+        crate::plan::logical::classify_plan(&self.plan)
+    }
+
+    /// Return the facade-routing kind after upgrading hidden write effects.
+    ///
+    /// A read-only category carrying data, catalog, or maintenance effects
+    /// (registry drift or a lowering bug) routes as the corresponding
+    /// modifying kind so the facade's transaction authority rejects it before
+    /// publication instead of executing it with query authority.
+    #[must_use]
+    pub fn effective_kind(&self) -> PreparedCatalogRequestKind {
+        let declared = self.kind();
+        if !matches!(declared, PreparedCatalogRequestKind::ReadOnly) {
+            return declared;
+        }
+        let effects = self.logical_effects();
+        if effects.has_maintenance_write {
+            PreparedCatalogRequestKind::Maintenance
+        } else if effects.has_catalog_write && effects.has_data_write {
+            // GP18 forbids the mix; keep the catalog label while the facade
+            // reports the mixing error. The label never authorizes a split.
+            PreparedCatalogRequestKind::CatalogModifying
+        } else if effects.has_catalog_write {
+            PreparedCatalogRequestKind::CatalogModifying
+        } else if effects.has_data_write {
+            PreparedCatalogRequestKind::DataModifying
+        } else {
+            declared
+        }
+    }
+
     /// Return the graph identity against which this request was planned.
     #[must_use]
     pub const fn graph_id(&self) -> selene_core::GraphId {

@@ -66,17 +66,20 @@ pub use crate::flagger::{FeatureUse, feature_walk};
 pub use crate::parser::{is_parameter_name, parse, parse_many, parse_with_source};
 pub use crate::plan::{
     Aggregate, AggregateArg, BindingDef, BindingElement, BindingTableColumn, BindingTableSchema,
-    BuildSide, CatalogOp, CompositeIndexHandle, DeleteTargetPlan, EdgeMatch, EmptyIndexCatalog,
-    ExecutionPlan, FilterPredicate, FilterPredicateKind, HiddenBindingId, HopContributor,
-    ImplDefinedCaps, IndexCatalog, IndexHandle, IndexKey, IndexKind, IndexTarget,
-    InsertEndpointRef, InsertSiteId, JoinTree, LimitAmount, LiveIndexCatalog, MutationOp,
+    BuildSide, CatalogOp, CompositeIndexHandle, DeleteTargetPlan, EdgeMatch, EffectSummary,
+    EmptyIndexCatalog, ExecutionPlan, FilterPredicate, FilterPredicateKind, HiddenBindingId,
+    HopContributor, ImplDefinedCaps, IndexCatalog, IndexHandle, IndexKey, IndexKind, IndexTarget,
+    InsertEndpointRef, InsertSiteId, JoinTree, LimitAmount, LiveIndexCatalog,
+    LogicalCallDescriptor, LogicalEffect, LogicalMultiplicity, LogicalMutationDescriptor,
+    LogicalOp, LogicalOrdering, LogicalPageAmount, LogicalPlan, LogicalScanDescriptor, MutationOp,
     NodeIdOrdering, NodeOrEdgeScan, OptimizeContext, OrderAccess, OrderKey, OuterBindingRef,
     PathContributor, PathPlan, PatternPlan, PipelineOp, PipelineOpId, PlannedCall, PlannedSubquery,
     PlannedTableSubquery, PlannedTableSubqueryYield, PlannedTypePropertyConstraint,
     PlannedTypePropertyDef, PlannedYieldItem, PlannerError, ProjectExpr, PropertyInit,
     RepeatEdgeMatch, Rule, ScanAccess, ScanKind, SessionOp, SubqueryBody, SubqueryKind,
     SubqueryRegistry, TailBinding, Transformed, TxOp, TypedIndexBounds, TypedIndexLookup,
-    YieldKind, optimize, plan,
+    YieldKind, check_gp18, classify_analyzed, classify_plan, explain_logical, lower_logical,
+    measure_lowering_cost, optimize, plan, verify_plan_effects,
 };
 pub use crate::procedure_registry::{
     EmptyProcedureRegistry, ProcedureArity, ProcedureDefaultValue, ProcedureError, ProcedureHandle,
