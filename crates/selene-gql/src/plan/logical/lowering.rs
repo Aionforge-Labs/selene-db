@@ -49,10 +49,21 @@ pub fn lower_logical(
         }
         Statement::Composite { first, rest, .. } => {
             builder.lower_query_pipeline(first)?;
+            // The union output is the left-arm schema per the operator
+            // contract; every right arm lowers in isolation below.
+            let left_schema = builder.schema();
+            let outer_input_width = builder.input_width;
             for (op, rhs) in rest {
                 let rhs_span = rhs.span;
+                builder.current_schema = Vec::new();
+                builder.pipeline_base = builder.operators.len();
                 builder.lower_query_pipeline(rhs)?;
+                // Restore the left-arm schema so the boundary carries it and
+                // no right arm inherits (or leaks into) sibling bindings.
+                builder.current_schema = left_schema.columns.clone();
                 builder.push_union(*op, rhs_span)?;
+                builder.pipeline_base = builder.operators.len();
+                builder.input_width = outer_input_width;
             }
         }
         Statement::Chained { blocks, .. } => {
@@ -64,11 +75,16 @@ pub fn lower_logical(
                 );
             };
             builder.lower_query_pipeline(first)?;
+            let outer_input_width = builder.input_width;
             for block in rest {
                 let correlated = super::lowering_query::block_is_correlated(block.span, analyzed);
                 let span = block.span;
+                builder.current_schema = Vec::new();
+                builder.pipeline_base = builder.operators.len();
                 builder.lower_query_pipeline(block)?;
                 builder.push_chain(correlated, span)?;
+                builder.pipeline_base = builder.operators.len();
+                builder.input_width = outer_input_width;
             }
         }
         Statement::Mutate(pipeline) => {
@@ -144,6 +160,12 @@ pub(crate) struct LogicalBuilder<'a, 'r> {
     pub(crate) current_schema: Vec<BindingTableColumn>,
     pub(crate) input_width: usize,
     pub(crate) scope: ScopeId,
+    /// Start index in `operators` of the pipeline currently being lowered.
+    ///
+    /// Each `UNION` arm / `NEXT` block lowers as an isolated pipeline anchored
+    /// here, so seed emission and pattern-join decisions never observe a
+    /// sibling arm's operators.
+    pub(crate) pipeline_base: usize,
 }
 
 impl<'a, 'r> LogicalBuilder<'a, 'r> {
@@ -161,6 +183,7 @@ impl<'a, 'r> LogicalBuilder<'a, 'r> {
             current_schema: Vec::new(),
             input_width: 0,
             scope,
+            pipeline_base: 0,
         }
     }
 
@@ -168,7 +191,7 @@ impl<'a, 'r> LogicalBuilder<'a, 'r> {
         &mut self,
         pipeline: &crate::MutationPipeline,
     ) -> Result<(), PlannerError> {
-        self.lower_scan_seed()?;
+        self.lower_scan_seed_in(pipeline.span)?;
         let mut has_pattern = false;
         for statement in &pipeline.statements {
             match statement {
@@ -399,17 +422,20 @@ impl<'a, 'r> LogicalBuilder<'a, 'r> {
     #[allow(dead_code, reason = "retained for transition created before F03-PR04")]
     pub(crate) fn finish_control(&mut self, _span: SourceSpan) {}
 
-    pub(crate) fn lower_scan_seed(&mut self) -> Result<(), PlannerError> {
-        // Seed scans from semantic binding declarations of matchable kinds.
-        // Only the first seed per pipeline is emitted; subsequent MATCH
-        // prefixes are ordering-preserving no-ops until F03-PR04 owns the
-        // full join family. This keeps the slice to one graph-access shape
-        // while still building it from semantic descriptors.
-        if !self.operators.is_empty() {
+    pub(crate) fn lower_scan_seed_in(&mut self, scope: SourceSpan) -> Result<(), PlannerError> {
+        // Seed scans from semantic binding declarations of matchable kinds
+        // declared inside the pipeline being lowered. Each UNION arm / NEXT
+        // block seeds independently from its own span so no arm inherits a
+        // sibling arm's bindings; only the first seed per isolated pipeline
+        // is emitted.
+        if self.operators.len() > self.pipeline_base {
             return Ok(());
         }
         let mut seeded = false;
         for decl in self.analyzed.scopes.declarations() {
+            if !span_contains(scope, decl.span()) {
+                continue;
+            }
             let (is_node, ty) = match decl.kind() {
                 BindingDeclKind::NodePattern => (true, decl.ty().clone()),
                 BindingDeclKind::EdgePattern => (false, decl.ty().clone()),
@@ -433,7 +459,12 @@ impl<'a, 'r> LogicalBuilder<'a, 'r> {
                 hidden: None,
                 ty,
             });
-            self.input_width = self.current_schema.len();
+            // Only the outermost pipeline defines the plan-level input width;
+            // isolated arms restore it after lowering (see the Composite /
+            // Chained loops above), so a sibling seed must not clobber it.
+            if self.pipeline_base == 0 {
+                self.input_width = self.current_schema.len();
+            }
             self.push(LogicalOp::Scan {
                 descriptor,
                 output_schema: self.schema(),
@@ -443,7 +474,7 @@ impl<'a, 'r> LogicalBuilder<'a, 'r> {
             seeded = true;
             break;
         }
-        if !seeded && self.current_schema.is_empty() {
+        if !seeded && self.current_schema.is_empty() && self.pipeline_base == 0 {
             self.input_width = 0;
         }
         Ok(())
@@ -549,6 +580,10 @@ pub(crate) fn limit_span(value: &LimitValue) -> SourceSpan {
     }
 }
 
+fn span_contains(outer: SourceSpan, inner: SourceSpan) -> bool {
+    outer.byte_offset <= inner.byte_offset && inner.end() <= outer.end()
+}
+
 /// Lower one `EXPLAIN` inner statement shape with the outer semantics.
 ///
 /// The inner statement shares the outer analyzed tree (the analyzer binds the
@@ -569,21 +604,33 @@ pub(crate) fn lower_inner_statement(
         }
         Statement::Composite { first, rest, .. } => {
             builder.lower_query_pipeline(first)?;
+            let left_schema = builder.schema();
+            let outer_input_width = builder.input_width;
             for (op, rhs) in rest {
                 let span = rhs.span;
+                builder.current_schema = Vec::new();
+                builder.pipeline_base = builder.operators.len();
                 builder.lower_query_pipeline(rhs)?;
+                builder.current_schema = left_schema.columns.clone();
                 builder.push_union(*op, span)?;
+                builder.pipeline_base = builder.operators.len();
+                builder.input_width = outer_input_width;
             }
         }
         Statement::Chained { blocks, .. } => {
             if let Some((first, rest)) = blocks.split_first() {
                 builder.lower_query_pipeline(first)?;
+                let outer_input_width = builder.input_width;
                 for block in rest {
                     let correlated =
                         super::lowering_query::block_is_correlated(block.span, analyzed);
                     let span = block.span;
+                    builder.current_schema = Vec::new();
+                    builder.pipeline_base = builder.operators.len();
                     builder.lower_query_pipeline(block)?;
                     builder.push_chain(correlated, span)?;
+                    builder.pipeline_base = builder.operators.len();
+                    builder.input_width = outer_input_width;
                 }
             }
         }

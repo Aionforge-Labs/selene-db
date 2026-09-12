@@ -105,11 +105,13 @@ impl<'a, 'r> LogicalBuilder<'a, 'r> {
         &mut self,
         pipeline: &crate::QueryPipeline,
     ) -> Result<(), PlannerError> {
-        self.lower_scan_seed()?;
-        // Track whether a pattern step has been emitted so subsequent MATCH
-        // clauses join against prior bindings instead of reseeding.
-        let mut has_pattern = self
-            .operators
+        self.lower_scan_seed_in(pipeline.span)?;
+        // Track whether a pattern step has been emitted in this isolated
+        // pipeline so subsequent MATCH clauses join against prior bindings
+        // of the same arm/block instead of reseeding. Sibling UNION arms /
+        // NEXT blocks anchor `pipeline_base` at their own operator tail, so
+        // this scan never observes another arm's patterns.
+        let mut has_pattern = self.operators[self.pipeline_base..]
             .iter()
             .any(|op| matches!(op, LogicalOp::Scan { .. } | LogicalOp::Match { .. }));
         // Pending ORDER BY keys are consumed by the RETURN/WITH that follows

@@ -381,3 +381,160 @@ fn diagnostics_preserve_category_and_origins() {
     assert!(text.contains("origin="));
     assert!(!text.contains("0x"));
 }
+
+// ---------------------------------------------------------------------------
+// UNION arms / NEXT blocks lower with isolated pipeline state.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn union_match_arms_lower_in_isolation_without_cross_arm_join() {
+    // Reachable DATA-1 trigger: each arm binds its own pattern. The arms must
+    // not observe each other's visible bindings, so the second arm seeds and
+    // joins locally instead of emitting a cartesian cross-arm Join.
+    let source = "MATCH (a) RETURN a AS x UNION ALL MATCH (b) RETURN b AS x";
+    let logical_plan = logical(source);
+
+    let unions: Vec<&LogicalOp> = logical_plan
+        .operators
+        .iter()
+        .filter(|op| matches!(op, LogicalOp::Union { .. }))
+        .collect();
+    assert_eq!(
+        unions.len(),
+        1,
+        "one UNION ALL arm must emit one Union: {}",
+        explain_logical(&logical_plan)
+    );
+
+    // One graph seed per arm: a shared builder would seed only the first arm
+    // and leave the second arm to join against the first arm's projection.
+    let scans = logical_plan
+        .operators
+        .iter()
+        .filter(|op| matches!(op, LogicalOp::Scan { .. }))
+        .count();
+    assert_eq!(
+        scans,
+        2,
+        "each MATCH-bearing arm seeds its own Scan: {}",
+        explain_logical(&logical_plan)
+    );
+
+    // The two arms project disjoint bindings (`a` vs `b`), so any Join
+    // between arms would carry empty keys (cartesian). Intra-arm
+    // seed-against-first-MATCH joins keep their own binding key.
+    for op in &logical_plan.operators {
+        if let LogicalOp::Join { keys, .. } = op {
+            assert!(
+                !keys.is_empty(),
+                "no cartesian cross-arm Join: {}",
+                explain_logical(&logical_plan)
+            );
+        }
+    }
+
+    // The Union boundary carries the left-arm schema per the operator
+    // contract, matching the first arm's projection.
+    let union_schema = match unions[0] {
+        LogicalOp::Union { output_schema, .. } => output_schema,
+        other => panic!("expected Union, got {other:?}"),
+    };
+    let union_names: Vec<&str> = union_schema
+        .columns
+        .iter()
+        .map(|column| {
+            column
+                .name
+                .as_ref()
+                .map_or("<unnamed>", |name| name.as_str())
+        })
+        .collect();
+    assert_eq!(union_names, vec!["x"]);
+    let projects: Vec<&selene_gql::BindingTableSchema> = logical_plan
+        .operators
+        .iter()
+        .filter_map(|op| match op {
+            LogicalOp::Project { output_schema, .. } => Some(output_schema),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        projects.len() >= 2,
+        "each arm projects before the Union: {}",
+        explain_logical(&logical_plan)
+    );
+    assert_eq!(
+        projects[0],
+        union_schema,
+        "Union must carry the left-arm schema: {}",
+        explain_logical(&logical_plan)
+    );
+
+    // The row adapter agrees: column name-equal arms lower through the same
+    // single-path gate.
+    let settled = analyzed(source);
+    plan(&settled, &EmptyProcedureRegistry).expect("row adapter lowers union arms");
+}
+
+#[test]
+fn next_match_blocks_lower_in_isolation_without_cross_block_join() {
+    // Reachable DATA-1 trigger for NEXT: the second block binds a fresh
+    // pattern. It must seed and join locally, not against the first block's
+    // projection.
+    let source = "MATCH (a) RETURN a AS x NEXT MATCH (b) RETURN b AS y";
+    let logical_plan = logical(source);
+
+    let chains: Vec<&LogicalOp> = logical_plan
+        .operators
+        .iter()
+        .filter(|op| matches!(op, LogicalOp::Chain { .. }))
+        .collect();
+    assert_eq!(
+        chains.len(),
+        1,
+        "one NEXT boundary must emit one Chain: {}",
+        explain_logical(&logical_plan)
+    );
+
+    let scans = logical_plan
+        .operators
+        .iter()
+        .filter(|op| matches!(op, LogicalOp::Scan { .. }))
+        .count();
+    assert_eq!(
+        scans,
+        2,
+        "each MATCH-bearing block seeds its own Scan: {}",
+        explain_logical(&logical_plan)
+    );
+
+    for op in &logical_plan.operators {
+        if let LogicalOp::Join { keys, .. } = op {
+            assert!(
+                !keys.is_empty(),
+                "no cartesian cross-block Join: {}",
+                explain_logical(&logical_plan)
+            );
+        }
+    }
+
+    // The Chain boundary carries the final-block schema.
+    let chain_schema = match chains[0] {
+        LogicalOp::Chain { output_schema, .. } => output_schema,
+        other => panic!("expected Chain, got {other:?}"),
+    };
+    let chain_names: Vec<&str> = chain_schema
+        .columns
+        .iter()
+        .map(|column| {
+            column
+                .name
+                .as_ref()
+                .map_or("<unnamed>", |name| name.as_str())
+        })
+        .collect();
+    assert_eq!(chain_names, vec!["y"]);
+
+    let settled = analyzed(source);
+    plan(&settled, &EmptyProcedureRegistry).expect("row adapter lowers next blocks");
+}
