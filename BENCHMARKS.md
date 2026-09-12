@@ -257,6 +257,44 @@ measured rejection path is unchanged. No new latency/RSS run is attributed to th
 completion; the prior full matrix and filtered refresh retain their original
 measurement coordinates and qualifications rather than being relabeled.
 
+## Batch mutation phases — durable_commit
+
+F04-PR05 adds three rows to the existing `durable_commit` target (no new
+benchmark target): `batch_mutation_2049/stage_no_ack`, `durable_commit_ack`, and
+`rollback_cleanup`. Each uses the public facade over a real format-2 directory,
+2,049 seed nodes and a 2,049-node `MATCH ... INSERT` statement. The graph is
+unbound and has no secondary indexes. The mutation stage crosses three default
+batch boundaries but remains one explicit transaction.
+
+```bash
+scripts/run-benches.sh --bench durable_commit --compile-only
+scripts/run-benches.sh --profile quick --bench durable_commit --filter batch_mutation_2049
+```
+
+The staging timer includes selected-request execution but excludes transaction
+start and rollback; it is **not a durable acknowledgment**. The acknowledgment
+timer measures `COMMIT` after staging, including synchronization and publication.
+The cleanup timer measures `ROLLBACK` after staging. Fixture creation, correctness
+queries, and deletion after acknowledged commits are outside all timers. Caches
+are warm after the first iteration. These are absolute phase costs, not an
+in-memory-versus-durable speedup comparison or a power-loss experiment.
+
+Measured **2026-09-12**, native Apple M5 / 16 GiB / macOS 27.0 (26A5425a),
+Rust 1.97.1 aarch64-apple-darwin, optimized Cargo bench profile, mimalloc:
+
+| Phase (2,049 inserted nodes) | Criterion estimate | Confidence interval | Iterations |
+|---|---:|---:|---:|
+| Staging, no acknowledgment | 1.6719 ms | 1.6452–1.6990 ms | 275 |
+| Durable COMMIT acknowledgment, staging excluded | 9.7225 ms | 8.7061–10.813 ms | 30 |
+| Rollback cleanup, staging excluded | 327.67 µs | 293.22–349.36 µs | 220 |
+
+Each row used 10 samples, 100 ms warm-up and 500 ms requested measurement;
+rollback reported one high-mild outlier. No concurrent build/test/benchmark was
+launched during the run. Gnuplot was unavailable; Criterion used Plotters.
+These intervals are not per-request p95/p99 latency measurements. The existing
+target also prints its independent single-write/stream ACK samples even under
+this filter; those samples are not the multi-batch phase results above.
+
 ## Format-2 durable commit — durable_commit
 
 F02-PR04, **2026-09-11**, native Apple M5 / 16 GiB / macOS 27.0 (26A5425a),

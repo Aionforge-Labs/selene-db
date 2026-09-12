@@ -3,8 +3,6 @@
 pub(crate) mod aggregate;
 mod call;
 mod call_subquery;
-mod catalog;
-pub(crate) mod catalog_index;
 mod chain;
 pub(crate) mod distinct;
 mod explain;
@@ -13,12 +11,9 @@ pub(crate) mod group_by;
 mod let_op;
 mod limit;
 mod match_op;
-mod mutation;
 pub(crate) mod order_by;
 mod project;
-pub(crate) mod session;
 mod top_k;
-pub(crate) mod tx;
 mod union;
 mod unwind;
 
@@ -259,13 +254,19 @@ fn dispatch_pipeline(
                 TxCtxRef::ReadOnly(ctx) => call_subquery::execute_read_only(call, table, ctx)?,
             },
             PipelineOp::Mutation(mutation) => match &mut ctx {
-                TxCtxRef::ReadWrite(ctx) => {
-                    mutation::execute(mutation, table, ctx, expr_ids, subqueries)?
-                }
+                TxCtxRef::ReadWrite(ctx) => crate::runtime::batch::mutation::PhysicalMutation::new(
+                    mutation,
+                    expr_ids,
+                    subqueries,
+                    crate::runtime::batch::policy::BatchPolicy::default_policy(),
+                )
+                .execute(table, ctx)?,
                 TxCtxRef::ReadOnly(_) => return Err(read_only_write_op_error()),
             },
             PipelineOp::Catalog(catalog) => match &mut ctx {
-                TxCtxRef::ReadWrite(ctx) => catalog::execute(catalog, table, ctx)?,
+                TxCtxRef::ReadWrite(ctx) => {
+                    crate::runtime::batch::catalog::execute(catalog, table, ctx)?
+                }
                 TxCtxRef::ReadOnly(_) => return Err(read_only_write_op_error()),
             },
             PipelineOp::Tx(_) => {
@@ -293,7 +294,7 @@ fn dispatch_pipeline(
 /// The error raised when a write-bearing pipeline op runs under read-only
 /// access (a correlated subquery body). Centralized so every rejection site
 /// reports the identical GQLSTATUS/diagnostic.
-fn read_only_write_op_error() -> ExecutorError {
+pub(crate) fn read_only_write_op_error() -> ExecutorError {
     ExecutorError::InvalidTransactionState {
         detail: "write pipeline op invoked from read-only subquery",
         span: crate::SourceSpan::default(),

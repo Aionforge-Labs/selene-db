@@ -1,7 +1,7 @@
-//! Leaf helpers for the mutation pipeline operator: expression-to-value
+//! Leaf helpers for the mutation kernels: expression-to-value
 //! materialization, label/endpoint resolution, schema extension, change-set
 //! diffs, and error mapping. Split from the parent operator file to keep both
-//! under the repository 700-LOC cap; reached only through `super::mutation`.
+//! under the repository 700-LOC cap; reached only through the physical mutation.
 
 use smallvec::SmallVec;
 

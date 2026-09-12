@@ -11,6 +11,8 @@ use selene_persist::{
     logical_stream::LogicalReader,
 };
 
+#[path = "batch_tests.rs"]
+mod batch_tests;
 #[path = "named_tests.rs"]
 mod named_tests;
 #[path = "public_recovery_tests.rs"]

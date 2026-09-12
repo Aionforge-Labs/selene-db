@@ -1,4 +1,4 @@
-//! Session-control statement executor (ISO/IEC 39075:2024 section 7).
+//! Session services for physical controls (ISO/IEC 39075:2024 section 7).
 //!
 //! Bare lower-engine commands mutate [`Session`] state directly and return
 //! [`StatementOutput::Empty`]. Selected facade commands use [`prepare`] to

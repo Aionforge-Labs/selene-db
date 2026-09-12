@@ -9,12 +9,13 @@ use selene_graph::write_txn::PreparedGraphCommit;
 use crate::{
     CatalogObjectReference, DatabaseCatalogCommand, ExecutionPlan, GqlType, ParameterUse,
     PipelineOp, ProcedureRegistry, SessionOp, SessionResetTarget, SessionSetGraphTarget, Statement,
-    StatementCategory, TxOp, Value,
+    StatementCategory, Value,
 };
 
 use super::{
     CatalogSessionOutput, ExecutionOutcome as RuntimeExecutionOutcome, ExecutorError,
     RequestExecutionInput, Session, SessionParameterValue,
+    batch::control::PhysicalControl,
     request_runtime::RequestRuntime,
     statement::{SourceExecutionPolicy, database_catalog_command, execute_source_plan},
 };
@@ -194,16 +195,9 @@ impl PreparedCatalogRequest {
             StatementCategory::Maintenance => PreparedCatalogRequestKind::Maintenance,
             StatementCategory::TransactionControl => {
                 PreparedCatalogRequestKind::TransactionControl(
-                    match self.plan.pipeline.as_slice() {
-                        [PipelineOp::Tx(TxOp::Start { .. })] => PreparedTransactionControl::Start,
-                        [PipelineOp::Tx(TxOp::Commit { .. })] => PreparedTransactionControl::Commit,
-                        [PipelineOp::Tx(TxOp::Rollback { .. })] => {
-                            PreparedTransactionControl::Rollback
-                        }
-                        _ => unreachable!(
-                            "transaction-control plans contain one transaction operation"
-                        ),
-                    },
+                    PhysicalControl::lower(&self.plan)
+                        .and_then(|control| control.transaction())
+                        .expect("transaction-control plans contain one transaction operation"),
                 )
             }
             StatementCategory::SessionControl => PreparedCatalogRequestKind::SessionControl,
@@ -416,7 +410,7 @@ impl<'g> Session<'g> {
         };
         let (result, _, _, prepared_graph) =
             self.with_facade_request(prepared.request, false, |session| {
-                super::pipeline::session::prepare(op, session, registry, skip_if_exists)
+                PhysicalControl::Session(op).prepare_session(session, registry, skip_if_exists)
             });
         debug_assert!(prepared_graph.is_none());
         result

@@ -11,7 +11,7 @@ use selene_graph::{
 
 use crate::{DataExceptionSubclass, ExecutorError, SourceSpan};
 
-pub(in crate::runtime::pipeline::catalog::property) fn coerce_property_descriptor_default(
+pub(in crate::runtime::batch::catalog::property) fn coerce_property_descriptor_default(
     context: &super::DefaultValidationContext<'_>,
     default: PropertyDefaultValue,
 ) -> Result<PropertyDefaultValue, ExecutorError> {
@@ -49,7 +49,7 @@ pub(in crate::runtime::pipeline::catalog::property) fn coerce_property_descripto
     }
 }
 
-pub(in crate::runtime::pipeline::catalog::property::defaults) fn coerce_element_default(
+pub(in crate::runtime::batch::catalog::property::defaults) fn coerce_element_default(
     default: PropertyDefaultValue,
     element_type: &PropertyElementType,
     span: SourceSpan,
@@ -76,7 +76,7 @@ pub(in crate::runtime::pipeline::catalog::property::defaults) fn coerce_element_
     }
 }
 
-pub(in crate::runtime::pipeline::catalog::property::defaults) fn coerce_record_field_default(
+pub(in crate::runtime::batch::catalog::property::defaults) fn coerce_record_field_default(
     default: PropertyDefaultValue,
     field_type: &RecordFieldType,
     span: SourceSpan,

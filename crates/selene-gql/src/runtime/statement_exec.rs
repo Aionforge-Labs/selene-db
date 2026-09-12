@@ -14,8 +14,8 @@ use crate::{
     ExecutionPlan, GqlStatus, ProcedureRegistry, SourceSpan,
     runtime::{
         BindingTable, ExecutorError, ExecutorWarning, GqlStatusObject, RequestExecutionInput,
-        Session, StatementOutput, TxContext, WriteOutcome, execute_plan, pipeline,
-        request_runtime::RequestRuntime,
+        Session, StatementOutput, TxContext, WriteOutcome, batch::control::PhysicalControl,
+        execute_plan, request_runtime::RequestRuntime,
     },
 };
 
@@ -359,7 +359,7 @@ pub(super) fn execute_transaction_control(
             detail: "transaction-control plan must contain exactly one TX op",
         });
     };
-    pipeline::tx::execute(op, session)
+    PhysicalControl::Transaction(op).execute(session, &crate::EmptyProcedureRegistry)
 }
 
 pub(super) fn execute_session_control(
@@ -372,7 +372,7 @@ pub(super) fn execute_session_control(
             detail: "session-control plan must contain exactly one session op",
         });
     };
-    pipeline::session::execute(op, session, registry)
+    PhysicalControl::Session(op).execute(session, registry)
 }
 
 fn output_from_table(plan: &ExecutionPlan, table: BindingTable) -> StatementOutput {

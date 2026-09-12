@@ -15,6 +15,9 @@ use selene_persist::{
 };
 use std::time::{Duration, Instant};
 
+#[path = "durable_commit/batch.rs"]
+mod batch;
+
 fn identity() -> CompatibilityIdentity {
     CompatibilityIdentity::new("stream-benchmark", 1, [8; 32], [17, 0, 0], "binary", 1).unwrap()
 }
@@ -153,6 +156,6 @@ fn measurements(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(10).warm_up_time(Duration::from_millis(100)).measurement_time(Duration::from_millis(500));
-    targets = measurements
+    targets = measurements, batch::measurements
 }
 criterion_main!(benches);

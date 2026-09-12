@@ -5,7 +5,10 @@
 //! binding-batch representation. Primitive families (scan seed, one-hop
 //! expansion, filter, project, page) execute through these operators when the
 //! batch query driver ([`query`]) accepts the plan; every other operator
-//! stays with the row executor until its owning F04 slice. Batches are an
+//! stays with the row executor until its owning F04 slice. Mutation stages
+//! ([`mutation`]) drain bounded inputs through the borrowed transaction at an
+//! eager barrier; [`catalog`] and [`control`] are single-shot operations over
+//! existing graph/facade services. Batches are an
 //! internal execution detail: nothing here is re-exported from the crate
 //! root, batch positions are crate-private offsets, and results re-enter the
 //! stable [`BindingTable`](super::BindingTable) API through operator
@@ -38,17 +41,23 @@
 //! - [`unit`] — single-row seed sources.
 //! - [`tracer`] — operator-to-result materialization for tests and drivers.
 //! - [`query`] — batch query driver: plan acceptance and operator assembly.
+//! - [`mutation`] — bounded eager writes using one borrowed transaction.
+//! - [`catalog`] / [`control`] — single-shot catalog and session/transaction operations.
 //! - [`reference`] — row-reference comparison helpers (test seam only).
 
 pub(crate) mod aggregate;
 pub(crate) mod binding_batch;
 pub(crate) mod budget;
 pub(crate) mod candidates;
+pub(crate) mod catalog;
+pub(crate) mod catalog_index;
 pub(crate) mod chain;
+pub(crate) mod control;
 pub(crate) mod distinct;
 pub(crate) mod expand;
 pub(crate) mod filter;
 pub(crate) mod join;
+pub(crate) mod mutation;
 pub(crate) mod operator;
 pub(crate) mod outer;
 pub(crate) mod page;
@@ -82,6 +91,8 @@ mod fixtures;
 mod join_differentials;
 #[cfg(test)]
 mod join_tests;
+#[cfg(test)]
+mod mutation_tests;
 #[cfg(test)]
 mod scan_tests;
 #[cfg(test)]

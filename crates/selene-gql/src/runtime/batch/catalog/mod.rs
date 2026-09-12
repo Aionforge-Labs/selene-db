@@ -1,4 +1,8 @@
-//! Catalog DDL pipeline operator.
+//! Single-shot physical catalog operation over the borrowed transaction.
+//!
+//! DDL is statement-scoped, never repeated per input batch. The mutator owns
+//! graph-type and index validation; selected database-catalog commands instead
+//! travel through the prepared request to the facade's detached CatalogStager.
 
 mod alter_edge_type;
 mod alter_node_type;
@@ -39,7 +43,7 @@ const DATABASE_CATALOG_DETAIL: &str = "database catalog statements require the d
 const OPEN_GRAPH_CATALOG_DDL: &str =
     "open graph (GG01) does not support catalog type DDL -- use a closed graph (GG02)";
 
-pub(super) fn execute(
+pub(crate) fn execute(
     op: &CatalogOp,
     table: BindingTable,
     ctx: &mut TxContext<'_, '_>,

@@ -21,7 +21,7 @@ use selene_graph::PropertyIndexStatsRow;
 
 use super::meta::{StaticOutputColumn, StaticParameter};
 use crate::procedure_registry::ProcedureError;
-use crate::runtime::pipeline::catalog_index::{
+use crate::runtime::batch::catalog_index::{
     render_composite_index_name, render_index_kind, render_index_name,
 };
 use crate::{GqlType, GraphContext, ProcedureOutputColumn, ProcedureParameter, ProcedureResult};
