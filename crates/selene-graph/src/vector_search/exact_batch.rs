@@ -50,22 +50,8 @@ impl SeleneGraph {
             return Ok(vec![Vec::new(); queries.len()]);
         }
 
-        let query_dimension = u32::try_from(first_dimension).ok();
-        let vector_index = query_dimension.and_then(|dimension| {
-            self.vector_index_for(label, property)
-                .filter(|index| index.dimension() == dimension)
-        });
-        let candidates = if let Some(index) = vector_index.as_ref() {
-            let indexed = self.node_candidates_from_rows(index.rows(), "vector index")?;
-            self.intersect_candidates(&label_candidates, &indexed)
-                .map_err(|error| GraphError::Inconsistent {
-                    reason: format!("fresh batch-vector candidates failed validation: {error}"),
-                })?
-        } else {
-            label_candidates
-        };
         let validated = self
-            .validate_node_candidates(&candidates)
+            .validate_node_candidates(&label_candidates)
             .map_err(|error| GraphError::Inconsistent {
                 reason: format!("fresh batch-vector candidates failed validation: {error}"),
             })?;

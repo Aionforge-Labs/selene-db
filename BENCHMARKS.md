@@ -15,6 +15,70 @@ iai-callgrind instruction-count layer — it needs valgrind, which never runs on
 the macOS dev machine, so it was dropped rather than left as a perpetually-TBD
 placeholder.
 
+## Native vector retrieval — vector_native
+
+F04-PR07 working tree over `0f389ccaff3de8653c7d88d638d3a3ed3e90f9ca`,
+2026-09-12, Apple M5 / 16 GiB / macOS 27.0 (26A5425a), Rust 1.97.1,
+optimized Cargo bench profile, mimalloc. New registered target `vector_native`;
+36 Criterion rows, 10 samples, 100 ms warm-up, 500 ms requested measurement.
+Slow construction rows extend collection. Compiles and measurements ran serially;
+Plotters artifacts are under `target/criterion/native_vector_cpu/`.
+
+```bash
+scripts/run-benches.sh --bench vector_native --compile-only
+scripts/run-benches.sh --profile quick --bench vector_native --vector-scales 1000
+```
+
+Deterministic dense finite vectors, cosine, n=1,000, eight independent queries per
+iteration, k=10, explicit width=64 for every ANN kind. Eligibility is every first,
+tenth or hundredth stable ID (100%, 10%, 1%). Full exact uses the unindexed label
+scan; selective exact uses explicit-ID scoring. ANN uses the same corpus with a
+registered accelerator. Timings include result allocation and each API's
+binding/validation, but exclude fixture/filter construction and recall comparison.
+All are CPU-only portable production paths: no GPU device, models or services.
+
+Central latency estimates below are **microseconds for all eight queries**.
+Parentheses on ANN rows give ID recall@10 against the exact eligible-set oracle.
+Both paths share metric kernels; independent arithmetic is covered separately by
+`native_vectors`. These are absolute workload costs, not before/after speedups.
+
+| Dimensions | Eligible | Exact µs | HNSW µs (recall) | IVF µs (recall) | TurboQuant µs (recall) |
+|---:|---:|---:|---:|---:|---:|
+| 128 | 1,000 | 400.48 | 181.99 (100%) | 166.65 (100%) | 165.04 (100%) |
+| 128 | 100 | 51.791 | 196.71 (55%) | 82.625 (100%) | 180.11 (100%) |
+| 128 | 10 | 6.1218 | 181.94 (5%) | 33.364 (100%) | 11.682 (100%) |
+| 768 | 1,000 | 1,394.1 | 871.98 (97.5%) | 869.57 (100%) | 666.83 (100%) |
+| 768 | 100 | 146.00 | 848.95 (63.75%) | 166.48 (100%) | 678.63 (100%) |
+| 768 | 10 | 16.347 | 837.41 (3.75%) | 63.973 (100%) | 21.261 (100%) |
+
+Representative reported intervals: full exact 128d 399.78–401.52 µs; full exact
+768d 1,387.0–1,411.1 µs; HNSW 768d full 857.07–893.66 µs; HNSW 768d/10
+eligible 832.11–846.77 µs. Complete intervals remain in Criterion artifacts.
+Selective HNSW returned 44/4 of 80 requested hits at 128d and 51/3 at 768d: its
+global beam is filtered before final top-k, **without refill**. This is not
+evidence that filtered ANN is complete. IVF width 64 covers this fixture's 32
+centroids; its 100% recall is not evidence for the default two-probe policy.
+TurboQuant's 10-eligible row uses the existing all-covered exact-rerank bypass.
+
+Build and clean (no-churn) rebuild use the same corpus. Measured intervals begin
+after graph clone/reattachment and include index construction and publication;
+fixture teardown is excluded. There is no WAL/fsync in these lower graph rows.
+
+| Kind | Dimensions | Build ms | Rebuild ms | Index-owned estimate bytes | Reachable estimate bytes |
+|---|---:|---:|---:|---:|---:|
+| HNSW | 128 | 232.12 | 231.98 | 235,212 | 747,212 |
+| HNSW | 768 | 1,340.7 | 1,313.7 | 235,212 | 3,307,212 |
+| IVF | 128 | 1.8390 | 1.8442 | 61,608 | 589,992 |
+| IVF | 768 | 9.9216 | 10.053 | 61,608 | 3,231,912 |
+| TurboQuant | 128 | 1.2225 | 1.2393 | 94,596 | 94,596 |
+| TurboQuant | 768 | 7.5145 | 7.3693 | 429,956 | 429,956 |
+
+Memory is the existing index accounting estimate, not RSS or peak build memory.
+Reachable includes shared vector/centroid buffers for HNSW/IVF; TurboQuant has no
+shadow vector buffer. All cases still retain primary graph vectors (512,000 /
+3,072,000 component bytes at 128d / 768d), plus unmeasured graph/allocator overhead.
+No Linux, GPU, live-embedding, larger-scale or peak-memory qualification is claimed.
+
 ## Native call boundary — procedure_call_repeat
 
 F04-PR06 working tree over `d1ef2652ad57d11c67fe9970a2425ce5ebfe22e1`,

@@ -180,6 +180,7 @@ fn build_vector_index_inner(
                     match policy {
                         BuildPolicy::Strict => return Err(err),
                         BuildPolicy::Lenient => {
+                            index.complete = false;
                             tracing::warn!(
                                 row,
                                 error = %err,
@@ -199,6 +200,7 @@ fn build_vector_index_inner(
                     ));
                 }
                 BuildPolicy::Lenient => {
+                    index.complete = false;
                     warn_rejected("rebuild", label.clone(), property.clone(), row, &err);
                 }
             },
