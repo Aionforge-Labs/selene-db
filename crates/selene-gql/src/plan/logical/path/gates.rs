@@ -16,60 +16,58 @@ use crate::{
 
 use super::limits::PathLoweringLimits;
 
-/// Collect top-level `MATCH` clauses in pipeline order.
+/// Collect `MATCH` clauses in lowering order.
 ///
-/// Covers query, composite, chained, and mutation pipelines. `EXISTS` and
-/// `CALL`-subquery graph patterns stay with F03-PR04 full family coverage.
+/// Covers top-level query, composite, chained, and mutation pipelines, plus
+/// `EXPLAIN` inner statements, inline `CALL` subquery bodies (including
+/// GP03 explicit-import forms), and `EXISTS`/value-subquery graph patterns.
+/// Top-level clauses come first in pipeline order; nested bodies follow in
+/// source order. Every clause lowers to automata from semantic descriptors,
+/// so path/group-variable metadata (conditional singletons, scopes) survives
+/// lowering without a second path algorithm.
 pub(super) fn collect_match_clauses(analyzed: &AnalyzedStatement) -> Vec<(usize, &MatchClause)> {
     let mut out = Vec::new();
-    let mut clause_index = 0usize;
-    match analyzed.source() {
-        Statement::Query(pipeline) => {
-            for statement in &pipeline.statements {
-                if let crate::PipelineStatement::Match(clause) = statement {
-                    out.push((clause_index, clause));
-                    clause_index += 1;
-                }
-            }
-        }
+    collect_statement_clauses(analyzed.source(), &mut out);
+    // Index in collection order (clause order, then pattern order downstream).
+    out.into_iter().enumerate().collect()
+}
+
+fn collect_statement_clauses<'a>(statement: &'a Statement, out: &mut Vec<&'a MatchClause>) {
+    match statement {
+        Statement::Query(pipeline) => collect_query_pipeline_clauses(pipeline, out),
         Statement::Composite { first, rest, .. } => {
-            for statement in &first.statements {
-                if let crate::PipelineStatement::Match(clause) = statement {
-                    out.push((clause_index, clause));
-                    clause_index += 1;
-                }
-            }
+            collect_query_pipeline_clauses(first, out);
             for (_, pipeline) in rest {
-                for statement in &pipeline.statements {
-                    if let crate::PipelineStatement::Match(clause) = statement {
-                        out.push((clause_index, clause));
-                        clause_index += 1;
-                    }
-                }
+                collect_query_pipeline_clauses(pipeline, out);
             }
         }
         Statement::Chained { blocks, .. } => {
             for block in blocks {
-                for statement in &block.statements {
-                    if let crate::PipelineStatement::Match(clause) = statement {
-                        out.push((clause_index, clause));
-                        clause_index += 1;
-                    }
-                }
+                collect_query_pipeline_clauses(block, out);
             }
         }
         Statement::Mutate(pipeline) => {
             for statement in &pipeline.statements {
-                if let crate::MutationStatement::Match(clause) = statement {
-                    out.push((clause_index, clause));
-                    clause_index += 1;
+                match statement {
+                    crate::MutationStatement::Match(clause) => {
+                        out.push(clause);
+                        collect_match_clause_exprs(clause, out);
+                    }
+                    crate::MutationStatement::Filter(value) => {
+                        collect_value_expr_clauses(value, out);
+                    }
+                    crate::MutationStatement::Insert(_)
+                    | crate::MutationStatement::Set(_)
+                    | crate::MutationStatement::Remove(_)
+                    | crate::MutationStatement::Delete(_) => {}
                 }
             }
         }
-        Statement::Ddl(_)
-        | Statement::Call(_)
-        | Statement::Explain { .. }
-        | Statement::StartTransaction { .. }
+        Statement::Ddl(_) | Statement::Call(_) => {}
+        Statement::Explain { inner, .. } => {
+            collect_statement_clauses(inner, out);
+        }
+        Statement::StartTransaction { .. }
         | Statement::Commit { .. }
         | Statement::Rollback { .. }
         | Statement::SessionSetValue { .. }
@@ -78,7 +76,126 @@ pub(super) fn collect_match_clauses(analyzed: &AnalyzedStatement) -> Vec<(usize,
         | Statement::SessionReset { .. }
         | Statement::SessionClose { .. } => {}
     }
-    out
+}
+
+fn collect_query_pipeline_clauses<'a>(
+    pipeline: &'a crate::QueryPipeline,
+    out: &mut Vec<&'a MatchClause>,
+) {
+    for statement in &pipeline.statements {
+        match statement {
+            crate::PipelineStatement::Match(clause) => {
+                out.push(clause);
+                collect_match_clause_exprs(clause, out);
+            }
+            crate::PipelineStatement::Filter(value) => {
+                collect_value_expr_clauses(value, out);
+            }
+            crate::PipelineStatement::Let(bindings) => {
+                for binding in bindings {
+                    collect_value_expr_clauses(&binding.value, out);
+                }
+            }
+            crate::PipelineStatement::For(statement) => {
+                collect_value_expr_clauses(&statement.source, out);
+            }
+            crate::PipelineStatement::Sorting(terms) => {
+                for term in terms {
+                    collect_value_expr_clauses(&term.expr, out);
+                }
+            }
+            crate::PipelineStatement::Limit(_) | crate::PipelineStatement::Offset(_) => {}
+            crate::PipelineStatement::Return(clause) => {
+                for item in &clause.items {
+                    collect_value_expr_clauses(&item.expr, out);
+                }
+                if let Some(keys) = &clause.group_by {
+                    for key in keys {
+                        collect_value_expr_clauses(key, out);
+                    }
+                }
+                if let Some(having) = &clause.having {
+                    collect_value_expr_clauses(having, out);
+                }
+            }
+            crate::PipelineStatement::With(clause) => {
+                for item in &clause.items {
+                    collect_value_expr_clauses(&item.expr, out);
+                }
+                if let Some(keys) = &clause.group_by {
+                    for key in keys {
+                        collect_value_expr_clauses(key, out);
+                    }
+                }
+                if let Some(having) = &clause.having {
+                    collect_value_expr_clauses(having, out);
+                }
+                if let Some(where_clause) = &clause.where_clause {
+                    collect_value_expr_clauses(where_clause, out);
+                }
+            }
+            crate::PipelineStatement::Call(call) => {
+                for arg in &call.args {
+                    collect_value_expr_clauses(arg, out);
+                }
+            }
+            crate::PipelineStatement::CallSubquery(call) => {
+                // GP03 imports do not change collection: the body patterns
+                // lower with their import-resolved identities.
+                collect_query_pipeline_clauses(&call.body, out);
+            }
+        }
+    }
+}
+
+fn collect_match_clause_exprs<'a>(clause: &'a MatchClause, out: &mut Vec<&'a MatchClause>) {
+    if let Some(where_clause) = &clause.where_clause {
+        collect_value_expr_clauses(where_clause, out);
+    }
+    for pattern in &clause.patterns {
+        for element in &pattern.elements {
+            match element {
+                crate::PatternElement::Node(node) => {
+                    if let Some(where_clause) = &node.inline_where {
+                        collect_value_expr_clauses(where_clause, out);
+                    }
+                    for (_, value) in &node.properties {
+                        collect_value_expr_clauses(value, out);
+                    }
+                }
+                crate::PatternElement::Edge(edge) => {
+                    if let Some(where_clause) = &edge.inline_where {
+                        collect_value_expr_clauses(where_clause, out);
+                    }
+                    for (_, value) in &edge.properties {
+                        collect_value_expr_clauses(value, out);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_value_expr_clauses<'a>(value: &'a crate::ValueExpr, out: &mut Vec<&'a MatchClause>) {
+    match value {
+        crate::ValueExpr::Exists { body, .. } => match body {
+            crate::ExistsBody::Match(clause) => {
+                out.push(clause.as_ref());
+                collect_match_clause_exprs(clause.as_ref(), out);
+            }
+            crate::ExistsBody::Query(pipeline) => {
+                collect_query_pipeline_clauses(pipeline.as_ref(), out);
+            }
+        },
+        crate::ValueExpr::ValueSubquery { body, .. } => {
+            collect_query_pipeline_clauses(body.as_ref(), out);
+        }
+        _ => {
+            value.for_each_child(&mut |child| {
+                collect_value_expr_clauses(child, out);
+            });
+        }
+    }
 }
 
 /// Require strictly alternating node/edge/node elements ending on a node.

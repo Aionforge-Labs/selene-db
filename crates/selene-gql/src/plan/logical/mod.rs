@@ -14,20 +14,32 @@
 //! adapter; mutations describe intent and stage through the existing detached
 //! transaction state with no independent publication path.
 
+pub mod descriptors;
 pub mod effect;
 pub mod explain;
 pub mod lowering;
+pub(crate) mod lowering_aggregate;
+pub(crate) mod lowering_call;
+pub(crate) mod lowering_catalog;
+pub(crate) mod lowering_cost;
+pub(crate) mod lowering_mutation;
+pub(crate) mod lowering_query;
+pub(crate) mod lowering_scan;
 pub mod operator;
 pub mod path;
 
+pub use descriptors::{
+    LogicalAggregate, LogicalCallDescriptor, LogicalCatalogKind, LogicalControlKind,
+    LogicalMutationDescriptor, LogicalOrderKey, LogicalScanDescriptor,
+};
 pub use effect::{
     EffectSummary, LogicalEffect, check_gp18, classify_analyzed, classify_plan, verify_plan_effects,
 };
 pub use explain::explain;
-pub use lowering::{lower_logical, measure_lowering_cost};
+pub use lowering::lower_logical;
+pub use lowering_cost::measure_lowering_cost;
 pub use operator::{
-    LogicalCallDescriptor, LogicalMultiplicity, LogicalMutationDescriptor, LogicalOp,
-    LogicalOrdering, LogicalPageAmount, LogicalPlan, LogicalScanDescriptor,
+    LogicalMultiplicity, LogicalOp, LogicalOrdering, LogicalPageAmount, LogicalPlan,
 };
 pub use path::{
     AutomatonStats, BindingExposure, EdgeQuantifierKind, EdgeTest, LoweredPathSet, NodeTest,

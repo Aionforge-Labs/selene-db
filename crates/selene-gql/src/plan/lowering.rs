@@ -1,9 +1,17 @@
-//! The explicit semantic-to-current-plan adapter (deletion owner: F03-PR04).
+//! Narrow logical-to-row execution adapter (transition-only until F04-PR09).
+//!
+//! Semantic → logical lowering is the only analysis route: [`plan_with_caps`]
+//! first lowers through [`crate::plan::logical::lower_logical`], so every
+//! supported family reaches logical planning and unsupported features fail
+//! through the same profile authority with useful spans. This adapter then
+//! transports those fixed decisions into today's row [`ExecutionPlan`].
 //!
 //! Source is borrowed solely for unchanged syntax payloads required by today's
-//! row plan. Resolved identities, effective parameter declarations, types, and
-//! synthesized arguments come from the frozen semantic tree. This adapter does
-//! not analyze or mutate syntax. F03-PR04 replaces these mixed plan payloads.
+//! row plan (label predicates, property values, ordering of arms/blocks).
+//! Resolved identities, types, effects, scopes, procedure metadata, path
+//! automata, and grouping/ordering keys come from the frozen semantic tree
+//! and the logical plan. This adapter never analyzes, never mutates syntax,
+//! and never rederives a semantic decision.
 
 mod aggregate;
 mod binding_refs;
@@ -51,11 +59,14 @@ pub fn plan(
 /// Lower an analyzed statement into a literal, unoptimized execution plan,
 /// stamping the caller-supplied implementation-defined caps.
 ///
-/// Adapts the source shape using immutable semantics: queries / set-composed / NEXT-chained
-/// pipelines walk the read pipeline; mutations lower from the analyzer's
-/// [`MutationWriteSet`]; DDL lowers to a single [`PipelineOp::Catalog`];
-/// transaction control lowers to a single [`PipelineOp::Tx`]; top-level CALL
-/// looks up procedure metadata in `registry` and lowers to [`PipelineOp::Call`].
+/// Single-path entry: semantic → logical lowering runs first, so every
+/// supported family is fixed in logical IR before this row adapter runs.
+/// The adapter then transports those decisions into [`ExecutionPlan`]:
+/// queries / set-composed / NEXT-chained pipelines walk the read pipeline;
+/// mutations lower from the analyzer's [`MutationWriteSet`]; DDL lowers to a
+/// single [`PipelineOp::Catalog`]; transaction control lowers to a single
+/// [`PipelineOp::Tx`]; top-level CALL looks up procedure metadata in
+/// `registry` and lowers to [`PipelineOp::Call`].
 ///
 /// `caps` reach the plan two ways: the plan-time variable-length quantifier gate
 /// consults `caps.max_quantifier` *during* lowering (threaded as `max_quantifier`),
@@ -74,6 +85,11 @@ pub fn plan_with_caps(
     registry: &dyn ProcedureRegistry,
     caps: &ImplDefinedCaps,
 ) -> Result<ExecutionPlan, PlannerError> {
+    // Single-path gate: every statement reaches logical planning first.
+    // Unsupported features fail here through the same profile authority with
+    // useful spans; supported families fix their identities, types, effects,
+    // scopes, and path automata in logical IR before row lowering runs.
+    let logical = crate::plan::logical::lower_logical(analyzed, registry)?;
     let mut plan = lower_statement_kind(analyzed.source(), registry, analyzed, caps)?;
     plan.category = analyzed.category;
     plan.expr_ids = analyzed.expr_ids.clone();
@@ -85,13 +101,24 @@ pub fn plan_with_caps(
     // `max_quantifier`, so a post-lowering stamp here covers every statement kind.
     plan.impl_defined_caps = *caps;
     plan.refresh_pipeline_op_high_water();
-    // F03-PR03: verify that the lowered plan's metadata-resolved effects agree
-    // with the semantic summary. A parser-only check of the top-level shape
-    // would miss an effectful nested CALL; this check resolves every planned
-    // call from registration metadata and enforces the GP18 no-mix policy
-    // before the facade can route the plan to execution.
+    // Verify that the row plan transports the logical decisions: the
+    // metadata-resolved row effects must agree with both the semantic summary
+    // and the logical plan. A parser-only check would miss an effectful
+    // nested CALL; this check resolves every planned call from registration
+    // metadata and enforces the GP18 no-mix policy before the facade can
+    // route the plan to execution.
     let semantic = crate::plan::logical::classify_analyzed(analyzed);
-    crate::plan::logical::verify_plan_effects(&semantic, &plan)?;
+    let row_summary = crate::plan::logical::verify_plan_effects(&semantic, &plan)?;
+    if row_summary.effect != logical.effects.effect
+        || row_summary.has_data_write != logical.effects.has_data_write
+        || row_summary.has_catalog_write != logical.effects.has_catalog_write
+        || row_summary.has_maintenance_write != logical.effects.has_maintenance_write
+    {
+        return Err(PlannerError::EffectMismatch {
+            detail: "row plan effects disagree with the logical plan",
+            span: row_summary.origin,
+        });
+    }
     Ok(plan)
 }
 

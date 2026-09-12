@@ -20,9 +20,10 @@ use super::{
 pub fn explain(plan: &LogicalPlan) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "logical_plan effect={} operators={} output_columns={}\n",
+        "logical_plan effect={} operators={} paths={} output_columns={}\n",
         effect_label(plan.effects.effect),
         plan.operators.len(),
+        plan.paths.automata.len(),
         plan.output_schema.columns.len()
     ));
     for (index, op) in plan.operators.iter().enumerate() {
@@ -146,6 +147,217 @@ fn explain_op(op: &LogicalOp) -> String {
             multiplicity_label(op.multiplicity()),
             origin_label(*origin),
         ),
+        LogicalOp::Extend {
+            expressions,
+            scope,
+            output_schema,
+            origin,
+        } => {
+            let exprs = expressions
+                .iter()
+                .map(|id| format!("e{}", id.get()))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "extend exprs=[{exprs}] scope=s{} schema=[{}] ordering={} multiplicity={} origin={}",
+                scope.get(),
+                schema_label(output_schema),
+                ordering_label(op.ordering()),
+                multiplicity_label(op.multiplicity()),
+                origin_label(*origin),
+            )
+        }
+        LogicalOp::Unwind {
+            source,
+            alias,
+            position_alias,
+            output_schema,
+            scope,
+            origin,
+        } => format!(
+            "unwind source=e{} alias=b{} position={} scope=s{} schema=[{}] ordering={} multiplicity={} origin={}",
+            source.get(),
+            alias.get(),
+            position_alias.map_or_else(|| "-".to_owned(), |alias| format!("b{}", alias.get())),
+            scope.get(),
+            schema_label(output_schema),
+            ordering_label(op.ordering()),
+            multiplicity_label(op.multiplicity()),
+            origin_label(*origin),
+        ),
+        LogicalOp::Match {
+            optional,
+            output_schema,
+            scope,
+            origin,
+        } => format!(
+            "match optional={optional} scope=s{} schema=[{}] ordering={} multiplicity={} origin={}",
+            scope.get(),
+            schema_label(output_schema),
+            ordering_label(op.ordering()),
+            multiplicity_label(op.multiplicity()),
+            origin_label(*origin),
+        ),
+        LogicalOp::Join {
+            keys,
+            optional,
+            output_schema,
+            scope,
+            origin,
+        } => {
+            let keys = keys
+                .iter()
+                .map(|id| format!("b{}", id.get()))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "join keys=[{keys}] optional={optional} scope=s{} schema=[{}] ordering={} multiplicity={} origin={}",
+                scope.get(),
+                schema_label(output_schema),
+                ordering_label(op.ordering()),
+                multiplicity_label(op.multiplicity()),
+                origin_label(*origin),
+            )
+        }
+        LogicalOp::Aggregate {
+            keys,
+            aggregates,
+            output_schema,
+            scope,
+            origin,
+        } => {
+            let keys = keys
+                .iter()
+                .map(|id| format!("e{}", id.get()))
+                .collect::<Vec<_>>()
+                .join(",");
+            let aggs = aggregates
+                .iter()
+                .map(|agg| {
+                    format!(
+                        "{}({})->{}",
+                        agg.function.as_str(),
+                        agg.args
+                            .iter()
+                            .map(|id| format!("e{}", id.get()))
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        agg.output_name.as_str()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(";");
+            format!(
+                "aggregate keys=[{keys}] aggs=[{aggs}] scope=s{} schema=[{}] ordering={} multiplicity={} origin={}",
+                scope.get(),
+                schema_label(output_schema),
+                ordering_label(op.ordering()),
+                multiplicity_label(op.multiplicity()),
+                origin_label(*origin),
+            )
+        }
+        LogicalOp::Order {
+            keys,
+            output_schema,
+            origin,
+        } => {
+            let keys = keys
+                .iter()
+                .map(|key| format!("e{}:{:?}", key.expr.get(), key.direction))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "order keys=[{keys}] schema=[{}] ordering={} multiplicity={} origin={}",
+                schema_label(output_schema),
+                ordering_label(op.ordering()),
+                multiplicity_label(op.multiplicity()),
+                origin_label(*origin),
+            )
+        }
+        LogicalOp::Distinct {
+            output_schema,
+            origin,
+        } => format!(
+            "distinct schema=[{}] ordering={} multiplicity={} origin={}",
+            schema_label(output_schema),
+            ordering_label(op.ordering()),
+            multiplicity_label(op.multiplicity()),
+            origin_label(*origin),
+        ),
+        LogicalOp::Union {
+            op: set_op,
+            output_schema,
+            origin,
+        } => format!(
+            "union op={set_op:?} schema=[{}] ordering={} multiplicity={} origin={}",
+            schema_label(output_schema),
+            ordering_label(op.ordering()),
+            multiplicity_label(op.multiplicity()),
+            origin_label(*origin),
+        ),
+        LogicalOp::Chain {
+            correlated,
+            output_schema,
+            origin,
+        } => format!(
+            "chain correlated={correlated} schema=[{}] ordering={} multiplicity={} origin={}",
+            schema_label(output_schema),
+            ordering_label(op.ordering()),
+            multiplicity_label(op.multiplicity()),
+            origin_label(*origin),
+        ),
+        LogicalOp::Subquery {
+            imports,
+            optional,
+            output_schema,
+            scope,
+            origin,
+            ..
+        } => {
+            let imports = imports
+                .iter()
+                .map(|id| format!("b{}", id.get()))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "subquery imports=[{imports}] optional={optional} scope=s{} schema=[{}] ordering={} multiplicity={} origin={}",
+                scope.get(),
+                schema_label(output_schema),
+                ordering_label(op.ordering()),
+                multiplicity_label(op.multiplicity()),
+                origin_label(*origin),
+            )
+        }
+        LogicalOp::Catalog {
+            kind,
+            output_schema,
+            origin,
+        } => format!(
+            "catalog kind={kind:?} effect={} schema=[{}] ordering={} multiplicity={} origin={}",
+            effect_label(kind.effect()),
+            schema_label(output_schema),
+            ordering_label(op.ordering()),
+            multiplicity_label(op.multiplicity()),
+            origin_label(*origin),
+        ),
+        LogicalOp::Control { kind, origin } => format!(
+            "control kind={kind:?} effect={} ordering={} multiplicity={} origin={}",
+            effect_label(kind.effect()),
+            ordering_label(op.ordering()),
+            multiplicity_label(op.multiplicity()),
+            origin_label(*origin),
+        ),
+        LogicalOp::Explain {
+            output_schema,
+            origin,
+            ..
+        } => format!(
+            "explain schema=[{}] ordering={} multiplicity={} origin={}",
+            schema_label(output_schema),
+            ordering_label(op.ordering()),
+            multiplicity_label(op.multiplicity()),
+            origin_label(*origin),
+        ),
     }
 }
 
@@ -211,6 +423,7 @@ mod tests {
     fn explain_contains_no_runtime_addresses() {
         let plan = LogicalPlan {
             operators: Vec::new(),
+            paths: crate::plan::logical::path::lowering::LoweredPathSet::empty(),
             effects: crate::plan::logical::effect::EffectSummary {
                 effect: LogicalEffect::Query,
                 has_data_write: false,

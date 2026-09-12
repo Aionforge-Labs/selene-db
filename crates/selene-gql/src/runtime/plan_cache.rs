@@ -51,6 +51,7 @@ impl Borrow<str> for CacheKey {
 struct CachedPlan {
     plan: Arc<ExecutionPlan>,
     schema_version_at_plan: u64,
+    registry_version_at_plan: u64,
     profile_identity_at_plan: ProfileIdentity,
 }
 
@@ -117,15 +118,27 @@ impl PlanCache {
         }
     }
 
+    /// Lookup a cached plan pinned to its semantic environment.
+    ///
+    /// The caller pins `schema_version` (graph/index epoch),
+    /// `registry_version` (procedure-registry epoch), and `profile_identity`
+    /// (effective profile) at analysis. A mismatch on any dimension
+    /// invalidates the entry with a typed stale count; executing requests
+    /// either reuse the pinned plan or re-analyze under the current
+    /// environment. Runtime row data never participates: optimizer index
+    /// selection depends only on which indexes exist, so data writes within
+    /// an epoch keep cached access paths correct.
     pub(crate) fn get(
         &mut self,
         source: &str,
         schema_version: u64,
+        registry_version: u64,
         profile_identity: ProfileIdentity,
     ) -> Option<Arc<ExecutionPlan>> {
         match self.inner.get(source) {
             Some(cached)
                 if cached.schema_version_at_plan == schema_version
+                    && cached.registry_version_at_plan == registry_version
                     && cached.profile_identity_at_plan == profile_identity =>
             {
                 let plan = Arc::clone(&cached.plan);
@@ -152,6 +165,7 @@ impl PlanCache {
         source: Arc<str>,
         plan: Arc<ExecutionPlan>,
         schema_version: u64,
+        registry_version: u64,
         profile_identity: ProfileIdentity,
     ) {
         if !is_cacheable(&plan) {
@@ -163,6 +177,7 @@ impl PlanCache {
         let cached = CachedPlan {
             plan,
             schema_version_at_plan: schema_version,
+            registry_version_at_plan: registry_version,
             profile_identity_at_plan: profile_identity,
         };
         if self.inner.push(key, cached).is_some() && !replacing_existing {
@@ -453,10 +468,10 @@ mod tests {
     #[test]
     fn plan_cache_basic_hit_miss() {
         let mut cache = PlanCache::new(NonZeroUsize::new(2).unwrap());
-        assert!(cache.get("RETURN 1", 0, profile()).is_none());
+        assert!(cache.get("RETURN 1", 0, 0, profile()).is_none());
 
-        cache.insert(Arc::from("RETURN 1"), planned("RETURN 1"), 0, profile());
-        assert!(cache.get("RETURN 1", 0, profile()).is_some());
+        cache.insert(Arc::from("RETURN 1"), planned("RETURN 1"), 0, 0, profile());
+        assert!(cache.get("RETURN 1", 0, 0, profile()).is_some());
 
         assert_eq!(
             cache.stats(),
@@ -472,47 +487,61 @@ mod tests {
     #[test]
     fn plan_cache_lru_evicts_oldest() {
         let mut cache = PlanCache::new(NonZeroUsize::new(2).unwrap());
-        cache.insert(Arc::from("RETURN 1"), planned("RETURN 1"), 0, profile());
-        cache.insert(Arc::from("RETURN 2"), planned("RETURN 2"), 0, profile());
-        cache.insert(Arc::from("RETURN 3"), planned("RETURN 3"), 0, profile());
+        cache.insert(Arc::from("RETURN 1"), planned("RETURN 1"), 0, 0, profile());
+        cache.insert(Arc::from("RETURN 2"), planned("RETURN 2"), 0, 0, profile());
+        cache.insert(Arc::from("RETURN 3"), planned("RETURN 3"), 0, 0, profile());
 
-        assert!(cache.get("RETURN 1", 0, profile()).is_none());
-        assert!(cache.get("RETURN 2", 0, profile()).is_some());
-        assert!(cache.get("RETURN 3", 0, profile()).is_some());
+        assert!(cache.get("RETURN 1", 0, 0, profile()).is_none());
+        assert!(cache.get("RETURN 2", 0, 0, profile()).is_some());
+        assert!(cache.get("RETURN 3", 0, 0, profile()).is_some());
         assert_eq!(cache.stats().capacity_evictions, 1);
     }
 
     #[test]
     fn plan_cache_schema_version_mismatch_is_miss() {
         let mut cache = PlanCache::new(NonZeroUsize::new(2).unwrap());
-        cache.insert(Arc::from("RETURN 1"), planned("RETURN 1"), 0, profile());
+        cache.insert(Arc::from("RETURN 1"), planned("RETURN 1"), 0, 0, profile());
 
-        assert!(cache.get("RETURN 1", 1, profile()).is_none());
+        assert!(cache.get("RETURN 1", 1, 0, profile()).is_none());
         assert_eq!(cache.stats().stale_invalidations, 1);
-        assert!(cache.get("RETURN 1", 1, profile()).is_none());
+        assert!(cache.get("RETURN 1", 1, 0, profile()).is_none());
         assert_eq!(cache.stats().misses, 1);
     }
 
     #[test]
     fn plan_cache_profile_identity_mismatch_invalidates_entry() {
         let mut cache = PlanCache::new(NonZeroUsize::new(2).unwrap());
-        cache.insert(Arc::from("RETURN 1"), planned("RETURN 1"), 0, profile());
+        cache.insert(Arc::from("RETURN 1"), planned("RETURN 1"), 0, 0, profile());
         let synthetic = ProfileIdentity::new("synthetic", 3, 3, "other-hash");
 
-        assert!(cache.get("RETURN 1", 0, synthetic).is_none());
+        assert!(cache.get("RETURN 1", 0, 0, synthetic).is_none());
         assert_eq!(cache.stats().stale_invalidations, 1);
-        assert!(cache.get("RETURN 1", 0, profile()).is_none());
+        assert!(cache.get("RETURN 1", 0, 0, profile()).is_none());
+        assert_eq!(cache.stats().misses, 1);
+    }
+
+    #[test]
+    fn plan_cache_registry_version_mismatch_invalidates_entry() {
+        // F03-PR04: procedure signature changes bump the registry epoch. A
+        // session-cached plan pinned to the old epoch must invalidate rather
+        // than execute with stale procedure authority.
+        let mut cache = PlanCache::new(NonZeroUsize::new(2).unwrap());
+        cache.insert(Arc::from("RETURN 1"), planned("RETURN 1"), 0, 0, profile());
+
+        assert!(cache.get("RETURN 1", 0, 1, profile()).is_none());
+        assert_eq!(cache.stats().stale_invalidations, 1);
+        assert!(cache.get("RETURN 1", 0, 1, profile()).is_none());
         assert_eq!(cache.stats().misses, 1);
     }
 
     #[test]
     fn plan_cache_clear_resets_state() {
         let mut cache = PlanCache::new(NonZeroUsize::new(2).unwrap());
-        cache.insert(Arc::from("RETURN 1"), planned("RETURN 1"), 0, profile());
-        assert!(cache.get("RETURN 1", 0, profile()).is_some());
+        cache.insert(Arc::from("RETURN 1"), planned("RETURN 1"), 0, 0, profile());
+        assert!(cache.get("RETURN 1", 0, 0, profile()).is_some());
 
         cache.clear();
-        assert!(cache.get("RETURN 1", 0, profile()).is_none());
+        assert!(cache.get("RETURN 1", 0, 0, profile()).is_none());
 
         assert_eq!(
             cache.stats(),
@@ -528,9 +557,9 @@ mod tests {
     #[test]
     fn cache_skips_call_plans() {
         let mut cache = PlanCache::new(NonZeroUsize::new(2).unwrap());
-        cache.insert(Arc::from("CALL cache.call()"), call_plan(), 0, profile());
+        cache.insert(Arc::from("CALL cache.call()"), call_plan(), 0, 0, profile());
 
-        assert!(cache.get("CALL cache.call()", 0, profile()).is_none());
+        assert!(cache.get("CALL cache.call()", 0, 0, profile()).is_none());
         assert_eq!(cache.stats().misses, 1);
     }
 
@@ -541,12 +570,13 @@ mod tests {
             Arc::from("EXPLAIN CALL cache.call()"),
             explain_call_plan(),
             0,
+            0,
             profile(),
         );
 
         assert!(
             cache
-                .get("EXPLAIN CALL cache.call()", 0, profile())
+                .get("EXPLAIN CALL cache.call()", 0, 0, profile())
                 .is_none()
         );
         assert_eq!(cache.stats().misses, 1);
@@ -559,6 +589,7 @@ mod tests {
             Arc::from("RETURN VALUE { CALL cache.call() RETURN 1 LIMIT 1 } AS v"),
             expression_subquery_call_plan(),
             0,
+            0,
             profile(),
         );
 
@@ -566,6 +597,7 @@ mod tests {
             cache
                 .get(
                     "RETURN VALUE { CALL cache.call() RETURN 1 LIMIT 1 } AS v",
+                    0,
                     0,
                     profile()
                 )
