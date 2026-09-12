@@ -127,5 +127,9 @@ harness = false
 name = "execution_context"
 harness = false
 
+[[bench]]
+name = "bounded_paths"
+harness = false
+
 [lints]
 workspace = true
