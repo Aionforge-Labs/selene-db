@@ -538,7 +538,7 @@ counted_shortest_tail = {
     uint ~ path_modifier? ~ (path_or_paths ~ !("="))? ~ counted_group_kw?
   | path_modifier? ~ (path_or_paths ~ !("="))? ~ counted_group_kw
 }
-counted_group_kw = { (^"GROUPS" | ^"GROUP") ~ !(LETTER | NUMBER | "_") }
+counted_group_kw = @{ (^"GROUPS" | ^"GROUP") ~ !(LETTER | NUMBER | "_") }
 optional_modifier = { optional_kw }
 optional_kw = @{ ^"OPTIONAL" ~ !(LETTER | NUMBER | "_") }
 // Atomic + trailing word boundary so "WALKPATHS" cannot tokenize as WALK + PATHS

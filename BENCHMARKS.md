@@ -3293,6 +3293,45 @@ overhead. Product states include binding/test/accept positions as well as hops;
 the distinct candidate count prevents presenting output growth as an optimization.
 Allocator instrumentation and non-macOS performance remain unmeasured.
 
+### F05-PR03 selective paths and typed materialization
+
+The existing `bounded_paths` target additionally runs `gql_selected_paths`:
+128 parallel shortest ties, one 128-edge chain, and a rejected direct route with
+31 qualifying two-edge alternatives (33 nodes). All select `ALL SHORTEST` from
+`Root` to `Target` and materialize `p` plus the named element bindings. The
+statement quantifier cap is explicitly 128 for these rows. Parsing, lowering,
+fixture setup and cardinality guards are outside timing; execution, qualification,
+selection, native path construction, batch/table copies and drop are inside.
+No new target was added; no predecessor-sharing representation was introduced.
+
+```bash
+scripts/run-benches.sh --bench bounded_paths --compile-only
+scripts/run-benches.sh --profile quick --bench bounded_paths --filter gql_selected_paths
+```
+
+Measured 2026-09-12 on Apple M5, native aarch64 macOS 27.0 (26A5425a), rustc
+1.97.1; workspace optimized bench profile, thin LTO, one codegen unit, mimalloc,
+no extra features. Ten samples, 200 ms warmup, 1-second measurement, serialized
+after compilation. These are absolute measurements, **not speedup claims**;
+Criterion's incidental comparison against an earlier local run is not an A/B
+experiment and is deliberately not used.
+
+| Workload / scale | Rows | Product states | History clones | End-to-end estimate (95% interval) | Peak history estimate, bytes | Peak candidate estimate, bytes | Peak total estimate, bytes |
+|---|---:|---:|---:|---|---:|---:|---:|
+| many ties / 128 | 128 | 386 | 385 | 68.889 µs (68.062–69.519) | 589,824 | 589,824 | 599,040 |
+| long path / 128 | 1 | 259 | 258 | 88.584 µs (86.481–90.841) | 69,632 | 69,632 | 208,896 |
+| rejected shortest / 32 | 31 | 160 | 159 | 29.178 µs (28.825–29.557) | 163,840 | 158,720 | 174,080 |
+
+Separately instrumented, pre-Criterion **single sanity executions** reported
+discovery / selection / final path construction: many ties **45 / 14 / 2 µs**;
+long path **123 / <1 / <1 µs**; rejected shortest **128 / 1 / <1 µs**. These cold
+phase observations are not statistical estimates and do not sum to the warmed
+end-to-end estimate. Discovery includes history cloning and predicate evaluation;
+final construction excludes subsequent table copies. History/candidate byte
+estimates are conservative reservation envelopes, **not measured heap or RSS**,
+and their separate peaks need not coincide. Allocator profiling, open-WALK
+certificate scaling, Linux performance and larger campaigns remain unmeasured.
+
 ### F03-PR01 immutable source/semantic separation
 
 The existing registered `analyze` binary now includes

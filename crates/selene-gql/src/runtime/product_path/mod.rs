@@ -3,8 +3,10 @@
 //! This native integration seam is not a new GQL surface. The statement driver
 //! retains legacy path routing until F05-PR04. Execution uses the existing batch
 //! pin, cancellation, budget, lifecycle and materialization contracts. Only one
-//! MATCH clause's flat automata are accepted; selectors, predicates and path
-//! value construction belong to F05-PR03. No partial result survives a failure.
+//! MATCH clause's flat automata are accepted. Path-local predicates precede
+//! endpoint-partitioned selection; selected paths use the native typed value.
+//! No partial result survives a failure. Open bounds are resource-limited,
+//! never silently truncated. See `docs/gql/product-path-selection.md`.
 //!
 //! TEMPORARY observations are opt-in debugging data, not result columns or a
 //! traversal-order promise. Presentation must use explicit deterministic keys.
@@ -29,9 +31,13 @@
 //! ```
 
 mod compile;
+mod conditions;
+mod materialize;
 mod search;
+mod selection;
 mod state;
 mod telemetry;
+mod termination;
 
 pub use compile::BoundedPathProgram;
 pub use telemetry::{CheapestCostProjection, PathExecutionStats, PathObservation};
@@ -106,7 +112,17 @@ impl BoundedPathProgram<'_> {
             tx.batch_cancel(),
             MemoryBudget::unlimited(),
         );
+        let subqueries = crate::SubqueryRegistry::default();
+        let eval = super::EvalCtx {
+            tx,
+            expr_ids: &self.expr_ids,
+            subqueries: &subqueries,
+        };
+        let qualify = |state: &state::SearchState, entity: &selene_core::Value, phase| {
+            conditions::evaluate(self, state, entity, phase, &eval)
+        };
         let mut operator = ProductPathOperator::new(self, limits, BatchPolicy::default_policy());
+        operator.qualify = Some(&qualify);
         let table = trace_operator_to_table(&mut operator, &mut ctx)?;
         tx.note_result_rows(table.row_count())?;
         Ok(PathExecution {
@@ -129,6 +145,7 @@ pub(crate) struct ProductPathOperator<'a, 'p> {
     stats: PathExecutionStats,
     observations: Vec<PathObservation>,
     reserved: usize,
+    qualify: Option<&'a conditions::Qualifier<'a>>,
 }
 
 impl<'a, 'p> ProductPathOperator<'a, 'p> {
@@ -146,6 +163,7 @@ impl<'a, 'p> ProductPathOperator<'a, 'p> {
             stats: PathExecutionStats::default(),
             observations: Vec::new(),
             reserved: 0,
+            qualify: None,
         }
     }
 }
@@ -159,7 +177,7 @@ impl PhysicalOperator for ProductPathOperator<'_, '_> {
         }
         self.lifecycle = OperatorState::Failed;
         ctx.ensure_generation()?;
-        let result = search::execute(self.program, self.limits, ctx)?;
+        let result = search::execute(self.program, self.limits, ctx, self.qualify)?;
         self.stats = result.stats;
         self.observations = result.observations;
         self.reserved = result.reserved;
@@ -219,5 +237,9 @@ mod boundaries;
 mod differentials;
 #[cfg(test)]
 mod oracle;
+#[cfg(test)]
+mod selection_boundaries;
+#[cfg(test)]
+mod selector_tests;
 #[cfg(test)]
 mod tests;

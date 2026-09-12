@@ -17,12 +17,15 @@ pub struct BoundedPathProgram<'a> {
     pub(super) bindings: Vec<BindingId>,
     pub(super) schema: BindingTableSchema,
     pub(super) different_edges: bool,
+    pub(super) expr_ids: crate::analyze::ExprIdLookup,
 }
 
 pub(super) struct CompiledPath<'a> {
     pub(super) automaton: &'a PathAutomaton,
     pub(super) transitions: Vec<PathTransitionId>,
     pub(super) upper: u32,
+    pub(super) open: bool,
+    pub(super) conditions: Vec<super::conditions::Conditions>,
 }
 
 impl<'a> BoundedPathProgram<'a> {
@@ -30,8 +33,8 @@ impl<'a> BoundedPathProgram<'a> {
     ///
     /// # Errors
     /// Unsatisfiable bounds fail with an implementation-defined diagnostic.
-    /// Open bounds, selectors, predicates and path values are explicitly
-    /// unsupported at this seam. Malformed or mixed-clause IR never degrades.
+    /// Malformed or mixed-clause IR never degrades. Expression subqueries require
+    /// the statement integration owned by F05-PR04 and are rejected at this seam.
     pub fn compile(
         automata: &'a [PathAutomaton],
         analyzed: &AnalyzedStatement,
@@ -47,7 +50,9 @@ impl<'a> BoundedPathProgram<'a> {
                 columns: Vec::new(),
             },
             different_edges: mode == MatchMode::DifferentEdges,
+            expr_ids: analyzed.expr_ids.clone(),
         };
+        let clauses = crate::plan::logical::path::collect_match_clauses(analyzed);
         for (index, automaton) in automata.iter().enumerate() {
             if automaton.clause_index != first.clause_index
                 || automaton.pattern_index != index
@@ -57,16 +62,12 @@ impl<'a> BoundedPathProgram<'a> {
                     "bounded path program requires one complete MATCH clause",
                 ));
             }
-            if automaton.selector.selector.is_some() {
-                return Err(unsupported("product path selectors", automaton.origin));
-            }
-            if automaton.semantic.path_binding.is_some() {
-                return Err(unsupported(
-                    "product path value construction",
-                    automaton.origin,
-                ));
-            }
-            let path = validate(automaton)?;
+            let mut path = validate(automaton)?;
+            let source = clauses
+                .get(automaton.clause_index)
+                .and_then(|(_, clause)| clause.patterns.get(index))
+                .ok_or_else(|| invalid("product path source pattern missing"))?;
+            path.conditions = super::conditions::compile(source, automaton, analyzed)?;
             for binding in automaton.semantic.named_bindings() {
                 if program.bindings.contains(&binding) {
                     continue;
@@ -110,13 +111,11 @@ fn validate(automaton: &PathAutomaton) -> Result<CompiledPath<'_>, ExecutorError
     let mut transitions = Vec::new();
     let mut cursor = 0;
     let mut upper = 0u32;
+    let mut open = false;
     let mut temporary_slots = Vec::new();
     for (i, element) in elements.iter().enumerate() {
         let (scope, temporary, expected) = match element {
             PathSemanticElement::Node(node) if i % 2 == 0 => {
-                if !node.property_predicates.is_empty() || node.inline_where.is_some() {
-                    return Err(unsupported("product path predicates", node.origin));
-                }
                 if node.binding.is_some() == node.temporary.is_some() {
                     return Err(invalid(
                         "product path node exposure must identify one local",
@@ -131,9 +130,6 @@ fn validate(automaton: &PathAutomaton) -> Result<CompiledPath<'_>, ExecutorError
                 )
             }
             PathSemanticElement::Edge(edge) if i % 2 == 1 => {
-                if !edge.property_predicates.is_empty() || edge.inline_where.is_some() {
-                    return Err(unsupported("product path predicates", edge.origin));
-                }
                 if edge.orientation
                     != crate::acceptance_for(edge.orientation.declared, edge.orientation.origin)
                 {
@@ -186,8 +182,16 @@ fn validate(automaton: &PathAutomaton) -> Result<CompiledPath<'_>, ExecutorError
                             max,
                         )
                     }
-                    EdgeQuantifierKind::Unbounded { .. } => {
-                        return Err(unsupported("product path open bounds", edge.origin));
+                    EdgeQuantifierKind::Unbounded { min } if edge.exposure.is_group() => {
+                        open = true;
+                        (
+                            TransitionKind::QuantifiedEdge {
+                                test,
+                                min,
+                                max: None,
+                            },
+                            0,
+                        )
                     }
                     _ => return Err(invalid("product path quantifier exposure mismatch")),
                 };
@@ -222,6 +226,8 @@ fn validate(automaton: &PathAutomaton) -> Result<CompiledPath<'_>, ExecutorError
         automaton,
         transitions,
         upper,
+        open,
+        conditions: Vec::new(),
     })
 }
 
@@ -266,8 +272,4 @@ fn default_match_mode() -> Result<MatchMode, ExecutorError> {
 
 pub(super) fn invalid(detail: &'static str) -> ExecutorError {
     ExecutorError::ImplementationDefined { detail }
-}
-
-fn unsupported(feature: &'static str, span: crate::SourceSpan) -> ExecutorError {
-    ExecutorError::FeatureNotSupportedYet { feature, span }
 }

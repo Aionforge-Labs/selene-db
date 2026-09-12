@@ -31,6 +31,7 @@ pub mod automaton;
 mod builder;
 pub mod explain;
 mod gates;
+pub(crate) use gates::collect_match_clauses;
 pub mod inventory;
 pub mod limits;
 pub mod lowering;
