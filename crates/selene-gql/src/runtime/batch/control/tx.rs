@@ -1,4 +1,4 @@
-//! Transaction-control statement executor.
+//! Transaction services for physical controls; never owns a second writer.
 
 use crate::{
     SourceSpan, TxOp,

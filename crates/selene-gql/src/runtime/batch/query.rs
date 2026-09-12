@@ -5,8 +5,9 @@
 //! a pull-based operator tree and returns the materialized prefix table plus
 //! the pipeline index where row execution resumes. The plan runner executes
 //! any remaining (suffix) pipeline operators through the row dispatcher on
-//! that prefix table, so procedures, path operators, mutations, and every
-//! other not-yet-batched family keep their exact row behavior while already
+//! that prefix table. Mutations now drain it through the physical mutation
+//! barrier (F04-PR05); procedures, paths, and other not-yet-batched families
+//! keep their exact row behavior while already
 //! receiving batch-produced input through the stable [`BindingTable`]
 //! interface.
 //!

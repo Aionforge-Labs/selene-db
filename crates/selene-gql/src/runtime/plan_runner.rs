@@ -99,6 +99,11 @@ pub(crate) fn execute_plan_read_only_with_seed(
     seed: Option<BindingTable>,
     ctx: &TxContext<'_, '_>,
 ) -> Result<BindingTable, ExecutorError> {
+    // Authorize the whole physical plan before pulling input. In particular,
+    // an empty correlated input must not hide a nested procedure's write effect.
+    if crate::plan::classify_plan(plan).rejects_in_read_only() {
+        return Err(pipeline::read_only_write_op_error());
+    }
     // Same batch seam as the read-write path, resuming through the read-only
     // dispatcher so write-bearing suffix operators keep their read-only
     // rejection diagnostics.

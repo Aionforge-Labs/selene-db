@@ -206,7 +206,7 @@ pub(super) fn validate_default_value(
     ))
 }
 
-pub(in crate::runtime::pipeline::catalog) fn render_property_default_value(
+pub(in crate::runtime::batch::catalog) fn render_property_default_value(
     default: &PropertyDefaultValue,
 ) -> Result<String, ExecutorError> {
     match default {

@@ -1,4 +1,4 @@
-//! Mutation pipeline operator.
+//! Mutation kernels over one bounded input, using the shared graph mutator.
 
 use std::collections::BTreeSet;
 
