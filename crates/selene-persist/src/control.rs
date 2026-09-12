@@ -62,6 +62,9 @@ impl EmptyStoreControl {
         identity: CompatibilityIdentity,
     ) -> PersistResult<Self> {
         identity.validate()?;
+        crate::legacy_probe::reject(dir)?;
+        // Preflight before even creating LOCK. Repeat under the epoch below.
+        validate_directory(dir)?;
         let authority = StoreWriter::acquire(dir)?;
         let epoch = ManifestEpochGuard::acquire(&authority)?;
         let artifacts = validate_directory(dir)?;
@@ -95,6 +98,7 @@ impl EmptyStoreControl {
     /// Rejects absent, corrupt, mixed, foreign, or incompatible control and contention.
     pub fn open(dir: &StoreDirectory, expected: &CompatibilityIdentity) -> PersistResult<Self> {
         expected.validate()?;
+        crate::legacy_probe::reject(dir)?;
         let authority = StoreWriter::acquire(dir)?;
         let _epoch = PersistenceReadGuard::acquire_in(dir)?;
         let (manifest, selector) = read_state(dir, expected)?;

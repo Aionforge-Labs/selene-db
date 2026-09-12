@@ -1,15 +1,12 @@
 use std::collections::BTreeSet;
-use std::fs;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use proptest::prelude::*;
 use selene_core::{EdgeId, GraphId, LabelSet, NodeId, PropertyMap, db_string};
 
 use crate::candidate_set::{CandidateSet, Edge, Node};
 use crate::store::{EdgeRow, NodeRow};
-use crate::{
-    CandidateSetError, GraphError, SeleneGraph, SharedGraph, VectorCandidateSet, WalConfig,
-};
+use crate::{CandidateSetError, GraphError, SeleneGraph, SharedGraph, VectorCandidateSet};
 
 fn identity_graph(width: u32) -> SeleneGraph {
     let mut graph = SeleneGraph::new(GraphId::new(41));
@@ -644,27 +641,10 @@ fn non_remapping_rebuild_preserves_layout_and_generation() {
     let _ = after.union_candidates(&candidates, &candidates).unwrap();
 }
 
-fn recovery_dir(name: &str) -> std::path::PathBuf {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let path = std::env::temp_dir().join(format!(
-        "selene-candidate-{name}-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = fs::remove_dir_all(&path);
-    fs::create_dir_all(&path).unwrap();
-    path
-}
-
 #[test]
-fn recovery_remints_independent_layout_and_rebuilds_typed_maps() {
-    let dir = recovery_dir("remint");
+fn runtime_reattachment_remints_independent_layout_and_rebuilds_typed_maps() {
     let graph_id = GraphId::new(55);
-    let shared = SharedGraph::builder(graph_id)
-        .with_wal(dir.join(crate::DEFAULT_WAL_FILE_NAME), WalConfig::default())
-        .unwrap()
-        .build()
-        .unwrap();
+    let shared = SharedGraph::builder(graph_id).build().unwrap();
     let mut txn = shared.begin_write();
     txn.mutator()
         .create_node(LabelSet::new(), PropertyMap::new())
@@ -673,10 +653,10 @@ fn recovery_remints_independent_layout_and_rebuilds_typed_maps() {
     let before = shared.read();
     let candidates = before.live_node_candidates().unwrap();
     let generation = before.meta.generation;
+    let recovered = SharedGraph::try_from_graph(before.as_ref().clone()).unwrap();
     drop(before);
     drop(shared);
 
-    let recovered = SharedGraph::recover(&dir, graph_id).unwrap();
     let after = recovered.read();
     assert_eq!(after.meta.generation, generation);
     assert!(!candidates.shares_physical_layout_with(&after));
@@ -698,7 +678,6 @@ fn recovery_remints_independent_layout_and_rebuilds_typed_maps() {
     after.assert_indexes_consistent().unwrap();
     drop(after);
     drop(recovered);
-    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

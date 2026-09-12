@@ -27,14 +27,6 @@ impl IndexProvider for ReentrantProvider {
         self.tag
     }
 
-    fn read_section(&self, _sub_tag: SubTag, _bytes: &[u8]) -> Result<(), ProviderError> {
-        Ok(())
-    }
-
-    fn write_section(&self, _sub_tag: SubTag) -> Result<Vec<u8>, ProviderError> {
-        Ok(Vec::new())
-    }
-
     fn on_change(&self, _change: &Change) -> Result<(), ProviderError> {
         // begin_write() panics on this thread because the FanoutGuard is
         // active. The panic unwinds out of on_change before reaching the
@@ -46,10 +38,6 @@ impl IndexProvider for ReentrantProvider {
             *self.chained_count.lock() += 1;
         }
         Ok(())
-    }
-
-    fn declared_sub_tags(&self) -> &[SubTag] {
-        &[]
     }
 }
 
@@ -100,20 +88,8 @@ impl IndexProvider for PanickingProvider {
         self.tag
     }
 
-    fn read_section(&self, _sub_tag: SubTag, _bytes: &[u8]) -> Result<(), ProviderError> {
-        Ok(())
-    }
-
-    fn write_section(&self, _sub_tag: SubTag) -> Result<Vec<u8>, ProviderError> {
-        Ok(Vec::new())
-    }
-
     fn on_change(&self, _change: &Change) -> Result<(), ProviderError> {
         panic!("synthetic provider panic");
-    }
-
-    fn declared_sub_tags(&self) -> &[SubTag] {
-        &[]
     }
 }
 
@@ -157,21 +133,9 @@ impl IndexProvider for SlowProvider {
         self.tag
     }
 
-    fn read_section(&self, _sub_tag: SubTag, _bytes: &[u8]) -> Result<(), ProviderError> {
-        Ok(())
-    }
-
-    fn write_section(&self, _sub_tag: SubTag) -> Result<Vec<u8>, ProviderError> {
-        Ok(Vec::new())
-    }
-
     fn on_change(&self, _change: &Change) -> Result<(), ProviderError> {
         std::thread::sleep(self.hold);
         Ok(())
-    }
-
-    fn declared_sub_tags(&self) -> &[SubTag] {
-        &[]
     }
 }
 
@@ -248,21 +212,9 @@ impl IndexProvider for ConditionallyTagPanickingProvider {
         self.tag
     }
 
-    fn read_section(&self, _sub_tag: SubTag, _bytes: &[u8]) -> Result<(), ProviderError> {
-        Ok(())
-    }
-
-    fn write_section(&self, _sub_tag: SubTag) -> Result<Vec<u8>, ProviderError> {
-        Ok(Vec::new())
-    }
-
     fn on_change(&self, _change: &Change) -> Result<(), ProviderError> {
         *self.on_change_called.lock() = true;
         Ok(())
-    }
-
-    fn declared_sub_tags(&self) -> &[SubTag] {
-        &[]
     }
 }
 
@@ -340,14 +292,6 @@ impl IndexProvider for WatermarkCandidateProvider {
         ProviderTag(crate::CANDIDATE_STATE_PROVIDER_TAG)
     }
 
-    fn read_section(&self, _sub_tag: SubTag, _bytes: &[u8]) -> Result<(), ProviderError> {
-        Ok(())
-    }
-
-    fn write_section(&self, _sub_tag: SubTag) -> Result<Vec<u8>, ProviderError> {
-        Ok(Vec::new())
-    }
-
     fn on_change(&self, _change: &Change) -> Result<(), ProviderError> {
         self.changes_seen.fetch_add(1, Ordering::AcqRel);
         if self.fail_fanout {
@@ -403,10 +347,6 @@ impl IndexProvider for WatermarkCandidateProvider {
             exclude_outgoing: Vec::new(),
             exclude_incoming: Vec::new(),
         }])
-    }
-
-    fn declared_sub_tags(&self) -> &[SubTag] {
-        &[]
     }
 }
 

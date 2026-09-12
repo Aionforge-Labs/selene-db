@@ -8,7 +8,6 @@ use selene_gql::{
     StatementOutput, WarningSink, WriteOutcome, analyze, execute_statement, parse, plan,
 };
 use selene_graph::{GraphTypeDef, NodeTypeDef, SharedGraph, ValidationMode};
-use selene_persist::{DEFAULT_WAL_FILE_NAME, WalConfig};
 
 fn db_string(value: &str) -> selene_core::DbString {
     selene_core::db_string(value).expect("test string fits DB string cap")
@@ -401,23 +400,6 @@ fn commit_with_zero_changes_returns_written() {
     assert!(outcome.changes.is_empty());
     assert_eq!(outcome.generation, 1);
     assert!(!session.has_active_txn());
-}
-
-#[test]
-fn write_outcome_durable_at_some_for_with_wal_and_flush_returns_sequence() {
-    let dir = tempfile::tempdir().unwrap();
-    let graph = SharedGraph::builder(GraphId::new(3820))
-        .with_wal(dir.path().join(DEFAULT_WAL_FILE_NAME), WalConfig::default())
-        .unwrap()
-        .build()
-        .unwrap();
-    let mut session = Session::new(&graph);
-
-    let outcome =
-        written(execute("INSERT (n:Person) FINISH", &mut session).expect("insert executes"));
-
-    assert_eq!(outcome.durable_at, Some(1));
-    assert_eq!(session.flush().expect("flush succeeds"), Some(1));
 }
 
 #[test]

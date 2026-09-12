@@ -353,51 +353,32 @@ pub enum GraphError {
     ///
     /// # When it is raised
     ///
-    /// Every commit error-acked on a committer poison exit, because in each
-    /// case the WAL bytes can outlive the failure:
-    ///
-    /// - a partial-batch append failure error-acks the run members appended
-    ///   before it, whose records are already written;
-    /// - a group-flush failure error-acks the whole run, and a failed `fsync`
-    ///   does not imply the data is absent from stable storage;
-    /// - a publish-tail panic after a *successful* group flush error-acks
-    ///   commits that are unambiguously durable and merely unpublished.
-    ///
-    /// And every checkpoint failure that poisons the committer — anything in
-    /// the watermark/rotation phase other than a verified artifact collision.
-    /// By then `append_checkpoint_watermark_record` has already consumed a
-    /// physical sequence, so the engine cannot prove which side of the MANIFEST
-    /// commit point it reached: the new epoch may or may not be published.
-    /// Preparation failures happen before any of that and stay their own typed
-    /// errors, as does the artifact collision, which leaves the active epoch
-    /// unchanged and the writer usable.
-    ///
-    /// The committer-managed WAL runs under
-    /// [`SyncPolicy::OnFlushOnly`](selene_persist::SyncPolicy), so an appended
-    /// record is a complete, checksum-valid frame in the page cache. Reopening
-    /// does not discard it — only losing the page cache does. Recovery's tail
-    /// repair truncates a torn tail, and such a frame is not torn.
+    /// Every commit error-acked on a committer poison exit. The graph
+    /// committer is an in-memory snapshot publisher: a poison exit means a
+    /// sealed publication panicked or failed while the committer held it, so
+    /// the engine cannot prove which side of the publication point the new
+    /// snapshot reached. A later seal may already contain the same mutation,
+    /// so the committer never attempts a selective rollback or publishes a
+    /// later divergent snapshot.
     ///
     /// # This over-approximates, deliberately
     ///
-    /// Some commits error-acked this way genuinely left nothing behind — an
-    /// append that failed on the first durable provider of a one-member run,
-    /// for instance, wrote no WAL record at all. They are reported as unknown
-    /// anyway, because the committer cannot tell them apart from the members
-    /// that did write: there is no flushed-offset watermark to compare against.
+    /// Some commits error-acked this way genuinely left nothing behind. They
+    /// are reported as unknown anyway, because the committer cannot tell them
+    /// apart from the ones that did publish: there is no published-offset
+    /// watermark to compare against.
     ///
     /// Over-reporting costs a caller one needless read-back after the reopen.
-    /// Under-reporting causes a double-apply. Adding that watermark, and
-    /// truncating to it on the poison exit, would make the appended-not-flushed
-    /// cases genuinely canceled and let them report a definite `40000`; the
-    /// publish-tail-panic case is durable and stays `40003` regardless.
+    /// Under-reporting causes a double-apply.
     ///
     /// # What a caller must do
     ///
-    /// Treat the work as unknown. Quiesce, drop the handle, reopen through
-    /// [`crate::SharedGraph::recover`], read back to determine whether it
-    /// landed, and only then decide whether to retry. Retrying blind
-    /// double-applies. [`GraphError::requires_reopen`] is the supported test.
+    /// Treat the work as unknown. Quiesce, drop the handle, reopen through the
+    /// owning database handle (the `selene-db` facade owns durable open and
+    /// recovery; there is no in-graph recover entry point), read back to
+    /// determine whether it landed, and only then decide whether to retry.
+    /// Retrying blind double-applies. [`GraphError::requires_reopen`] is the
+    /// supported test.
     #[error("outcome is indeterminate; reopen and reconcile: {reason}")]
     #[diagnostic(code(SLENE_G_029))]
     IndeterminateOutcome {
@@ -423,7 +404,7 @@ pub enum GraphError {
     /// is the operation that reads an existing store.
     #[error(
         "{path} already holds a committed store ({evidence}); \
-         use SharedGraph::recover to open it"
+         reopen it through its owning database handle"
     )]
     #[diagnostic(code(SLENE_G_028))]
     ExistingStore {
@@ -452,7 +433,7 @@ pub enum GraphError {
 
 impl GraphError {
     /// Whether this error means the graph handle is unusable and the caller
-    /// must reopen through [`crate::SharedGraph::recover`] before trusting or
+    /// must reopen through the owning database handle before trusting or
     /// retrying anything.
     ///
     /// The supported test for the condition, in preference to matching a
@@ -629,7 +610,10 @@ mod tests {
         GraphError::Provider(ProviderError::Inconsistent { reason: "duplicate provider tag DEMO".to_owned() }),
         "5GQL0"
     )]
-    #[case(GraphError::Persist(PersistError::MalformedSnapshotFilename), "5GQL0")]
+    #[case(
+        GraphError::Persist(PersistError::Control(selene_persist::ControlError::Checksum)),
+        "5GQL0"
+    )]
     fn gqlstatus_for_each_variant(#[case] error: GraphError, #[case] status: &str) {
         assert_eq!(error.gqlstatus(), status);
         assert!(
@@ -782,9 +766,6 @@ mod tests {
 
         let provider_errors: Vec<ProviderError> = vec![
             ProviderError::InvalidPayload {
-                reason: "x".to_owned(),
-            },
-            ProviderError::SerializationFailed {
                 reason: "x".to_owned(),
             },
             ProviderError::Inconsistent {

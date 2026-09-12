@@ -44,14 +44,6 @@ selene-testing = { package = "selene-db-testing", path = "../selene-testing" }
 serde_json.workspace = true
 
 [[bench]]
-name = "wal"
-harness = false
-
-[[bench]]
-name = "snapshot"
-harness = false
-
-[[bench]]
 name = "store_control"
 harness = false
 

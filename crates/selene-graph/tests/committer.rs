@@ -7,20 +7,15 @@
 //! ids stay monotonic in commit order, compaction serializes with commits, and a
 //! committer that panics fails every waiter cleanly rather than hanging.
 
-use std::fs;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
-use selene_core::{
-    Change, DbString, GraphId, LabelSet, NodeId, PropertyMap, PropertyValueType, Value,
-};
+use selene_core::{Change, DbString, GraphId, LabelSet, PropertyMap, PropertyValueType, Value};
 use selene_graph::{
     GraphError, GraphTypeDef, NodeTypeDef, PropertyTypeDef, SharedGraph, ValidationMode,
 };
-use selene_persist::{DEFAULT_WAL_FILE_NAME, WalConfig};
 
 fn db_string(value: &str) -> DbString {
     selene_core::db_string(value).expect("test string fits DB string cap")
@@ -28,20 +23,6 @@ fn db_string(value: &str) -> DbString {
 
 fn prop(name: &str, value: Value) -> PropertyMap {
     PropertyMap::from_pairs([(db_string(name), value)]).expect("valid property map")
-}
-
-fn temp_dir(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "selene-committer-{name}-{}-{nanos}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir(&dir).unwrap();
-    dir
 }
 
 /// A closed-graph type requiring a non-null `name` on `Person` nodes, so an
@@ -261,57 +242,7 @@ fn abort_isolation_does_not_leak_into_next_commit() {
 }
 
 #[test]
-fn durable_commit_is_recoverable_proving_wal_first() {
-    // The single durability test now proves durable-BEFORE-visible by actually
-    // reopening from the WAL: a commit that returned Ok (durable_at == Some(1))
-    // must be present after recovery, proving the committer's `write_commit`
-    // really persisted the entry before publishing (WAL-first), not just bumped
-    // an in-memory sequence counter.
-    let dir = temp_dir("durable-seq");
-    let wal_path = dir.join(DEFAULT_WAL_FILE_NAME);
-    let graph_id = GraphId::new(1_006);
-    let id;
-    {
-        let shared = SharedGraph::builder(graph_id)
-            .with_wal(&wal_path, WalConfig::default())
-            .unwrap()
-            .build()
-            .unwrap();
-
-        let mut txn = shared.begin_write();
-        id = txn
-            .mutator()
-            .create_node(LabelSet::new(), PropertyMap::new())
-            .unwrap();
-        let outcome = txn.commit().unwrap();
-
-        assert_eq!(id, NodeId::new(1));
-        // durable_at is only delivered after the committer's WAL append.
-        assert_eq!(outcome.durable_at, Some(1));
-        // Drop the graph: joins the committer thread and closes the WAL.
-    }
-
-    // Reopen from the WAL alone. If `write_commit` had not actually persisted
-    // the entry before publishing, the node would be absent here.
-    let recovered = SharedGraph::recover(&dir, graph_id).expect("recover from WAL");
-    assert!(
-        recovered.read().is_node_alive(id),
-        "the acked commit was actually persisted to the WAL (durable-before-visible)",
-    );
-    assert_eq!(recovered.read().node_count(), 1);
-}
-
-#[test]
-fn concurrent_commits_persist_a_gapfree_durable_sequence() {
-    // P1 (highest-value missing test): make publish/durable order observable.
-    // N threads each fire a burst of WAL-backed commits; collect every returned
-    // `durable_at`. The single committer appends in seal-sequence order, so the
-    // returned sequences must be EXACTLY 1..=total with no gaps or duplicates —
-    // a reordering / dropping / double-appending committer would violate this.
-    // Then reopen from the WAL and assert every node is recovered, proving the
-    // sequences correspond to real persisted entries.
-    let dir = temp_dir("durable-order");
-    let wal_path = dir.join(DEFAULT_WAL_FILE_NAME);
+fn concurrent_memory_commits_publish_gapfree_generations() {
     let graph_id = GraphId::new(1_009);
     let threads: usize = 8;
     let per: usize = 25;
@@ -320,14 +251,9 @@ fn concurrent_commits_persist_a_gapfree_durable_sequence() {
     let seqs = Arc::new(std::sync::Mutex::new(Vec::<u64>::with_capacity(
         total as usize,
     )));
+    let snapshot;
     {
-        let shared = Arc::new(
-            SharedGraph::builder(graph_id)
-                .with_wal(&wal_path, WalConfig::default())
-                .unwrap()
-                .build()
-                .unwrap(),
-        );
+        let shared = Arc::new(SharedGraph::new(graph_id));
         let barrier = Arc::new(Barrier::new(threads));
         let mut handles = Vec::new();
         for _ in 0..threads {
@@ -342,9 +268,7 @@ fn concurrent_commits_persist_a_gapfree_durable_sequence() {
                         .create_node(LabelSet::single(db_string("D")), PropertyMap::new())
                         .unwrap();
                     let outcome = txn.commit().unwrap();
-                    let seq = outcome
-                        .durable_at
-                        .expect("WAL-backed commit has a sequence");
+                    let seq = outcome.generation;
                     seqs.lock().unwrap().push(seq);
                 }
             }));
@@ -353,21 +277,19 @@ fn concurrent_commits_persist_a_gapfree_durable_sequence() {
             h.join().expect("no writer panicked");
         }
         assert_eq!(shared.read().node_count() as u64, total);
+        snapshot = shared.read();
     }
 
-    // The durable sequences returned to waiters are exactly 1..=total, gap-free
-    // and duplicate-free: the single committer assigned them in a strict total
-    // order. (A committer that reordered, dropped, or re-acked publishes would
-    // produce a gap or a duplicate here.)
+    // Generations are assigned in seal order, without loss or duplicate replies.
     let mut sorted = seqs.lock().unwrap().clone();
     sorted.sort_unstable();
     let expected: Vec<u64> = (1..=total).collect();
-    assert_eq!(sorted, expected, "durable sequences are gap-free 1..=total");
+    assert_eq!(
+        sorted, expected,
+        "published generations are gap-free 1..=total"
+    );
 
-    // Every persisted entry recovers — the sequences are backed by real WAL
-    // records, not just an advancing in-memory counter.
-    let recovered = SharedGraph::recover(&dir, graph_id).expect("recover from WAL");
-    assert_eq!(recovered.read().node_count() as u64, total);
+    assert_eq!(snapshot.node_count() as u64, total);
 }
 
 #[test]
@@ -628,13 +550,7 @@ fn dropping_shared_graph_terminates_the_committer_promptly() {
     // gone first (they borrow &SharedGraph, so they are). Pin that the join
     // returns within a bounded deadline — a future change that let a submit
     // handle escape to a 'static owner would wedge this drop in join() forever.
-    let dir = temp_dir("shutdown");
-    let wal_path = dir.join(DEFAULT_WAL_FILE_NAME);
-    let shared = SharedGraph::builder(GraphId::new(1_016))
-        .with_wal(&wal_path, WalConfig::default())
-        .unwrap()
-        .build()
-        .unwrap();
+    let shared = SharedGraph::new(GraphId::new(1_016));
     {
         let mut txn = shared.begin_write();
         txn.mutator()

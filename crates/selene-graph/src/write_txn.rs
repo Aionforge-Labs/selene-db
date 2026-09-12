@@ -18,10 +18,7 @@ use crate::type_validator::TypeWarning;
 
 mod pipeline;
 
-pub(crate) use pipeline::{AppendedCommit, append_sealed, flush_durables, publish_appended};
-
-#[cfg(test)]
-pub(crate) use pipeline::publish_panic_inject;
+pub(crate) use pipeline::publish_sealed;
 
 /// Non-fatal graph commit warning.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,9 +34,11 @@ pub struct CommitOutcome {
     pub generation: u64,
     /// Changes produced by the mutation funnel.
     pub changes: Vec<Change>,
-    /// Opaque caller-supplied principal bytes for future WAL headers.
+    /// Opaque caller-supplied principal bytes carried with the commit.
     pub principal: Option<Arc<[u8]>>,
-    /// Highest durable sequence assigned by commit-critical providers.
+    /// Durable-sequence slot; always `None` from the in-graph publisher.
+    /// Sequence assignment below the graph layer is the owning database
+    /// handle's authority.
     pub durable_at: Option<u64>,
     /// Next node ID after commit.
     pub next_node_id: u64,
@@ -133,10 +132,11 @@ const _: fn() = || {
 /// validation have run under the write lock on the session thread (so error
 /// timing is unchanged), and after the lock + allocator guards have been
 /// released. It contains the fully-built next snapshot plus everything the
-/// committer needs to run the durable+publish tail — **no guards, no graph
+/// committer needs to run the publish tail — **no guards, no graph
 /// reference, no borrow**. The committer never re-validates, re-allocates ids,
-/// or re-applies a change list; it just stamps the HLC, appends to the WAL,
-/// publishes the frozen snapshot, and bumps the schema epoch.
+/// or re-applies a change list; it just stamps the HLC, publishes the frozen
+/// snapshot, and bumps the schema epoch. Durability below this layer is the
+/// owning database handle's authority, not the committer's.
 ///
 /// The HLC timestamp is deliberately **not** stamped here: the committer stamps
 /// it per bundle in **seal-sequence** drain order so HLC is monotonic in commit
@@ -159,17 +159,19 @@ const _: fn() = || {
 /// same counter under the same lock, so a compact can never be reordered ahead
 /// of an earlier-sealed commit.
 pub(crate) struct SealedCommit {
+    #[cfg(test)]
+    pub(crate) fail_publish: bool,
     /// Strictly-monotonic publish-order key, allocated under the write lock in
     /// [`WriteTxn::seal`]. The committer publishes in ascending `seal_seq`.
     pub(crate) seal_seq: u64,
     /// Fully-built next snapshot, frozen under the session's write lock.
     pub(crate) next_snapshot: Arc<SeleneGraph>,
-    /// Persisted change list (the WAL/changeset payload).
+    /// Validated change list carried for provider fan-out and outcome reporting.
     pub(crate) changes: Vec<Change>,
     /// Truncate-expanded fan-out view, built on the session thread, or `None`
     /// when no truncate/reset expansion is staged (the common path).
     pub(crate) fanout_changes: Option<Vec<Change>>,
-    /// Opaque caller-supplied principal bytes for the WAL entry header (D12).
+    /// Opaque caller-supplied principal bytes carried with the commit.
     pub(crate) principal: Option<Arc<[u8]>>,
     /// Whether the change list bumps the schema epoch.
     pub(crate) schema_changed: bool,
@@ -270,15 +272,16 @@ impl<'g> WriteTxn<'g> {
         self.commit_with_principal(None)
     }
 
-    /// Commit with optional caller-owned principal bytes for D12 audit replay.
+    /// Commit with optional caller-owned principal bytes.
     ///
     /// Since v1.2 (BRIEF 1) commit is **seal-and-handover**: this method runs
     /// `seal` on the calling thread (generation/meta bump + GG02
     /// validation under the write lock, then **lock release**), then submits the
     /// resulting `SealedCommit` to the per-graph single committer thread and
-    /// blocks until it is durable + visible. The public contract is unchanged —
-    /// "`commit()` returns ⇒ durable + visible" — only the internal threading
-    /// model differs.
+    /// blocks until it is published + visible. The public contract is unchanged —
+    /// "`commit()` returns ⇒ published + visible" — only the internal threading
+    /// model differs. Durability below the graph layer is the owning database
+    /// handle's authority.
     ///
     /// GG02 closed-graph violations still abort here, on the calling thread,
     /// before any handoff, so error timing is identical to v1.0/v1.1.
@@ -295,17 +298,17 @@ impl<'g> WriteTxn<'g> {
     /// # Errors
     ///
     /// Returns the GG02 / validation error from `seal` — a definite rejection,
-    /// nothing was written — or, once the commit has reached the durable path,
-    /// [`GraphError::IndeterminateOutcome`].
+    /// nothing was written — or, once the commit has been handed to the
+    /// committer, [`GraphError::IndeterminateOutcome`].
     ///
     /// **An `Err` from this method does not mean "the transition did not
     /// happen."** Past `seal` the engine cannot promise ISO §8.4 GR 1)b)'s "any
-    /// changes ... are canceled": the WAL bytes may already be written, or
-    /// written and fsynced, and a reopen replays them. Treat
-    /// [`GraphError::IndeterminateOutcome`] as an outcome of unknown durability
-    /// — quiesce, reopen through [`crate::SharedGraph::recover`], read back to
-    /// see whether it landed, and only then decide whether to retry. Retrying
-    /// blind double-applies. See that variant for the full contract.
+    /// changes ... are canceled": the snapshot may already be published.
+    /// Treat [`GraphError::IndeterminateOutcome`] as an outcome of unknown
+    /// publication — quiesce, drop the handle and reopen through the owning
+    /// database handle, read back to see whether it landed, and only then
+    /// decide whether to retry. Retrying blind double-applies. See that
+    /// variant for the full contract.
     #[tracing::instrument(
         name = "selene.graph.commit",
         skip(self, principal),
@@ -411,6 +414,8 @@ impl<'g> WriteTxn<'g> {
         self.pre_txn = None;
 
         Ok(SealedCommit {
+            #[cfg(test)]
+            fail_publish: false,
             seal_seq,
             next_snapshot: prepared.next_snapshot,
             changes: prepared.changes,

@@ -18,12 +18,8 @@ fn names_are_rejected_before_any_child_side_effect() {
             dir.create_new(path),
             Err(PersistError::Directory(DirectoryError::InvalidName(_)))
         ));
-        assert!(matches!(
-            crate::WalWriter::open_in(&dir, path, crate::WalConfig::default()),
-            Err(PersistError::Directory(DirectoryError::InvalidName(_)))
-        ));
         assert!(dir.rename(path, Path::new("valid")).is_err());
-        assert!(dir.hard_link(Path::new("valid"), path).is_err());
+        assert!(dir.publish_new(Path::new("valid"), path).is_err());
         assert!(dir.remove(path).is_err());
     }
     assert!(dir.entries().unwrap().is_empty());
@@ -137,7 +133,8 @@ fn directory_aliases_and_clones_share_one_nonreentrant_writer_domain() {
         ));
         assert!(dir.rename(Path::new("artifact"), Path::new(name)).is_err());
         assert!(
-            crate::WalWriter::open_in(&dir, Path::new(name), crate::WalConfig::default()).is_err()
+            dir.publish_new(Path::new("artifact"), Path::new(name))
+                .is_err()
         );
     }
 }

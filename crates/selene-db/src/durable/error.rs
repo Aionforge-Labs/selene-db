@@ -134,6 +134,7 @@ impl StorageError {
             PersistError::Io(e) if e.kind() == std::io::ErrorKind::NotFound => K::MissingArtifact,
             PersistError::Io(_) => K::Io,
             PersistError::WriterLockHeld => K::Contention,
+            PersistError::UnsupportedVersion { .. } => K::UnsupportedFormat,
             PersistError::Directory(DirectoryError::UnsupportedPlatform) => K::UnsupportedPlatform,
             PersistError::Directory(
                 DirectoryError::NotRegular(_) | DirectoryError::InvalidName(_),

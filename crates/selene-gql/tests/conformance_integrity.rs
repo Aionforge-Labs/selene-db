@@ -176,8 +176,7 @@ fn sql_drift_status_remaps_are_registered() {
         "5GQL0"
     );
     assert_eq!(
-        PersistError::PrincipalTooLarge { len: 2, max: 1 }.gqlstatus(),
-        "22G03"
+        PersistError::Control(selene_persist::ControlError::Checksum).gqlstatus(),
+        "5GQL0"
     );
-    assert_eq!(PersistError::MalformedSnapshotFilename.gqlstatus(), "5GQL0");
 }

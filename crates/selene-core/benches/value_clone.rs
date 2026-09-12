@@ -21,7 +21,11 @@ mod vector;
 use std::hint::black_box;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use selene_core::{LabelDiff, LabelSet, PropertyDiff, PropertyMap, Value, VectorValue, db_string};
+use selene_core::logical::{Encoder, GraphDelta};
+use selene_core::{
+    Change, GraphId, LabelDiff, LabelSet, NodeId, PropertyDiff, PropertyMap, Value, VectorValue,
+    db_string,
+};
 
 const N: usize = 1_024;
 
@@ -36,6 +40,54 @@ fn bench_config() -> Criterion {
         .sample_size(samples)
         .warm_up_time(std::time::Duration::from_millis(100))
         .measurement_time(std::time::Duration::from_millis(ms))
+}
+
+fn encode_map_delta(map: &PropertyMap) -> GraphDelta {
+    GraphDelta {
+        id: GraphId::new(1),
+        previous: None,
+        generation: 1,
+        next_node_id: 100,
+        next_edge_id: 100,
+        definition: None,
+        backing_indexes: vec![],
+        changes: vec![Change::NodeCreated {
+            id: NodeId::new(1),
+            labels: LabelSet::new(),
+            properties: map.clone(),
+        }],
+    }
+}
+
+fn encode_map_logical(map: &PropertyMap) -> Vec<u8> {
+    let delta = encode_map_delta(map);
+    let mut encoder = Encoder::new(Default::default()).expect("logical encoder fits limits");
+    delta.encode(&mut encoder).expect("map encodes");
+    encoder.finish()
+}
+
+fn encode_diff_delta(diff: &PropertyDiff) -> GraphDelta {
+    GraphDelta {
+        id: GraphId::new(1),
+        previous: None,
+        generation: 1,
+        next_node_id: 100,
+        next_edge_id: 100,
+        definition: None,
+        backing_indexes: vec![],
+        changes: vec![Change::NodeUpdated {
+            id: NodeId::new(1),
+            labels_diff: LabelDiff::new([], []).expect("empty label diff is valid"),
+            properties_diff: diff.clone(),
+        }],
+    }
+}
+
+fn encode_diff_logical(diff: &PropertyDiff) -> Vec<u8> {
+    let delta = encode_diff_delta(diff);
+    let mut encoder = Encoder::new(Default::default()).expect("logical encoder fits limits");
+    delta.encode(&mut encoder).expect("diff encodes");
+    encoder.finish()
 }
 
 fn span() -> jiff::Span {
@@ -222,10 +274,8 @@ fn bench_value_clone(c: &mut Criterion) {
     });
 
     let compact_map = single_compact_property_map();
-    group.bench_function("property_map_compact_postcard_encode_1", |b| {
-        b.iter(|| {
-            postcard::to_allocvec(black_box(&compact_map)).expect("compact property map serializes")
-        });
+    group.bench_function("property_map_compact_logical_encode_1", |b| {
+        b.iter(|| encode_map_logical(black_box(&compact_map)));
     });
 
     let pairs = wide_property_pairs(256);
@@ -245,11 +295,8 @@ fn bench_value_clone(c: &mut Criterion) {
     });
     let standard_map_256 =
         PropertyMap::from_pairs(sorted_pairs.iter().cloned()).expect("property map fits core caps");
-    group.bench_function("property_map_standard_postcard_encode_256", |b| {
-        b.iter(|| {
-            postcard::to_allocvec(black_box(&standard_map_256))
-                .expect("standard property map serializes")
-        });
+    group.bench_function("property_map_standard_logical_encode_256", |b| {
+        b.iter(|| encode_map_logical(black_box(&standard_map_256)));
     });
     let (compact_keys, compact_values) = wide_compact_key_values(256);
     group.bench_function("property_map_compact_256_reverse", |b| {
@@ -276,11 +323,8 @@ fn bench_value_clone(c: &mut Criterion) {
         compact_values_sorted.iter().cloned(),
     )
     .expect("compact property map fits core caps");
-    group.bench_function("property_map_compact_postcard_encode_256", |b| {
-        b.iter(|| {
-            postcard::to_allocvec(black_box(&compact_map_256))
-                .expect("compact property map serializes")
-        });
+    group.bench_function("property_map_compact_logical_encode_256", |b| {
+        b.iter(|| encode_map_logical(black_box(&compact_map_256)));
     });
 
     group.finish();
@@ -359,10 +403,8 @@ fn bench_change_diff(c: &mut Criterion) {
     });
     let property_diff_256 =
         PropertyDiff::new(sorted_pairs.iter().cloned(), []).expect("wide property diff is valid");
-    group.bench_function("property_diff_postcard_encode_256_sorted", |b| {
-        b.iter(|| {
-            postcard::to_allocvec(black_box(&property_diff_256)).expect("property diff serializes")
-        });
+    group.bench_function("property_diff_logical_encode_256_sorted", |b| {
+        b.iter(|| encode_diff_logical(black_box(&property_diff_256)));
     });
 
     group.throughput(Throughput::Elements(100));

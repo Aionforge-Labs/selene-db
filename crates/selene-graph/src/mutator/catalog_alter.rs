@@ -158,14 +158,13 @@ fn merge_added_node_property(
     }
     crate::type_validator::validate_property_default(&property)?;
     let encoded = core_property_def(&property)?;
-    let decoded = crate::core_provider::decode_schema_property(&encoded).map_err(|error| {
-        GraphError::Inconsistent {
+    let decoded =
+        super::schema_event::property(&encoded).map_err(|error| GraphError::Inconsistent {
             reason: format!(
                 "ALTER NODE TYPE :{node_type} property {} cannot be represented durably: {error}",
                 property.name
             ),
-        }
-    })?;
+        })?;
     if decoded != property {
         return Err(GraphError::Inconsistent {
             reason: format!(
@@ -209,14 +208,13 @@ fn merge_added_edge_property(
     }
     crate::type_validator::validate_property_default(&property)?;
     let encoded = core_property_def(&property)?;
-    let decoded = crate::core_provider::decode_schema_property(&encoded).map_err(|error| {
-        GraphError::Inconsistent {
+    let decoded =
+        super::schema_event::property(&encoded).map_err(|error| GraphError::Inconsistent {
             reason: format!(
                 "ALTER EDGE TYPE :{edge_type} property {} cannot be represented durably: {error}",
                 property.name
             ),
-        }
-    })?;
+        })?;
     if decoded != property {
         return Err(GraphError::Inconsistent {
             reason: format!(
@@ -245,7 +243,7 @@ fn encode_changed_endpoint(
         return Ok(None);
     }
     let encoded = core_edge_endpoint_def(graph_type, edge_type.clone(), &next)?;
-    let decoded = crate::core_provider::decode_schema_edge_endpoint(graph_type, &encoded, role)
+    let decoded = super::schema_event::endpoint(graph_type, &encoded, role)
         .map_err(|error| GraphError::Inconsistent {
             reason: format!(
                 "ALTER EDGE TYPE :{edge_type} {role} endpoint cannot be represented durably: {error}"

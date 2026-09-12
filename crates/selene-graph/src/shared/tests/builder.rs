@@ -4,24 +4,12 @@ use super::*;
 fn builder_constructs_empty_graph() {
     let shared = SharedGraph::builder(GraphId::new(1)).build().unwrap();
     assert_eq!(shared.read().meta.graph_id, GraphId::new(1));
-    assert_eq!(
-        shared.providers[0].provider_tag(),
-        ProviderTag(CORE_PROVIDER_TAG)
-    );
+    assert!(shared.providers.is_empty());
 }
 
 #[test]
-fn durable_write_failure_rolls_back_in_memory_state() {
-    let durable: Arc<dyn DurableProvider> = Arc::new(FailingDurableProvider);
-    let shared = SharedGraph::from_graph_with_core_and_durables(
-        SeleneGraph::new(GraphId::new(1)),
-        Vec::new(),
-        vec![durable],
-        None,
-        None,
-        crate::committer_batch::CommitBatching::Off,
-    )
-    .unwrap();
+fn publication_failure_does_not_publish_in_memory_state() {
+    let shared = SharedGraph::new(GraphId::new(1));
     let mut txn = shared.begin_write();
     {
         let mut mutator = txn.mutator();
@@ -33,10 +21,12 @@ fn durable_write_failure_rolls_back_in_memory_state() {
             .unwrap();
     }
 
+    let mut sealed = txn.seal(None, None).unwrap();
+    sealed.fail_publish = true;
     assert!(matches!(
-        txn.commit(),
+        shared.submit_sealed_for_test(sealed),
         Err(GraphError::IndeterminateOutcome { reason })
-            if reason.contains("synthetic durable failure")
+            if reason.contains("synthetic memory publication failure")
     ));
     assert_eq!(shared.read().node_count(), 0);
 }
@@ -72,12 +62,8 @@ fn builder_with_two_providers_preserves_registration_order() {
         .with_provider(second)
         .build()
         .unwrap();
-    assert_eq!(
-        shared.providers[0].provider_tag(),
-        ProviderTag(CORE_PROVIDER_TAG)
-    );
-    assert_eq!(shared.providers[1].provider_tag(), ProviderTag(*b"ONE1"));
-    assert_eq!(shared.providers[2].provider_tag(), ProviderTag(*b"TWO2"));
+    assert_eq!(shared.providers[0].provider_tag(), ProviderTag(*b"ONE1"));
+    assert_eq!(shared.providers[1].provider_tag(), ProviderTag(*b"TWO2"));
 }
 
 #[test]
@@ -118,31 +104,19 @@ fn from_graph_with_providers_validates_uniqueness() {
 }
 
 #[test]
-fn public_constructors_auto_register_core_provider() {
+fn public_memory_constructors_do_not_register_persistence_providers() {
     let from_new = SharedGraph::new(GraphId::new(1));
     let from_graph = SharedGraph::from_graph(SeleneGraph::new(GraphId::new(2)));
-    assert!(
-        from_new
-            .index_provider_by_tag(ProviderTag(CORE_PROVIDER_TAG))
-            .is_some()
-    );
-    assert!(
-        from_graph
-            .index_provider_by_tag(ProviderTag(CORE_PROVIDER_TAG))
-            .is_some()
-    );
+    assert!(from_new.index_providers().is_empty());
+    assert!(from_graph.index_providers().is_empty());
 }
 
 #[test]
-fn user_registered_core_tag_is_rejected() {
+fn observer_tag_has_no_implicit_persistence_registration() {
     let result = SharedGraph::builder(GraphId::new(1))
-        .with_provider(Arc::new(TestProvider::new(ProviderTag(CORE_PROVIDER_TAG))))
+        .with_provider(Arc::new(TestProvider::new(ProviderTag(*b"CORE"))))
         .build();
-    assert!(matches!(
-        result,
-        Err(GraphError::Provider(ProviderError::Inconsistent { reason }))
-            if reason.contains("duplicate provider tag CORE")
-    ));
+    assert!(result.is_ok());
 }
 
 #[test]

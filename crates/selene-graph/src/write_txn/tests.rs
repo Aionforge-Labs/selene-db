@@ -5,7 +5,7 @@ use selene_core::{Change, GraphId, LabelSet, NodeId, PropertyMap, PropertyValueT
 
 use crate::{
     GraphTypeDef, IndexProvider, NodeTypeDef, PropertyTypeDef, ProviderError, ProviderTag,
-    SharedGraph, SubTag, ValidationMode,
+    SharedGraph, ValidationMode,
 };
 
 fn db_string(value: &str) -> selene_core::DbString {
@@ -86,14 +86,6 @@ impl IndexProvider for PanicOnSecondChangeProvider {
         self.tag
     }
 
-    fn read_section(&self, _sub_tag: SubTag, _bytes: &[u8]) -> Result<(), ProviderError> {
-        Ok(())
-    }
-
-    fn write_section(&self, _sub_tag: SubTag) -> Result<Vec<u8>, ProviderError> {
-        Ok(Vec::new())
-    }
-
     fn on_change(&self, change: &Change) -> Result<(), ProviderError> {
         self.seen.lock().push((self.tag, change.clone()));
         let mut calls = self.calls.lock();
@@ -101,23 +93,11 @@ impl IndexProvider for PanicOnSecondChangeProvider {
         assert_ne!(*calls, 2, "synthetic provider panic on the second change");
         Ok(())
     }
-
-    fn declared_sub_tags(&self) -> &[SubTag] {
-        &[]
-    }
 }
 
 impl IndexProvider for RecordingProvider {
     fn provider_tag(&self) -> ProviderTag {
         self.tag
-    }
-
-    fn read_section(&self, _sub_tag: SubTag, _bytes: &[u8]) -> Result<(), ProviderError> {
-        Ok(())
-    }
-
-    fn write_section(&self, _sub_tag: SubTag) -> Result<Vec<u8>, ProviderError> {
-        Ok(Vec::new())
     }
 
     fn on_change(&self, change: &Change) -> Result<(), ProviderError> {
@@ -129,10 +109,6 @@ impl IndexProvider for RecordingProvider {
         } else {
             Ok(())
         }
-    }
-
-    fn declared_sub_tags(&self) -> &[SubTag] {
-        &[]
     }
 }
 

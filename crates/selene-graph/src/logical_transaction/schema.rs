@@ -66,7 +66,7 @@ pub(super) fn materialize(def: &GraphDefinition) -> CodecResult<GraphTypeDef> {
             properties: node
                 .properties
                 .iter()
-                .map(|p| crate::core_provider::decode_schema_property(p).map_err(|_| E::Semantic))
+                .map(|p| crate::mutator::schema_event::property(p).map_err(|_| E::Semantic))
                 .collect::<CodecResult<_>>()?,
             validation_mode: mode(node.validation_mode),
         });
@@ -75,13 +75,13 @@ pub(super) fn materialize(def: &GraphDefinition) -> CodecResult<GraphTypeDef> {
         result.edge_types.push(EdgeTypeDef {
             name: name.clone(),
             label: edge.label.clone(),
-            source_node_type: crate::core_provider::decode_schema_edge_endpoint(
+            source_node_type: crate::mutator::schema_event::endpoint(
                 &result,
                 &edge.source_node_type,
                 "source",
             )
             .map_err(|_| E::Semantic)?,
-            target_node_type: crate::core_provider::decode_schema_edge_endpoint(
+            target_node_type: crate::mutator::schema_event::endpoint(
                 &result,
                 &edge.target_node_type,
                 "target",
@@ -90,7 +90,7 @@ pub(super) fn materialize(def: &GraphDefinition) -> CodecResult<GraphTypeDef> {
             properties: edge
                 .properties
                 .iter()
-                .map(|p| crate::core_provider::decode_schema_property(p).map_err(|_| E::Semantic))
+                .map(|p| crate::mutator::schema_event::property(p).map_err(|_| E::Semantic))
                 .collect::<CodecResult<_>>()?,
             validation_mode: mode(edge.validation_mode),
         });

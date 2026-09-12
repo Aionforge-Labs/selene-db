@@ -1,280 +1,73 @@
-//! Stateful provider protocol for engine-owned derived state.
-//!
-//! `IndexProvider` is the engine-internal hook through which the CORE storage
-//! provider, maintained candidate-state providers, and recovery-side replay
-//! providers participate in snapshot bootstrap and per-commit mutation
-//! observation. selene-db is a single native engine with no loadable
-//! extensions; providers are first-party engine internals, not loadable packs.
+//! Engine-owned in-memory observers, not persistence adapters or loadable packs.
 
+use crate::{CandidateSet, Node, SeleneGraph, VectorCandidateSet};
+use selene_core::{Change, DbString};
 use std::fmt;
 
-use selene_core::{Change, DbString};
-
-use crate::candidate_set::{CandidateSet, Node};
-use crate::{SeleneGraph, VectorCandidateSet};
-
-/// Stable 4-byte ASCII identifier for an [`IndexProvider`] registration.
-///
-/// Reserved tag space per spec 04 section 4.2:
-/// - `CORE` is reserved for engine-owned snapshot sections.
-/// - `META`/`NODE`/`EDGE`/`SCMA` are reserved sub-tags under `CORE`, not
-///   provider tags.
-/// - First-party provider allocations include `CSET`, `TIMS`, `GRPR`.
-/// - Other ASCII uppercase 4-byte sequences are provider-allocated.
+/// Four-byte identity for a fixed engine observer registration.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ProviderTag(
-    /// Raw 4-byte provider tag.
+    /// Raw observer tag.
     pub [u8; 4],
 );
-
 impl fmt::Display for ProviderTag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_tag(self.0, f)
+        if self.0.iter().all(|byte| byte.is_ascii_graphic()) {
+            for byte in self.0 {
+                f.write_str(char::from(byte).encode_utf8(&mut [0; 4]))?;
+            }
+            Ok(())
+        } else {
+            write!(
+                f,
+                "0x{:02X}{:02X}{:02X}{:02X}",
+                self.0[0], self.0[1], self.0[2], self.0[3]
+            )
+        }
     }
 }
 
-/// 4-byte subsection identifier within a provider's snapshot footprint.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct SubTag(
-    /// Raw 4-byte provider-local subsection tag.
-    pub [u8; 4],
-);
-
-impl fmt::Display for SubTag {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_tag(self.0, f)
-    }
-}
-
-/// Stateful hook for engine-owned derived-state participation.
+/// First-party derived-state observer. Calls for a graph are serialized.
 ///
-/// [`IndexProvider::read_section`], [`IndexProvider::write_section_at_generation`],
-/// and [`IndexProvider::on_change`] take `&self`: `selene-graph` stores providers
-/// as `Arc<dyn IndexProvider>`, so providers use interior mutability for owned
-/// state. The engine guarantees serialized calls per graph.
+/// Live fanout observes publication first and expands truncate/reset into the
+/// staged per-row tombstones. Error/panic isolation is per change by default,
+/// or per batch when opted in. A failed observer cannot undo a commit; generation
+/// notification is withheld so stale state cannot claim current readiness.
 ///
-/// ## Change-shape contract
-///
-/// Runtime commit fan-out observes the post-commit graph snapshot. When a
-/// mutation stages per-row tombstone expansions for
-/// [`Change::NodesOfTypeTruncated`], [`Change::EdgesOfTypeTruncated`], or
-/// [`Change::GraphReset`], live fan-out receives the expanded
-/// `NodeDeleted`/`EdgeDeleted` view instead of the persisted declarative change.
-/// WAL replay is different: recovery drives providers with the exact committed
-/// `Change` payloads after CORE applies them. Providers whose derived state
-/// depends on deleted rows must therefore handle the declarative truncate/reset
-/// variants or rebuild their state from the recovered graph before serving
-/// reads.
-///
-/// ## Re-entrancy contract
-///
-/// `on_change` and `write_section_at_generation` MUST NOT initiate a write
-/// transaction on the same graph, directly or indirectly. The engine detects
-/// same-thread re-entry into `SharedGraph::begin_write` and panics with a clear
-/// message. Commit fan-out and ordered checkpoint collection catch that panic
-/// at their provider-callback boundaries.
-///
-/// **Cross-thread re-entry is documented misuse.** A provider callback that
-/// spawns a worker, submits a graph mutation or maintenance operation on that
-/// worker, and waits for it (for example via `JoinHandle::join` or channel
-/// `recv`) creates a cycle the engine cannot detect: the nested operation waits
-/// in the committer queue behind the callback, while the callback waits for the
-/// nested operation. Provider callbacks must not block on spawned graph work.
-///
-/// ## Recovery attachment lifecycle
-///
-/// Recovery reserves every provider before callbacks, keeping live state
-/// unchanged while callback state is staged privately. After final graph
-/// construction, every provider prepares its staged state against that pinned
-/// snapshot before any provider commits. Commit may fail and promotes prepared
-/// state only while retaining the exact prior live state as rollback data. Once
-/// every commit succeeds, finalization discards rollback data without changing
-/// the newly live semantics. Abort discards staged/prepared state, or restores
-/// prior live state after promotion, and must be idempotent.
-///
-/// Recovery catches provider panics at commit, abort, and finalize boundaries.
-/// Correct providers must keep promotion reversible until finalization.
-/// Irreversible external effects or providers that panic while rolling back
-/// cannot be made transactional by this in-memory protocol; such behavior is a
-/// provider contract violation and does not weaken rollback for other providers.
+/// Callbacks must not re-enter graph mutation/maintenance. Same-thread re-entry
+/// panics before taking a lock and is caught by the observer boundary. Waiting on
+/// cross-thread graph work from a callback is unsupported and can deadlock.
+/// Provider-owned persisted state is not part of the durable facade preview.
 pub trait IndexProvider: Send + Sync + 'static {
-    /// Stable 4-byte ASCII tag uniquely identifying this provider.
+    /// Unique registration tag.
     fn provider_tag(&self) -> ProviderTag;
-
-    /// Snapshot bootstrap for one provider-owned section.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderError`] when the payload is missing, malformed, or
-    /// inconsistent with provider state.
-    fn read_section(&self, sub_tag: SubTag, bytes: &[u8]) -> Result<(), ProviderError>;
-
-    /// Snapshot publish for one provider-owned section.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderError`] when serialization cannot produce a stable
-    /// section payload.
-    fn write_section(&self, sub_tag: SubTag) -> Result<Vec<u8>, ProviderError>;
-
-    /// Snapshot publish for one provider-owned section at an exact graph
-    /// generation.
-    ///
-    /// Ordered graph checkpoints call this hook only after every lower commit's
-    /// provider fan-out completed and before any higher commit is published.
-    /// Stateful providers should override it and reject state that cannot prove
-    /// it belongs to `generation`. The default delegates to
-    /// [`Self::write_section`] for stateless providers and legacy snapshot
-    /// encoders.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderError`] when serialization cannot produce a stable
-    /// section payload for `generation`.
-    fn write_section_at_generation(
-        &self,
-        sub_tag: SubTag,
-        _generation: u64,
-    ) -> Result<Vec<u8>, ProviderError> {
-        self.write_section(sub_tag)
-    }
-
-    /// Observe one committed mutation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderError`] for provider-local failures. Live commits log
-    /// and continue after these errors because the graph snapshot has already
-    /// been published.
+    /// Observe a published mutation; errors are isolated, not commit voters.
     fn on_change(&self, change: &Change) -> Result<(), ProviderError>;
-
-    /// Return true when this provider wants one callback per committed change batch.
-    ///
-    /// The default is `false`, preserving per-change panic/error isolation for
-    /// simple observers. Providers that maintain state whose invariants span
-    /// several changes in one commit can opt in and override [`Self::on_changes`]
-    /// to apply the batch under one internal lock.
+    /// Opt into one callback per batch instead of per-change isolation.
     fn handles_change_batches(&self) -> bool {
         false
     }
-
-    /// Observe all changes from one committed mutation batch.
-    ///
-    /// The default delegates to [`Self::on_change`] in order. Live fanout calls
-    /// this method only when [`Self::handles_change_batches`] returns true;
-    /// recovery may call it for all providers because no concurrent readers can
-    /// observe recovery-side intermediate state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderError`] for provider-local failures.
+    /// Observe one published batch in order.
     fn on_changes(&self, changes: &[Change]) -> Result<(), ProviderError> {
         for change in changes {
             self.on_change(change)?;
         }
         Ok(())
     }
-
-    /// Rebuild provider-owned derived state from a recovered graph snapshot.
-    ///
-    /// Recovery calls this when a provider declares persisted snapshot sections,
-    /// a graph snapshot was applied, and that snapshot did not contain this
-    /// provider's section. Providers that can derive their complete state from
-    /// CORE graph rows should override this method.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderError`] when the provider cannot rebuild safely.
+    /// Explicitly rebuild derived state from a pinned graph when supported.
     fn rebuild_from_graph(&self, _graph: &SeleneGraph) -> Result<(), ProviderError> {
         Err(ProviderError::Inconsistent {
             reason: format!(
-                "provider {} has persisted sections but does not support graph rebuild",
+                "provider {} does not support graph rebuild",
                 self.provider_tag()
             ),
         })
     }
-
-    /// Observe that every change for a committed graph generation was applied.
-    ///
-    /// Live fan-out calls this only after the provider's mutation callback path
-    /// completed without returning an error or panicking. Providers that expose
-    /// read-side state tied to graph generations can use this as their
-    /// visibility watermark.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderError`] for provider-local failures.
+    /// Mark a generation applied only after successful, non-panicking fanout.
     fn on_commit_applied(&self, _generation: u64) -> Result<(), ProviderError> {
         Ok(())
     }
-
-    /// Reserve private runtime attachment before recovery callbacks can run.
-    ///
-    /// Recovery reserves every supplied provider before registering any wrapper
-    /// with the persistence recovery registry. Implementations must keep live
-    /// state visible and stage callback changes privately until
-    /// [`Self::commit_recovery_attachment`] is called.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderError`] when this provider cannot reserve an isolated
-    /// recovery attachment. Recovery aborts this and every earlier reservation.
-    fn reserve_recovery_attachment(&self) -> Result<(), ProviderError> {
-        Ok(())
-    }
-
-    /// Prepare staged recovery state against the final pinned graph snapshot.
-    ///
-    /// This hook runs only after final graph construction has reminted layout
-    /// identity and rebuilt derived indexes. Preparation remains invisible and
-    /// may perform fallible stable-ID binding; it must not publish staged state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderError`] when staged state cannot bind to `graph`.
-    fn prepare_recovery_attachment(&self, _graph: &SeleneGraph) -> Result<(), ProviderError> {
-        Ok(())
-    }
-
-    /// Promote previously prepared recovery state while retaining rollback data.
-    ///
-    /// Recovery calls every provider's prepare hook before it invokes the first
-    /// commit hook. A provider that changes live state and then returns an error
-    /// must still be able to restore the exact prior state from
-    /// [`Self::abort_recovery_attachment`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderError`] when prepared state cannot be promoted safely.
-    fn commit_recovery_attachment(&self) -> Result<(), ProviderError> {
-        Ok(())
-    }
-
-    /// Discard rollback data after every provider committed successfully.
-    ///
-    /// This cleanup-only hook must not alter newly live semantics. Recovery
-    /// catches and logs panics, then continues finalizing remaining providers.
-    fn finalize_recovery_attachment(&self) {}
-
-    /// Discard staged state or restore exact prior state after promotion.
-    ///
-    /// This hook is called on every failed or unwound recovery path until the
-    /// attachment guard is explicitly disarmed after all commits and finalize
-    /// callbacks. It must be idempotent. Recovery catches and logs panics, then
-    /// continues aborting earlier reservations in reverse order.
-    fn abort_recovery_attachment(&self) {}
-
-    /// Return a typed maintained node candidate set bound to `graph`.
-    ///
-    /// Providers that do not own named node candidates return `Ok(None)`. A
-    /// provider that owns `name` must check its generation against the supplied
-    /// pinned snapshot and either validate a matching typed cache or bind its
-    /// stable source IDs on demand.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderError`] when named state is stale or inconsistent with
-    /// the supplied snapshot.
+    /// Bind maintained stable IDs to this graph/layout, rejecting stale state.
     fn node_candidate_set(
         &self,
         _name: &DbString,
@@ -282,17 +75,7 @@ pub trait IndexProvider: Send + Sync + 'static {
     ) -> Result<Option<CandidateSet<Node>>, ProviderError> {
         Ok(None)
     }
-
-    /// Return a provider-owned vector candidate set for `name` at `generation`.
-    ///
-    /// Providers that do not own named vector candidate state return `Ok(None)`.
-    /// A provider that owns the name but cannot prove the requested generation
-    /// should return an error instead of serving stale derived state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderError`] when the named state exists but is stale or
-    /// internally inconsistent.
+    /// Return maintained vector candidates only at the requested generation.
     fn vector_candidate_set(
         &self,
         _name: &DbString,
@@ -300,183 +83,104 @@ pub trait IndexProvider: Send + Sync + 'static {
     ) -> Result<Option<VectorCandidateSet>, ProviderError> {
         Ok(None)
     }
-
-    /// Return provider-owned vector candidate-state descriptors at `generation`.
-    ///
-    /// Providers that do not own named vector candidate state return an empty
-    /// vector. A provider that owns candidate state but cannot prove the
-    /// requested generation should return an error instead of exposing stale
-    /// metadata.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderError`] when provider metadata is stale or internally
-    /// inconsistent.
+    /// Discover maintained vector state only at the requested generation.
     fn vector_candidate_state_infos(
         &self,
         _generation: u64,
     ) -> Result<Vec<VectorCandidateStateInfo>, ProviderError> {
         Ok(Vec::new())
     }
-
-    /// Provider-owned snapshot subsection tags.
-    ///
-    /// Empty means the provider consumes mutation events but owns no persisted
-    /// snapshot state.
-    fn declared_sub_tags(&self) -> &[SubTag];
 }
 
 /// Metadata for one provider-owned vector candidate state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VectorCandidateStateInfo {
-    /// Stable set name used by callers to retrieve candidates.
+    /// Stable set name.
     pub name: DbString,
-    /// Graph generation the descriptor was derived from.
+    /// Applied graph generation.
     pub generation: u64,
-    /// Number of nodes currently in the candidate set.
+    /// Current member count.
     pub candidate_count: usize,
-    /// Optional node label required for membership.
+    /// Required node label.
     pub required_label: Option<DbString>,
-    /// Outgoing edge labels required on the source node.
+    /// Required outgoing edge labels.
     pub require_outgoing: Vec<DbString>,
-    /// Incoming edge labels required on the target node.
+    /// Required incoming edge labels.
     pub require_incoming: Vec<DbString>,
-    /// Outgoing edge labels that disqualify the source node.
+    /// Disqualifying outgoing labels.
     pub exclude_outgoing: Vec<DbString>,
-    /// Incoming edge labels that disqualify the target node.
+    /// Disqualifying incoming labels.
     pub exclude_incoming: Vec<DbString>,
 }
 
-/// Errors returned by [`IndexProvider`] implementations.
+/// Observer-local failure, isolated from already-published graph state.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[non_exhaustive]
 pub enum ProviderError {
-    /// Provider payload could not be decoded or validated.
+    /// Invalid observer input.
     #[error("invalid provider payload: {reason}")]
     #[diagnostic(code(SLENE_G_010))]
     InvalidPayload {
-        /// Human-readable provider failure reason.
+        /// Failure detail.
         reason: String,
     },
-
-    /// Provider state could not be serialized.
-    #[error("provider serialization failed: {reason}")]
-    #[diagnostic(code(SLENE_G_012))]
-    SerializationFailed {
-        /// Human-readable serialization failure reason.
-        reason: String,
-    },
-
-    /// Provider state or registration is inconsistent.
+    /// Inconsistent registration or derived state.
     #[error("provider state inconsistency: {reason}")]
     #[diagnostic(code(SLENE_G_014))]
     Inconsistent {
-        /// Human-readable inconsistency reason.
+        /// Failure detail.
         reason: String,
     },
-}
-
-fn fmt_tag(bytes: [u8; 4], f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    if bytes.iter().all(|byte| byte.is_ascii_graphic()) {
-        for byte in bytes {
-            f.write_str(char::from(byte).encode_utf8(&mut [0; 4]))?;
-        }
-        Ok(())
-    } else {
-        write!(
-            f,
-            "0x{:02X}{:02X}{:02X}{:02X}",
-            bytes[0], bytes[1], bytes[2], bytes[3]
-        )
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use parking_lot::Mutex;
-    use rstest::rstest;
-    use selene_core::{LabelSet, NodeId, PropertyMap};
-
     use super::*;
-    use crate::{GraphError, GraphResult};
-
-    struct RecordingProvider {
-        tag: ProviderTag,
-        changes: Mutex<Vec<Change>>,
-    }
-
-    impl RecordingProvider {
-        fn new(tag: ProviderTag) -> Self {
-            Self {
-                tag,
-                changes: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
+    use parking_lot::Mutex;
+    struct RecordingProvider(Mutex<Vec<Change>>);
     impl IndexProvider for RecordingProvider {
         fn provider_tag(&self) -> ProviderTag {
-            self.tag
+            ProviderTag(*b"TEST")
         }
-
-        fn read_section(&self, _sub_tag: SubTag, _bytes: &[u8]) -> Result<(), ProviderError> {
-            Ok(())
-        }
-
-        fn write_section(&self, _sub_tag: SubTag) -> Result<Vec<u8>, ProviderError> {
-            Ok(Vec::new())
-        }
-
         fn on_change(&self, change: &Change) -> Result<(), ProviderError> {
-            self.changes.lock().push(change.clone());
+            self.0.lock().push(change.clone());
             Ok(())
-        }
-
-        fn declared_sub_tags(&self) -> &[SubTag] {
-            &[]
         }
     }
-
-    fn assert_send_sync_static<T: Send + Sync + 'static>() {}
-
     #[test]
     fn provider_tag_equality_and_ordering() {
         let demo = ProviderTag(*b"DEMO");
-        let meta = ProviderTag(*b"META");
         assert_eq!(demo, ProviderTag(*b"DEMO"));
-        assert!(demo < meta);
+        assert!(demo < ProviderTag(*b"META"));
         assert_eq!(demo.to_string(), "DEMO");
+        assert_eq!(ProviderTag([0, 1, 2, 3]).to_string(), "0x00010203");
     }
-
     #[test]
-    fn sub_tag_equality_and_ordering() {
-        let graph = SubTag(*b"GRPH");
-        let subt = SubTag(*b"SUBT");
-        assert_eq!(graph, SubTag(*b"GRPH"));
-        assert!(graph < subt);
-        assert_eq!(graph.to_string(), "GRPH");
+    fn provider_error_gqlstatus_mappings() {
+        for error in [
+            ProviderError::InvalidPayload {
+                reason: "bad".into(),
+            },
+            ProviderError::Inconsistent {
+                reason: "duplicate".into(),
+            },
+        ] {
+            assert_eq!(crate::GraphError::Provider(error).gqlstatus(), "5GQL0");
+        }
     }
-
-    #[rstest]
-    #[case(ProviderError::InvalidPayload { reason: "bad".to_owned() })]
-    #[case(ProviderError::SerializationFailed { reason: "io".to_owned() })]
-    #[case(ProviderError::Inconsistent { reason: "duplicate".to_owned() })]
-    fn provider_error_gqlstatus_mappings(#[case] provider_error: ProviderError) {
-        let graph_error = GraphError::Provider(provider_error);
-        assert_eq!(graph_error.gqlstatus(), "5GQL0");
-    }
-
     #[test]
-    fn dummy_provider_with_interior_mutability() -> GraphResult<()> {
-        assert_send_sync_static::<RecordingProvider>();
-        let provider = RecordingProvider::new(ProviderTag(*b"TEST"));
-        provider.on_change(&Change::NodeCreated {
-            id: NodeId::new(1),
-            labels: LabelSet::new(),
-            properties: PropertyMap::new(),
-        })?;
-        assert_eq!(provider.changes.lock().len(), 1);
+    fn dummy_provider_with_interior_mutability() {
+        fn send_sync_static<T: Send + Sync + 'static>() {}
+        send_sync_static::<RecordingProvider>();
+        let provider = RecordingProvider(Mutex::new(Vec::new()));
+        provider
+            .on_change(&Change::NodeCreated {
+                id: selene_core::NodeId::new(1),
+                labels: selene_core::LabelSet::new(),
+                properties: selene_core::PropertyMap::new(),
+            })
+            .unwrap();
+        assert_eq!(provider.0.lock().len(), 1);
         assert_eq!(provider.provider_tag(), ProviderTag(*b"TEST"));
-        Ok(())
     }
 }

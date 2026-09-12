@@ -14,7 +14,6 @@
 use std::fs::File;
 use std::path::Path;
 
-use crate::manifest::Manifest;
 use crate::{PersistError, PersistResult, StoreDirectory, StoreWriter};
 
 /// Filename of the persistent lock that serializes MANIFEST epoch operations.
@@ -35,10 +34,10 @@ pub const MANIFEST_LOCK_FILE_NAME: &str = "MANIFEST.lock";
 /// ordinary append-only WAL commits continue.
 ///
 /// `CheckpointOutcome` paths are locators, not retention leases: backup code
-/// must re-read the MANIFEST through [`Self::read_manifest`] after acquiring
-/// this guard. Do not invoke same-directory checkpoint, rotation, prune, or
+/// must re-read the MANIFEST through the retained [`Self::directory`] handle
+/// after acquiring this guard. Do not invoke same-directory checkpoint, rotation, prune, or
 /// MANIFEST publication while holding a read guard; lock upgrades are not
-/// supported and may deadlock. Operations that also own a [`crate::WalWriter`]
+/// supported and may deadlock. Operations that also own a [`crate::StoreWriter`]
 /// acquire that writer first, then this guard.
 #[must_use = "dropping the guard releases the persistence epoch lease"]
 pub struct PersistenceReadGuard {
@@ -68,6 +67,7 @@ impl PersistenceReadGuard {
     /// # Errors
     /// Returns lock-file validation, open, or locking errors.
     pub fn acquire_in(dir: &StoreDirectory) -> PersistResult<Self> {
+        crate::legacy_probe::reject(dir)?;
         let file = open_lock_file(dir)?;
         Self::lock_shared(dir, file)
     }
@@ -106,15 +106,6 @@ impl PersistenceReadGuard {
         self.dir.locator()
     }
 
-    /// Read the authoritative MANIFEST while this guard pins its artifact set.
-    ///
-    /// # Errors
-    ///
-    /// Returns MANIFEST I/O, format, or checksum errors.
-    pub fn read_manifest(&self) -> PersistResult<Option<Manifest>> {
-        Manifest::read_in(&self.dir)
-    }
-
     /// Retained directory protected by this lease; `dir()` is only a locator.
     #[must_use]
     pub fn directory(&self) -> &StoreDirectory {
@@ -150,12 +141,6 @@ impl ManifestEpochGuard {
             _file: file,
             authority: authority.clone(),
         })
-    }
-
-    /// Canonical directory path protected by this guard.
-    #[cfg(test)]
-    pub(crate) fn dir(&self) -> &Path {
-        self.directory().locator()
     }
 
     pub(crate) fn directory(&self) -> &StoreDirectory {

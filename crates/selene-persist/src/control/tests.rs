@@ -13,6 +13,84 @@ pub(super) fn directory() -> (PersistenceTestPath, StoreDirectory) {
     (path, dir)
 }
 
+#[test]
+fn legacy_headers_are_rejected_before_any_writable_open_or_coordination_creation() {
+    use crate::{
+        PersistArtifact,
+        logical_stream::{LogicalReader, RecoveryReader, ReopeningWal},
+    };
+    for (name, prefix, artifact) in [
+        ("wal.log", *b"SLDB\x03\x00\x01\x00", PersistArtifact::Wal),
+        (
+            "wal.42.archive",
+            *b"SLDB\x03\x00\x01\x00",
+            PersistArtifact::Wal,
+        ),
+        (
+            "snapshot.42.snap",
+            *b"SLSN\x01\x00\x06\x00",
+            PersistArtifact::Snapshot,
+        ),
+        (
+            "MANIFEST",
+            *b"SLMF\x01\x00\x00\x00",
+            PersistArtifact::Manifest,
+        ),
+        (
+            "audit.log",
+            *b"SLAU\x02\x00\x00\x00",
+            PersistArtifact::AuditLog,
+        ),
+    ] {
+        let (_path, dir) = directory();
+        // Deliberately uninterpretable payload: recognition must stop at the prefix.
+        let bytes = [prefix.as_slice(), &[0xff; 256]].concat();
+        overwrite(&dir, name, &bytes);
+        #[cfg(feature = "test-harness")]
+        dir.test_forbid_writes();
+        let errors: Vec<Box<dyn std::error::Error>> = vec![
+            Box::new(EmptyStoreControl::create_empty(&dir, identity()).unwrap_err()),
+            Box::new(EmptyStoreControl::open(&dir, &identity()).unwrap_err()),
+            Box::new(LogicalReader::open(&dir, &identity(), 4096).err().unwrap()),
+            Box::new(RecoveryReader::open(&dir, &identity(), 4096).err().unwrap()),
+            Box::new(ReopeningWal::open(&dir, &identity(), 4096).err().unwrap()),
+        ];
+        for error in errors {
+            let mut cause = Some(error.as_ref());
+            let mut recognized = false;
+            while let Some(error) = cause {
+                let persisted = error.downcast_ref::<PersistError>().or_else(|| {
+                    error
+                        .downcast_ref::<crate::logical_stream::StreamError>()
+                        .and_then(|error| {
+                            if let crate::logical_stream::StreamError::Persist(error) = error {
+                                Some(error)
+                            } else {
+                                None
+                            }
+                        })
+                });
+                let persisted = persisted.map(|error| match error {
+                    PersistError::Artifact { source, .. } => source.as_ref(),
+                    other => other,
+                });
+                if matches!(persisted,
+                    Some(PersistError::UnsupportedVersion { artifact: observed, .. }) if *observed == artifact)
+                {
+                    recognized = true;
+                }
+                cause = error.source();
+            }
+            assert!(recognized, "{name}: {error}");
+        }
+        assert!(!dir.contains(crate::STORE_LOCK_FILE_NAME).unwrap());
+        assert!(!dir.contains(crate::MANIFEST_LOCK_FILE_NAME).unwrap());
+        assert_eq!(std::fs::read(dir.locator().join(name)).unwrap(), bytes);
+        #[cfg(feature = "test-harness")]
+        assert_eq!(dir.test_write_attempts(), 0);
+    }
+}
+
 // Deliberate out-of-protocol corruption fixture, not a publication API.
 pub(super) fn overwrite(dir: &StoreDirectory, name: &str, bytes: &[u8]) {
     let mut file = dir.open_or_create(Path::new(name)).unwrap();
@@ -59,7 +137,7 @@ fn empty_create_publish_and_reopen_preserve_durable_identity() {
     assert_eq!(reopened.manifest().store_id(), id);
     assert_eq!(reopened.manifest().epoch(), epoch);
     assert_eq!(reopened.manifest().generation().get(), 2);
-    assert!(!dir.contains(crate::DEFAULT_WAL_FILE_NAME).unwrap());
+    assert!(!dir.contains("wal.log").unwrap());
 }
 
 #[test]
@@ -205,18 +283,6 @@ fn initial_staging_orphan_cannot_be_reinterpreted_as_a_legacy_store() {
     assert!(matches!(
         EmptyStoreControl::create_empty(&dir, identity()),
         Err(PersistError::Control(ControlError::UnpublishedArtifacts))
-    ));
-    assert!(matches!(
-        crate::WalWriter::open_in(&dir, Path::new("wal.log"), crate::WalConfig::default()),
-        Err(PersistError::Directory(
-            crate::DirectoryError::ControlDirectory
-        ))
-    ));
-    assert!(matches!(
-        crate::AuditLog::open(&dir.locator().join("audit.log")),
-        Err(PersistError::Directory(
-            crate::DirectoryError::ControlDirectory
-        ))
     ));
     assert!(!dir.contains("wal.log").unwrap());
     assert!(!dir.contains("audit.log").unwrap());
@@ -375,51 +441,19 @@ fn checksums_bounds_trailing_bytes_and_generation_overflow_are_rejected() {
 }
 
 #[test]
-fn control_and_legacy_data_protocols_cannot_mix_in_either_direction() {
+fn old_artifact_headers_cannot_be_added_to_existing_control() {
     let (_path, dir) = directory();
-    drop(
-        crate::WalWriter::open_in(&dir, Path::new("wal.log"), crate::WalConfig::default()).unwrap(),
-    );
+    drop(EmptyStoreControl::create_empty(&dir, identity()).unwrap());
+    overwrite(&dir, "wal.log", b"SLDB\x03\x00\x01\x00");
     let before = std::fs::read(dir.locator().join("wal.log")).unwrap();
     assert!(matches!(
         EmptyStoreControl::create_empty(&dir, identity()),
-        Err(PersistError::Control(ControlError::MixedArtifacts(_)))
+        Err(PersistError::Artifact { source, .. }) if matches!(*source, PersistError::UnsupportedVersion { .. })
     ));
     assert_eq!(
         std::fs::read(dir.locator().join("wal.log")).unwrap(),
         before
     );
-
-    let (_path2, dir2) = directory();
-    drop(EmptyStoreControl::create_empty(&dir2, identity()).unwrap());
-    assert!(matches!(
-        crate::WalWriter::open_in(&dir2, Path::new("wal.log"), crate::WalConfig::default()),
-        Err(PersistError::Directory(
-            crate::DirectoryError::ControlDirectory
-        ))
-    ));
-    assert!(matches!(
-        crate::SnapshotBuilder::new_in(&dir2, crate::SnapshotConfig::default()).finalize(),
-        Err(PersistError::Directory(
-            crate::DirectoryError::ControlDirectory
-        ))
-    ));
-    assert!(matches!(
-        crate::AuditLog::open(&dir2.locator().join("audit.log")),
-        Err(PersistError::Directory(
-            crate::DirectoryError::ControlDirectory
-        ))
-    ));
-    assert!(matches!(
-        crate::recover_guarded(
-            &PersistenceReadGuard::acquire_in(&dir2).unwrap(),
-            &crate::ProviderRegistry::new()
-        ),
-        Err(PersistError::Directory(
-            crate::DirectoryError::ControlDirectory
-        ))
-    ));
-    assert!(!dir2.contains("wal.log").unwrap());
 }
 
 proptest! {

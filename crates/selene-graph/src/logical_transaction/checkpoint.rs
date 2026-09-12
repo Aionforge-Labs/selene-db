@@ -205,7 +205,7 @@ impl ReplayState {
                 .map(schema::materialize)
                 .transpose()?
                 .map(Arc::new);
-            let graph = crate::core_provider::logical_graph(None, delta, bound, &mut budget)?;
+            let graph = super::graph_apply::logical_graph(None, delta, bound, &mut budget)?;
             graph
                 .validate_logical_catalog(&snapshot, &delta.backing_indexes)
                 .map_err(|_| E::Semantic)?;

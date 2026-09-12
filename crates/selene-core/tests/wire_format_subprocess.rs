@@ -5,7 +5,40 @@
 //! produce byte-identical canonical wire after `PropertyMap` canonicalizes to
 //! lexicographic key order at serialize time.
 
-use selene_core::{PropertyMap, Value, db_string};
+use selene_core::{
+    Change, GraphId, LabelSet, NodeId, PropertyMap, Value, db_string,
+    logical::{Budget, Decoder, Encoder, GraphDelta},
+};
+
+fn encode(map: &PropertyMap) -> Vec<u8> {
+    let delta = GraphDelta {
+        id: GraphId::new(1),
+        previous: None,
+        generation: 1,
+        next_node_id: 2,
+        next_edge_id: 1,
+        definition: None,
+        backing_indexes: vec![],
+        changes: vec![Change::NodeCreated {
+            id: NodeId::new(1),
+            labels: LabelSet::new(),
+            properties: map.clone(),
+        }],
+    };
+    let mut encoder = Encoder::new(Default::default()).unwrap();
+    delta.encode(&mut encoder).unwrap();
+    encoder.finish()
+}
+fn decode(bytes: &[u8]) -> PropertyMap {
+    let mut budget = Budget::new(Default::default()).unwrap();
+    let mut decoder = Decoder::new(bytes, &mut budget).unwrap();
+    let mut delta = GraphDelta::decode(&mut decoder).unwrap();
+    decoder.finish().unwrap();
+    let Change::NodeCreated { properties, .. } = delta.changes.remove(0) else {
+        panic!("node creation")
+    };
+    properties
+}
 
 /// Two `PropertyMap`s built from different insertion orders of the same keys
 /// serialize to byte-identical (canonical lexicographic) postcard wire.
@@ -28,15 +61,15 @@ fn property_map_wire_bytes_are_independent_of_insertion_order() {
     ])
     .expect("second map builds");
 
-    let first_bytes = postcard::to_allocvec(&first).expect("first serializes");
-    let second_bytes = postcard::to_allocvec(&second).expect("second serializes");
+    let first_bytes = encode(&first);
+    let second_bytes = encode(&second);
     assert_eq!(
         first_bytes, second_bytes,
         "canonical wire order must not depend on PropertyMap insertion order"
     );
 
     // And both round-trip back to the same map.
-    let round: PropertyMap = postcard::from_bytes(&first_bytes).expect("round-trips");
+    let round = decode(&first_bytes);
     assert_eq!(round, first);
     assert_eq!(round, second);
 }
@@ -69,8 +102,8 @@ fn compact_property_map_wire_bytes_are_independent_of_key_order() {
     .expect("reverse compact builds");
 
     assert_eq!(
-        postcard::to_allocvec(&forward).expect("forward serializes"),
-        postcard::to_allocvec(&reverse).expect("reverse serializes"),
+        encode(&forward),
+        encode(&reverse),
         "compact canonical wire must not depend on supplied key order"
     );
 }

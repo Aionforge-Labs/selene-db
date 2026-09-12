@@ -1,18 +1,14 @@
-//! Runtime-produced WAL recovery round-trip tests.
+//! Runtime-produced changes consumed by native format-2 replay.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+#[path = "../../selene-graph/tests/format2_support/mod.rs"]
+mod format2_support;
 
-use selene_core::{
-    Change, GraphId, HlcTimestamp, LabelSet, NodeId, Origin, PropertyMap, Value, db_string,
-};
+use selene_core::{Change, GraphId, LabelSet, NodeId, PropertyMap, Value, db_string};
 use selene_gql::{
     Binding, BindingTable, BindingTableSchema, EmptyProcedureRegistry, ExecutionPlan,
     ExecutorError, TxContext, analyze, execute_pattern, execute_pipeline, parse, plan,
 };
 use selene_graph::{CommitOutcome, SharedGraph};
-use selene_persist::{DEFAULT_WAL_FILE_NAME, SyncPolicy, WalConfig, WalWriter};
 
 fn planned(source: &str) -> ExecutionPlan {
     let statement = parse(source).expect("test input parses");
@@ -62,35 +58,6 @@ fn run_write(
     }
 }
 
-fn temp_dir(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "selene-gql-recovery-{name}-{}-{nanos}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir(&dir).unwrap();
-    dir
-}
-
-fn append_wal(dir: &Path, changes: &[Change]) {
-    let mut writer = WalWriter::open(
-        &dir.join(DEFAULT_WAL_FILE_NAME),
-        WalConfig {
-            sync_policy: SyncPolicy::EveryN(1),
-            snapshot_seq: 0,
-        },
-    )
-    .unwrap();
-    writer
-        .append(HlcTimestamp::zero(), Origin::Local, None, changes)
-        .unwrap();
-    writer.flush().unwrap();
-}
-
 fn node_ref(table: &BindingTable, column: &str) -> NodeId {
     let index = table
         .schema()
@@ -105,8 +72,7 @@ fn node_ref(table: &BindingTable, column: &str) -> NodeId {
 }
 
 #[test]
-fn recover_from_wal_only_via_runtime_mutation_pipeline() {
-    let dir = temp_dir("runtime-mutation");
+fn format2_replay_via_runtime_mutation_pipeline() {
     let graph_id = GraphId::new(9308);
     let graph = SharedGraph::new(graph_id);
     let plan =
@@ -115,9 +81,7 @@ fn recover_from_wal_only_via_runtime_mutation_pipeline() {
     let (table, outcome) = run_write(&graph, &plan).expect("runtime write executes");
     let alice = node_ref(&table, "a");
     let bob = node_ref(&table, "b");
-    append_wal(&dir, &outcome.changes);
-
-    let recovered = SharedGraph::recover(&dir, graph_id).unwrap();
+    let recovered = format2_support::replay(graph_id, outcome.changes.clone()).unwrap();
     let snapshot = recovered.read();
     let person = db_string("Person").unwrap();
     let knows = db_string("KNOWS").unwrap();
@@ -162,5 +126,4 @@ fn recover_from_wal_only_via_runtime_mutation_pipeline() {
         snapshot.edge_properties(selene_core::EdgeId::new(1)),
         Some(&PropertyMap::new())
     );
-    let _ = fs::remove_dir_all(dir);
 }

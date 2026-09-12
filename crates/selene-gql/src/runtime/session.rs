@@ -118,7 +118,9 @@ pub struct TransactionOutcome {
     pub next_node_id: u64,
     /// Next edge ID after the commit.
     pub next_edge_id: u64,
-    /// Highest sequence reported by commit-critical durable providers.
+    /// Durable-sequence slot; always `None` from the in-graph publisher.
+    /// Sequence assignment below the graph layer is the owning database
+    /// handle's authority.
     pub durable_at: Option<u64>,
     /// Wall-clock duration from `start_transaction` to commit completion.
     pub duration_micros: u64,
@@ -624,29 +626,6 @@ impl<'g> Session<'g> {
             statement_count,
             duration_micros,
         })
-    }
-
-    /// Flush every commit-critical durable provider registered on this graph.
-    ///
-    /// Returns the highest durable sequence reported by providers, or `None`
-    /// when the graph has no durable providers.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExecutorError::Flush`] when any provider-owned flush fails.
-    pub fn flush(&self) -> Result<Option<u64>, ExecutorError> {
-        let mut highest = None;
-        for provider in self.graph.durable_providers() {
-            let tag = provider.provider_tag();
-            let seq = provider.flush().map_err(|error| ExecutorError::Flush {
-                provider_tag: tag,
-                reason: error.to_string(),
-            })?;
-            if let Some(seq) = seq {
-                highest = Some(highest.map_or(seq, |current: u64| current.max(seq)));
-            }
-        }
-        Ok(highest)
     }
 
     /// Roll back and clear the explicit transaction, when one is active.

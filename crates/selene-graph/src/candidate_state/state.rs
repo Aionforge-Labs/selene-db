@@ -2,26 +2,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::CandidateStateSpec;
+use crate::index_provider::ProviderError;
 use selene_core::{Change, DbString, EdgeId, LabelSet, NodeId};
-use serde::{Deserialize, Serialize};
 
-use super::{CANDIDATE_STATE_SUB, CandidateStateSpec};
-use crate::index_provider::{ProviderError, SubTag};
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TrackedEdge {
     pub(super) label: DbString,
     pub(super) source: NodeId,
     pub(super) target: NodeId,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub(super) struct CandidateStateSnapshot {
-    pub(super) version: u8,
-    pub(super) generation: u64,
-    pub(super) specs: Vec<CandidateStateSpec>,
-    pub(super) node_labels: Vec<(NodeId, LabelSet)>,
-    pub(super) edges: Vec<(EdgeId, TrackedEdge)>,
 }
 
 #[derive(Clone, Debug)]
@@ -316,18 +305,6 @@ pub(super) fn insert_sorted_unique(labels: &mut Vec<DbString>, label: DbString) 
 pub(super) fn canonicalize_labels(labels: &mut Vec<DbString>) {
     labels.sort_unstable();
     labels.dedup();
-}
-
-pub(super) fn ensure_state_subtag(sub_tag: SubTag) -> Result<(), ProviderError> {
-    if sub_tag == SubTag(CANDIDATE_STATE_SUB) {
-        Ok(())
-    } else {
-        Err(invalid_payload(format!("unknown CSET sub-tag {sub_tag}")))
-    }
-}
-
-pub(super) fn invalid_payload(reason: String) -> ProviderError {
-    ProviderError::InvalidPayload { reason }
 }
 
 pub(super) fn inconsistent(reason: String) -> ProviderError {

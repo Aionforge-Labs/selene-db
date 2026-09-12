@@ -2,7 +2,6 @@ use std::{collections::BTreeMap, num::NonZeroUsize, time::Instant};
 
 use selene_core::{BindingTableId, DbString, GraphId, Value, db_string};
 use selene_graph::{GraphTypeDef, SharedGraph, TypedIndexKind};
-use selene_persist::{DEFAULT_WAL_FILE_NAME, WalConfig};
 
 use super::*;
 use crate::{
@@ -502,23 +501,6 @@ fn commit_counts_read_only_statement_inside_transaction() {
 
     assert_eq!(outcome.changes.len(), 1);
     assert_eq!(outcome.statement_count, 2);
-}
-
-#[test]
-fn commit_returns_durable_at_with_core_provider() {
-    let dir = tempfile::tempdir().expect("tempdir is created");
-    let graph = SharedGraph::builder(GraphId::new(3906))
-        .with_wal(dir.path().join(DEFAULT_WAL_FILE_NAME), WalConfig::default())
-        .expect("wal config opens")
-        .build()
-        .expect("graph builds");
-    let mut session = Session::new(&graph);
-    session.start_transaction().expect("start succeeds");
-
-    execute("INSERT (:Person { name: 'a' })", &mut session).expect("insert succeeds");
-    let outcome = session.commit_transaction().expect("commit succeeds");
-
-    assert_eq!(outcome.durable_at, Some(1));
 }
 
 #[test]

@@ -95,7 +95,9 @@ pub struct WriteOutcome {
     pub next_node_id: u64,
     /// Next edge ID after the commit.
     pub next_edge_id: u64,
-    /// Highest sequence reported by commit-critical durable providers.
+    /// Durable-sequence slot; always `None` from the in-graph publisher.
+    /// Sequence assignment below the graph layer is the owning database
+    /// handle's authority.
     pub durable_at: Option<u64>,
 }
 

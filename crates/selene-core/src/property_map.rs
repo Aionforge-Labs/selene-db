@@ -12,7 +12,6 @@
 
 use std::sync::Arc;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smallvec::SmallVec;
 
 use crate::{CoreError, CoreResult, DbString, Value};
@@ -341,129 +340,6 @@ impl<'a> Iterator for PropertyMapValues<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next().map(|(_, value)| value)
-    }
-}
-
-#[derive(Deserialize, Serialize)]
-enum PropertyMapWire {
-    Standard(SmallVec<[(DbString, Value); 6]>),
-    Compact {
-        keys: Arc<[DbString]>,
-        values: SmallVec<[Option<Value>; 6]>,
-    },
-}
-
-#[derive(Serialize)]
-enum PropertyMapWireRef<'a> {
-    Standard(&'a [(DbString, Value)]),
-    Compact {
-        keys: &'a [DbString],
-        values: &'a [Option<Value>],
-    },
-}
-
-impl Serialize for PropertyMap {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.validate_stored_values()
-            .map_err(serde::ser::Error::custom)?;
-        // Canonicalize on serialize. Construction through `set_standard` /
-        // `compact` / `from_pairs` already keeps keys in lexicographic `DbString`
-        // order, so this sort is a no-op (byte-identical) for those values. But
-        // `Standard` / `Compact` are PUBLIC variants, so a caller can build a
-        // non-canonical map directly; canonicalizing here guarantees the wire
-        // is always canonical and round-trips through the strict (validate,
-        // no-resort) deserializer below. The deserializer rejects a
-        // non-canonical payload rather than silently re-sorting it.
-        match self {
-            Self::Standard(entries) => {
-                if standard_entries_are_canonical(entries) {
-                    return PropertyMapWireRef::Standard(entries.as_slice()).serialize(serializer);
-                }
-
-                let mut entries = entries.clone();
-                entries.sort_by(|(lhs, _), (rhs, _)| lhs.as_str().cmp(rhs.as_str()));
-                PropertyMapWire::Standard(entries).serialize(serializer)
-            }
-            Self::Compact { keys, values } => {
-                if keys.len() == values.len() && compact_keys_are_canonical(keys) {
-                    return PropertyMapWireRef::Compact {
-                        keys,
-                        values: values.as_slice(),
-                    }
-                    .serialize(serializer);
-                }
-
-                let mut pairs: Vec<(DbString, Option<Value>)> =
-                    keys.iter().cloned().zip(values.iter().cloned()).collect();
-                pairs.sort_by(|(lhs, _), (rhs, _)| lhs.as_str().cmp(rhs.as_str()));
-                let (keys, values): (Vec<_>, SmallVec<_>) = pairs.into_iter().unzip();
-                PropertyMapWire::Compact {
-                    keys: Arc::from(keys),
-                    values,
-                }
-                .serialize(serializer)
-            }
-        }
-    }
-}
-
-fn standard_entries_are_canonical(entries: &[(DbString, Value)]) -> bool {
-    entries.windows(2).all(|pair| pair[0].0 < pair[1].0)
-}
-
-fn compact_keys_are_canonical(keys: &[DbString]) -> bool {
-    keys.windows(2).all(|pair| pair[0] < pair[1])
-}
-
-impl<'de> Deserialize<'de> for PropertyMap {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        // The wire is canonical (lexicographic, dedup'd) by construction, so
-        // the decoder validates that invariant rather than re-sorting:
-        // strictly-ascending keys (which also rejects duplicates) and the
-        // Compact key/value length match. A non-canonical or duplicate-keyed
-        // payload is rejected as malformed.
-        let wire = PropertyMapWire::deserialize(deserializer)?;
-        match wire {
-            PropertyMapWire::Standard(entries) => {
-                for (_, value) in &entries {
-                    crate::StoredValue::validate(value).map_err(serde::de::Error::custom)?;
-                }
-                for window in entries.windows(2) {
-                    if window[0].0 >= window[1].0 {
-                        return Err(serde::de::Error::custom(
-                            "PropertyMap::Standard entries must be sorted by DbString order with no duplicate keys",
-                        ));
-                    }
-                }
-                Ok(Self::Standard(entries))
-            }
-            PropertyMapWire::Compact { keys, values } => {
-                for value in values.iter().flatten() {
-                    crate::StoredValue::validate(value).map_err(serde::de::Error::custom)?;
-                }
-                if keys.len() != values.len() {
-                    return Err(serde::de::Error::custom(format!(
-                        "PropertyMap::Compact key/value length mismatch: {} keys, {} values",
-                        keys.len(),
-                        values.len(),
-                    )));
-                }
-                for window in keys.windows(2) {
-                    if window[0] >= window[1] {
-                        return Err(serde::de::Error::custom(
-                            "PropertyMap::Compact keys must be sorted by DbString order with no duplicates",
-                        ));
-                    }
-                }
-                Ok(Self::Compact { keys, values })
-            }
-        }
     }
 }
 

@@ -1,13 +1,6 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use selene_core::{
-    Change, EdgeId, GraphId, HlcTimestamp, LabelDiff, LabelSet, NodeId, Origin, PropertyDiff,
-    PropertyMap, PropertyValueType, Value,
-};
-use selene_persist::{
-    DEFAULT_WAL_FILE_NAME, SectionCompression, SnapshotConfig, SyncPolicy, WalConfig, WalWriter,
+    Change, EdgeId, GraphId, LabelDiff, LabelSet, NodeId, PropertyDiff, PropertyMap,
+    PropertyValueType, Value,
 };
 
 use crate::{
@@ -86,44 +79,4 @@ fn person_graph_type() -> GraphTypeDef {
             validation_mode: ValidationMode::Strict,
         }],
     }
-}
-
-fn temp_dir(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "selene-closed-graph-{name}-{}-{nanos}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir(&dir).unwrap();
-    dir
-}
-
-fn write_snapshot(dir: &Path, shared: &SharedGraph, sequence: u64) {
-    shared
-        .write_snapshot(SnapshotConfig {
-            dir: dir.to_path_buf(),
-            sequence,
-            compression: SectionCompression::None,
-            fsync: false,
-        })
-        .unwrap();
-}
-
-fn append_wal(dir: &Path, snapshot_seq: u64, changes: &[Change]) {
-    let mut writer = WalWriter::open(
-        &dir.join(DEFAULT_WAL_FILE_NAME),
-        WalConfig {
-            sync_policy: SyncPolicy::EveryN(1),
-            snapshot_seq,
-        },
-    )
-    .unwrap();
-    writer
-        .append(HlcTimestamp::zero(), Origin::Local, None, changes)
-        .unwrap();
-    writer.flush().unwrap();
 }

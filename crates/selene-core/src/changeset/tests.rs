@@ -226,7 +226,7 @@ fn label_diff_serialize_canonicalizes_public_field_construction() {
 }
 
 #[test]
-fn property_diff_serialize_canonicalizes_public_field_construction() {
+fn property_diff_format2_rejects_noncanonical_public_fields() {
     // `PropertyDiff.set`/`removed` are PUBLIC fields; serialize canonicalizes
     // a non-canonical diff so it round-trips through the strict decoder.
     let zebra = dbs("change.noncanon.prop.zebra");
@@ -238,10 +238,7 @@ fn property_diff_serialize_canonicalizes_public_field_construction() {
         ],
         removed: SmallVec::new(),
     };
-    let bytes = postcard::to_allocvec(&non_canonical).unwrap();
-    let round: PropertyDiff = postcard::from_bytes(&bytes).unwrap();
-    assert_eq!(round.set[0].0, apple);
-    assert_eq!(round.set[1].0, zebra);
+    assert!(encode_property_diff(&non_canonical).is_err());
 }
 
 #[test]
@@ -303,20 +300,28 @@ fn label_diff_deserialize_rejects_overlap() {
 }
 
 #[test]
-fn property_diff_deserialize_round_trips_canonical_payload() {
+fn property_diff_format2_round_trips_canonical_payload() {
     // A canonical (ascending key) property-set wire payload deserializes
     // preserving order.
     let zebra = dbs("change.deser.prop.zebra");
     let apple = dbs("change.deser.prop.apple");
-    let good = PropertyDiffWireSer {
+    let good = PropertyDiff {
         set: smallvec![
             (apple.clone(), Value::Int(1)),
             (zebra.clone(), Value::Int(2))
         ],
         removed: SmallVec::new(),
     };
-    let bytes = postcard::to_allocvec(&good).unwrap();
-    let round: PropertyDiff = postcard::from_bytes(&bytes).unwrap();
+    let bytes = encode_property_diff(&good).unwrap();
+    let Change::NodeUpdated {
+        properties_diff: round,
+        ..
+    } = crate::serde_tests::decode_changes(&bytes)
+        .unwrap()
+        .remove(0)
+    else {
+        panic!("node update")
+    };
     assert_eq!(
         round.set,
         SmallVec::<[(DbString, Value); 4]>::from_vec(vec![
@@ -327,41 +332,38 @@ fn property_diff_deserialize_round_trips_canonical_payload() {
 }
 
 #[test]
-fn property_diff_deserialize_rejects_non_canonical_payload() {
+fn property_diff_format2_rejects_non_canonical_payload() {
     // A non-ascending property-set key list is rejected as malformed.
     let zebra = dbs("change.deser.prop.noncanon.zebra");
     let apple = dbs("change.deser.prop.noncanon.apple");
-    let bad = PropertyDiffWireSer {
+    let bad = PropertyDiff {
         set: smallvec![(zebra, Value::Int(2)), (apple, Value::Int(1))],
         removed: SmallVec::new(),
     };
-    let bytes = postcard::to_allocvec(&bad).unwrap();
-    let result: Result<PropertyDiff, _> = postcard::from_bytes(&bytes);
+    let result = encode_property_diff(&bad);
     assert!(result.is_err());
 }
 
 #[test]
-fn property_diff_deserialize_rejects_duplicate_set_key() {
+fn property_diff_format2_rejects_duplicate_set_key() {
     let key = dbs("change.deser.prop.dup");
-    let bad = PropertyDiffWireSer {
+    let bad = PropertyDiff {
         set: smallvec![(key.clone(), Value::Int(1)), (key, Value::Int(2))],
         removed: SmallVec::new(),
     };
-    let bytes = postcard::to_allocvec(&bad).unwrap();
-    let result: Result<PropertyDiff, _> = postcard::from_bytes(&bytes);
+    let result = encode_property_diff(&bad);
     assert!(result.is_err());
 }
 
 #[test]
-fn property_diff_deserialize_rejects_overlap() {
+fn property_diff_format2_rejects_overlap() {
     let key = dbs("change.deser.prop");
     let mut set = SmallVec::<[(DbString, Value); 4]>::new();
     set.push((key.clone(), Value::Int(1)));
     let mut removed = SmallVec::<[DbString; 2]>::new();
     removed.push(key);
-    let bad = PropertyDiffWireSer { set, removed };
-    let bytes = postcard::to_allocvec(&bad).unwrap();
-    let result: Result<PropertyDiff, _> = postcard::from_bytes(&bytes);
+    let bad = PropertyDiff { set, removed };
+    let result = encode_property_diff(&bad);
     assert!(result.is_err());
 }
 
@@ -371,10 +373,12 @@ struct LabelDiffWireSer {
     removed: SmallVec<[DbString; 2]>,
 }
 
-#[derive(serde::Serialize)]
-struct PropertyDiffWireSer {
-    set: SmallVec<[(DbString, Value); 4]>,
-    removed: SmallVec<[DbString; 2]>,
+fn encode_property_diff(diff: &PropertyDiff) -> crate::logical::CodecResult<Vec<u8>> {
+    crate::serde_tests::encode_changes(vec![Change::NodeUpdated {
+        id: NodeId::new(1),
+        labels_diff: LabelDiff::new([], []).unwrap(),
+        properties_diff: diff.clone(),
+    }])
 }
 
 #[test]

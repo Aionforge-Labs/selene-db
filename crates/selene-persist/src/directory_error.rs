@@ -21,9 +21,6 @@ pub enum DirectoryError {
     /// Permanent coordination entries cannot be removed or replaced.
     #[error("cannot remove or replace persistent coordination entry: {0}")]
     CoordinationEntry(PathBuf),
-    /// Legacy data APIs cannot consume or mutate a format-2 control directory.
-    #[error("legacy persistence cannot access a format-2 control directory")]
-    ControlDirectory,
     /// A replace became visible but its final synchronization failed.
     #[error("artifact publication is uncertain; reopen: {source}")]
     PublicationUncertain {

@@ -1,20 +1,12 @@
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use selene_core::{Change, GraphId, HlcTimestamp, Origin, PropertyMap, db_string};
-use selene_persist::{
-    DEFAULT_WAL_FILE_NAME, SectionCompression, SnapshotConfig, SyncPolicy, WalConfig, WalWriter,
-};
+use selene_core::{Change, GraphId, PropertyMap, db_string};
 
 use super::*;
 use crate::SharedGraph;
 
 #[path = "required_edges_tests.rs"]
 mod required_edges_tests;
-
-#[path = "recovery_attachment_tests.rs"]
-mod recovery_attachment_tests;
 
 fn label(name: &str) -> DbString {
     db_string(name).unwrap()
@@ -37,17 +29,13 @@ fn provider_with(spec: CandidateStateSpec) -> Arc<MaintainedCandidateStateProvid
 }
 
 #[test]
-fn checkpoint_snapshot_requires_matching_candidate_generation() {
+fn candidate_discovery_requires_matching_generation() {
     let (spec, _, _, _, _) = current_spec();
     let provider = provider_with(spec);
-    IndexProvider::write_section_at_generation(provider.as_ref(), SubTag(CANDIDATE_STATE_SUB), 0)
+    IndexProvider::vector_candidate_state_infos(provider.as_ref(), 0)
         .expect("initial generation matches");
     assert!(matches!(
-        IndexProvider::write_section_at_generation(
-            provider.as_ref(),
-            SubTag(CANDIDATE_STATE_SUB),
-            1,
-        ),
+        IndexProvider::vector_candidate_state_infos(provider.as_ref(), 1),
         Err(ProviderError::Inconsistent { reason })
             if reason.contains("generation 0") && reason.contains("generation 1")
     ));
@@ -363,7 +351,7 @@ fn provider_node_delete_prunes_incident_tracked_edges_without_edge_tombstones() 
 }
 
 #[test]
-fn provider_snapshot_and_wal_replay_preserve_delete_reverse_state() {
+fn provider_rebuild_and_live_delete_preserve_reverse_state() {
     let (spec, name, doc, superseded, _) = current_spec();
     let provider = provider_with(spec.clone());
     let shared = SharedGraph::builder(GraphId::new(81_003))
@@ -387,18 +375,16 @@ fn provider_snapshot_and_wal_replay_preserve_delete_reverse_state() {
     };
     assert_eq!(candidate_nodes(&provider, &name), vec![active]);
 
-    let dir = temp_dir("candidate-state");
-    write_snapshot(&dir, &shared, 1);
-    append_wal(&dir, 1, &[Change::EdgeDeleted { id: stale_edge }]);
-
-    let recovered_provider = provider_with(spec);
-    let recovered = SharedGraph::recover_with_providers(
-        &dir,
-        GraphId::new(81_003),
+    let recovered_provider =
+        Arc::new(MaintainedCandidateStateProvider::from_graph([spec], &shared.read()).unwrap());
+    let recovered = SharedGraph::from_graph_with_providers(
+        shared.read().as_ref().clone(),
         vec![recovered_provider.clone() as Arc<dyn IndexProvider>],
     )
     .unwrap();
-
+    let mut txn = recovered.begin_write();
+    txn.mutator().delete_edge(stale_edge).unwrap();
+    txn.commit().unwrap();
     assert!(!recovered.read().is_edge_alive(stale_edge));
     assert_eq!(
         recovered_provider.generation(),
@@ -419,7 +405,7 @@ fn provider_snapshot_and_wal_replay_preserve_delete_reverse_state() {
 }
 
 #[test]
-fn recovery_rebuilds_candidate_state_when_snapshot_section_is_absent() {
+fn native_attachment_rebuilds_candidates_from_primary_graph() {
     let (spec, name, doc, superseded, _) = current_spec();
     let shared = SharedGraph::new(GraphId::new(81_007));
     let (active, stale) = {
@@ -438,13 +424,10 @@ fn recovery_rebuilds_candidate_state_when_snapshot_section_is_absent() {
         (active, stale)
     };
 
-    let dir = temp_dir("candidate-state-missing-section");
-    write_snapshot(&dir, &shared, 1);
-
-    let recovered_provider = provider_with(spec);
-    let recovered = SharedGraph::recover_with_providers(
-        &dir,
-        GraphId::new(81_007),
+    let recovered_provider =
+        Arc::new(MaintainedCandidateStateProvider::from_graph([spec], &shared.read()).unwrap());
+    let recovered = SharedGraph::from_graph_with_providers(
+        shared.read().as_ref().clone(),
         vec![recovered_provider.clone() as Arc<dyn IndexProvider>],
     )
     .unwrap();
@@ -458,7 +441,7 @@ fn recovery_rebuilds_candidate_state_when_snapshot_section_is_absent() {
 }
 
 #[test]
-fn provider_wal_replay_expands_declarative_edge_truncate_from_state() {
+fn provider_live_edge_truncate_and_rebuild_agree() {
     let (spec, name, doc, superseded, _) = current_spec();
     let provider = provider_with(spec.clone());
     let shared = SharedGraph::builder(GraphId::new(81_005))
@@ -482,22 +465,16 @@ fn provider_wal_replay_expands_declarative_edge_truncate_from_state() {
     };
     assert_eq!(candidate_nodes(&provider, &name), vec![active]);
 
-    let dir = temp_dir("candidate-state-edge-truncate");
-    write_snapshot(&dir, &shared, 1);
-    append_wal(
-        &dir,
-        1,
-        &[Change::EdgesOfTypeTruncated { label: superseded }],
-    );
-
-    let recovered_provider = provider_with(spec);
-    let recovered = SharedGraph::recover_with_providers(
-        &dir,
-        GraphId::new(81_005),
+    let recovered_provider =
+        Arc::new(MaintainedCandidateStateProvider::from_graph([spec], &shared.read()).unwrap());
+    let recovered = SharedGraph::from_graph_with_providers(
+        shared.read().as_ref().clone(),
         vec![recovered_provider.clone() as Arc<dyn IndexProvider>],
     )
     .unwrap();
-
+    let mut txn = recovered.begin_write();
+    txn.mutator().truncate_edge_type(superseded).unwrap();
+    txn.commit().unwrap();
     assert!(!recovered.read().is_edge_alive(stale_edge));
     assert_eq!(
         recovered_provider.generation(),
@@ -510,7 +487,7 @@ fn provider_wal_replay_expands_declarative_edge_truncate_from_state() {
 }
 
 #[test]
-fn provider_wal_replay_expands_declarative_node_truncate_from_state() {
+fn provider_live_node_truncate_and_rebuild_agree() {
     let (spec, name, doc, superseded, _) = current_spec();
     let provider = provider_with(spec.clone());
     let shared = SharedGraph::builder(GraphId::new(81_006))
@@ -534,18 +511,16 @@ fn provider_wal_replay_expands_declarative_node_truncate_from_state() {
     };
     assert_eq!(candidate_nodes(&provider, &name), vec![active]);
 
-    let dir = temp_dir("candidate-state-node-truncate");
-    write_snapshot(&dir, &shared, 1);
-    append_wal(&dir, 1, &[Change::NodesOfTypeTruncated { label: doc }]);
-
-    let recovered_provider = provider_with(spec);
-    let recovered = SharedGraph::recover_with_providers(
-        &dir,
-        GraphId::new(81_006),
+    let recovered_provider =
+        Arc::new(MaintainedCandidateStateProvider::from_graph([spec], &shared.read()).unwrap());
+    let recovered = SharedGraph::from_graph_with_providers(
+        shared.read().as_ref().clone(),
         vec![recovered_provider.clone() as Arc<dyn IndexProvider>],
     )
     .unwrap();
-
+    let mut txn = recovered.begin_write();
+    txn.mutator().truncate_node_type(doc).unwrap();
+    txn.commit().unwrap();
     assert!(!recovered.read().is_node_alive(active));
     assert!(!recovered.read().is_node_alive(stale));
     assert!(!recovered.read().is_edge_alive(stale_edge));
@@ -568,49 +543,6 @@ fn duplicate_spec_names_are_rejected() {
     };
 
     assert!(matches!(err, ProviderError::Inconsistent { .. }));
-}
-
-#[test]
-fn provider_rejects_snapshot_spec_drift() {
-    let (spec, _, _, _, _) = current_spec();
-    let provider = provider_with(spec);
-    let bytes = provider
-        .write_section(SubTag(CANDIDATE_STATE_SUB))
-        .expect("snapshot section writes");
-    let drifted = provider_with(CandidateStateSpec::new(label("other")));
-
-    let err = drifted
-        .read_section(SubTag(CANDIDATE_STATE_SUB), &bytes)
-        .expect_err("spec drift must fail recovery");
-
-    assert!(matches!(err, ProviderError::InvalidPayload { .. }));
-}
-
-#[test]
-fn provider_rejects_snapshot_dangling_tracked_edge() {
-    let (spec, _, doc, superseded, _) = current_spec();
-    let provider = provider_with(spec.clone());
-    let snapshot = CandidateStateSnapshot {
-        version: SNAPSHOT_VERSION,
-        generation: 7,
-        specs: vec![spec],
-        node_labels: vec![(NodeId::new(1), LabelSet::single(doc))],
-        edges: vec![(
-            EdgeId::new(1),
-            TrackedEdge {
-                label: superseded,
-                source: NodeId::new(2),
-                target: NodeId::new(1),
-            },
-        )],
-    };
-    let bytes = postcard::to_stdvec(&snapshot).unwrap();
-
-    let err = provider
-        .read_section(SubTag(CANDIDATE_STATE_SUB), &bytes)
-        .expect_err("dangling tracked edge must fail recovery");
-
-    assert!(matches!(err, ProviderError::InvalidPayload { .. }));
 }
 
 #[test]
@@ -650,45 +582,4 @@ fn provider_canonicalizes_public_spec_label_vectors() {
 
     assert_eq!(candidate_nodes(&provider, &name), vec![active]);
     assert!(!provider.contains(&name, stale));
-}
-
-fn temp_dir(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "selene-graph-{name}-{}-{nanos}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir(&dir).unwrap();
-    dir
-}
-
-fn write_snapshot(dir: &Path, shared: &SharedGraph, sequence: u64) {
-    let outcome = shared
-        .write_snapshot(SnapshotConfig {
-            dir: dir.to_path_buf(),
-            sequence,
-            compression: SectionCompression::None,
-            fsync: false,
-        })
-        .unwrap();
-    assert_eq!(outcome.snapshot_seq, sequence);
-}
-
-fn append_wal(dir: &Path, snapshot_seq: u64, changes: &[Change]) {
-    let mut writer = WalWriter::open(
-        &dir.join(DEFAULT_WAL_FILE_NAME),
-        WalConfig {
-            sync_policy: SyncPolicy::EveryN(1),
-            snapshot_seq,
-        },
-    )
-    .unwrap();
-    writer
-        .append(HlcTimestamp::zero(), Origin::Local, None, changes)
-        .unwrap();
-    writer.flush().unwrap();
 }

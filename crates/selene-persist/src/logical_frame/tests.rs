@@ -203,7 +203,7 @@ fn auto_keeps_raw_when_zstd_is_not_smaller_and_large_encoder_frames_decode() {
 #[test]
 fn formats_are_visibly_isolated_and_foreign_store_is_rejected() {
     let bytes = fixture(&[0], 0, 1);
-    assert!(crate::WalReader::from_bytes(&bytes).is_err());
+    assert!(!bytes.starts_with(b"SLDB"));
     assert_eq!(
         decode(b"SLDB", context(), Boundary::UnsealedEnd, MAX_PAYLOAD).unwrap_err(),
         FrameError::Invalid("magic")

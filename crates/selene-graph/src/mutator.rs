@@ -9,6 +9,7 @@ mod delete_set;
 mod factory_reset;
 mod property_index;
 mod remove;
+pub(crate) mod schema_event;
 mod text_index;
 mod vector_index;
 

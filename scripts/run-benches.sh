@@ -87,12 +87,9 @@ selene-db-graph|bound_type_validation|0
 selene-db-graph|concurrent_writers|0
 selene-db-graph|graph_hub_delete|0
 selene-db-graph|graph_delete_reclamation|0
-selene-db-graph|graph_snapshot_roundtrip|0
 selene-db-graph|graph_read_under_write|0
 selene-db-graph|graph_mixed_workload|0
 selene-db-graph|text_search_bm25|0
-selene-db-persist|wal|0
-selene-db-persist|snapshot|0
 selene-db-persist|store_control|0
 selene-db-gql|parse|1
 selene-db-gql|analyze|1
@@ -116,7 +113,7 @@ SMOKE="
 selene-db-graph|single_graph|node_fetch
 selene-db-graph|single_graph|label_index
 selene-db-graph|bulk_mutation|commit_batch
-selene-db-persist|wal|append_batch_1000
+selene-db-persist|store_control|anchor
 selene-db-gql|plan_optimize|
 selene-db-gql|expression_eval|
 selene-db-algorithms|projection|projection_build

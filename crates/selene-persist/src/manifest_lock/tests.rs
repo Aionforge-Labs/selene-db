@@ -4,7 +4,18 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::{DEFAULT_WAL_FILE_NAME, Manifest};
+use crate::control::EmptyStoreControl;
+fn identity() -> crate::control::CompatibilityIdentity {
+    crate::control::CompatibilityIdentity::new(
+        "fixture-profile",
+        1,
+        [7; 32],
+        [16, 0, 0],
+        "binary",
+        1,
+    )
+    .unwrap()
+}
 
 const CHILD_DIR_ENV: &str = "SELENE_MANIFEST_LOCK_CHILD_DIR";
 
@@ -254,30 +265,30 @@ fn manifest_lock_child_helper() {
 #[test]
 fn direct_manifest_publication_uses_the_epoch_lock() {
     let dir = temp_dir("manifest-write");
-    let owner = StoreWriter::acquire(&StoreDirectory::open(&dir).unwrap()).unwrap();
-    let first = ManifestEpochGuard::acquire(&owner).unwrap();
+    let cap = StoreDirectory::open(&dir).unwrap();
+    let mut control = EmptyStoreControl::create_empty(&cap, identity()).unwrap();
+    let first = PersistenceReadGuard::acquire_in(&cap).unwrap();
     let (contended_tx, contended_rx) = sync_channel(0);
-    let manifest = Manifest {
-        live_snapshot_seq: 7,
-        active_wal_header_seq: 7,
-        compaction_epoch: 0,
-        active_wal: DEFAULT_WAL_FILE_NAME.to_owned(),
-        archived_wal_seqs: vec![7],
-    };
-    let worker_owner = owner.clone();
-    let expected = manifest.clone();
+    let before = std::fs::read(dir.join("CURRENT")).unwrap();
     let worker = thread::spawn(move || {
         set_contention_hook(move || contended_tx.send(()).unwrap());
-        manifest.write_atomic_with_authority(&worker_owner).unwrap();
+        control.publish_empty().unwrap();
     });
 
     contended_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("MANIFEST writer reaches the held epoch lock");
-    assert!(Manifest::read(&dir).unwrap().is_none());
+    assert_eq!(std::fs::read(dir.join("CURRENT")).unwrap(), before);
     drop(first);
     worker.join().unwrap();
-    assert_eq!(Manifest::read(&dir).unwrap(), Some(expected));
+    assert_eq!(
+        EmptyStoreControl::open(&cap, &identity())
+            .unwrap()
+            .manifest()
+            .generation()
+            .get(),
+        2
+    );
 
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -294,23 +305,24 @@ fn guard_keeps_publication_on_the_resolved_directory_after_alias_retarget() {
     std::fs::create_dir(&first_dir).unwrap();
     std::fs::create_dir(&second_dir).unwrap();
     symlink(&first_dir, &alias).unwrap();
-    let owner = StoreWriter::acquire(&StoreDirectory::open(&alias).unwrap()).unwrap();
-    let mut guard = ManifestEpochGuard::acquire(&owner).unwrap();
+    let cap = StoreDirectory::open(&alias).unwrap();
+    let mut control = EmptyStoreControl::create_empty(&cap, identity()).unwrap();
+    let guard = PersistenceReadGuard::acquire_in(&cap).unwrap();
     assert_eq!(guard.dir(), first_dir);
 
     std::fs::remove_file(&alias).unwrap();
     symlink(&second_dir, &alias).unwrap();
-    let manifest = Manifest {
-        live_snapshot_seq: 9,
-        active_wal_header_seq: 9,
-        compaction_epoch: 0,
-        active_wal: DEFAULT_WAL_FILE_NAME.to_owned(),
-        archived_wal_seqs: vec![9],
-    };
-    manifest.write_atomic_locked(&mut guard).unwrap();
-
-    assert_eq!(Manifest::read(&first_dir).unwrap(), Some(manifest));
-    assert!(Manifest::read(&second_dir).unwrap().is_none());
     drop(guard);
+    control.publish_empty().unwrap();
+    drop(control);
+    assert_eq!(
+        EmptyStoreControl::open(&StoreDirectory::open(&first_dir).unwrap(), &identity())
+            .unwrap()
+            .manifest()
+            .generation()
+            .get(),
+        2
+    );
+    assert!(!second_dir.join("CURRENT").exists());
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -7,26 +7,36 @@ use crate::{
 use proptest::prelude::*;
 
 #[test]
-fn legacy_nested_list_bytes_reject_before_stack_exhaustion_and_reset_depth() {
-    // Independent postcard fixture: Value::List tag 10, length 1, repeatedly,
-    // followed by Value::Null tag 25. No encoder shares the depth policy here.
+fn format2_nested_list_bytes_reject_before_stack_exhaustion_and_reset_depth() {
+    // Independent format-2 fixture: LIST tag 11, u32-LE count, then NULL tag 0.
     let mut bytes = Vec::new();
     for _ in 0..crate::MAX_STORED_VALUE_DEPTH {
-        bytes.extend([10, 1]);
+        bytes.extend([11, 1, 0, 0, 0]);
     }
-    bytes.push(25);
-    assert!(postcard::from_bytes::<Value>(&bytes).is_err());
-    assert_eq!(postcard::from_bytes::<Value>(&[25]).unwrap(), Value::Null);
+    bytes.push(0);
+    assert!(crate::logical::decode_value(&bytes, Default::default()).is_err());
+    assert_eq!(
+        crate::logical::decode_value(&[0], Default::default())
+            .unwrap()
+            .as_value(),
+        &Value::Null
+    );
     let mut value = Value::Null;
     for _ in 1..crate::MAX_STORED_VALUE_DEPTH {
         value = Value::List(vec![value]);
     }
     assert!(StoredValue::validate(&value).is_ok());
-    assert!(postcard::to_allocvec(&value).is_ok());
+    assert!(encode(&value).is_ok());
     let over = Value::List(vec![value]);
     assert!(StoredValue::validate(&over).is_err());
-    assert!(postcard::to_allocvec(&over).is_err());
-    assert_eq!(postcard::to_allocvec(&Value::Null).unwrap(), vec![25]);
+    assert!(encode(&over).is_err());
+    assert_eq!(encode(&Value::Null).unwrap(), vec![0]);
+}
+
+fn encode(value: &Value) -> crate::logical::CodecResult<Vec<u8>> {
+    let mut encoder = crate::logical::Encoder::new(Default::default())?;
+    encoder.value(value, 1)?;
+    Ok(encoder.finish())
 }
 
 #[test]
@@ -109,40 +119,52 @@ fn logical_property_wire_rejects_bypassed_public_legacy_constructors() {
         set: [(key, value)].into_iter().collect(),
         removed: Default::default(),
     };
-    assert!(postcard::to_allocvec(&map).is_err());
-    assert!(postcard::to_allocvec(&diff).is_err());
+    assert!(crate::serde_tests::encode_map(&map).is_err());
+    assert!(
+        crate::serde_tests::encode_changes(vec![crate::Change::NodeUpdated {
+            id: NodeId::new(1),
+            labels_diff: crate::LabelDiff::new([], []).unwrap(),
+            properties_diff: diff
+        }])
+        .is_err()
+    );
 }
 
 #[test]
-fn legacy_property_default_bytes_reject_query_only_payloads_and_keep_scalar_layout() {
-    use crate::{PredefinedValueType, PropertyDef, PropertyDefV1, ValueType};
+fn format2_property_defaults_reject_query_only_payloads() {
+    use crate::{PredefinedValueType, PropertyDef, ValueType};
     let name = db_string("p").unwrap();
     let ty = ValueType::predefined(PredefinedValueType::Int);
     for value in [
         Value::Int(7),
         Value::List(vec![Value::NodeRef(NodeId::new(1))]),
     ] {
-        // Independent legacy field sequence, bypassing the guarded PropertyDef serializer.
-        let bytes =
-            postcard::to_allocvec(&(name.clone(), ty.clone(), true, Some(value.clone()))).unwrap();
-        let old = postcard::from_bytes::<PropertyDefV1>(&bytes);
-        let current = postcard::to_allocvec(&(
-            name.clone(),
-            ty.clone(),
-            true,
-            Some(value.clone()),
-            false,
-            false,
-            None::<Box<crate::RecordFieldStructure>>,
-        ))
-        .unwrap();
-        let decoded = postcard::from_bytes::<PropertyDef>(&current);
+        let mut node = crate::NodeTypeDef::new(crate::LabelSet::single(name.clone()));
+        node.properties.push(PropertyDef {
+            name: name.clone(),
+            value_type: ty.clone(),
+            nullable: true,
+            default: Some(value.clone()),
+            immutable: false,
+            unique: false,
+            record_fields: None,
+        });
+        let definition = crate::logical::GraphDefinition {
+            name: name.clone(),
+            nodes: vec![(name.clone(), node)],
+            edges: vec![],
+        };
+        let mut encoder = crate::logical::Encoder::new(Default::default()).unwrap();
+        let result = encoder.graph_definition(&definition);
         if matches!(value, Value::Int(_)) {
-            assert_eq!(postcard::to_allocvec(&old.unwrap()).unwrap(), bytes);
-            assert_eq!(postcard::to_allocvec(&decoded.unwrap()).unwrap(), current);
+            result.unwrap();
+            let bytes = encoder.finish();
+            let mut budget = crate::logical::Budget::new(Default::default()).unwrap();
+            let mut decoder = crate::logical::Decoder::new(&bytes, &mut budget).unwrap();
+            assert_eq!(decoder.graph_definition().unwrap(), definition);
+            decoder.finish().unwrap();
         } else {
-            assert!(old.is_err());
-            assert!(decoded.is_err());
+            assert!(result.is_err());
         }
     }
 }

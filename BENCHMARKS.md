@@ -433,10 +433,10 @@ check one thing:
 run-benches.sh --list                          # enumerate registered benches + smoke subset
 run-benches.sh --smoke                          # curated <~60s tripwire subset (profile quick)
 run-benches.sh                                  # FULL run, every bench (the north-star sweep)
-run-benches.sh --bench wal                      # one bench bin (scoped compile + run)
+run-benches.sh --bench store_control              # one bench bin (scoped compile + run)
 run-benches.sh --bench vector_graph_retrieval --compile-only  # compile tripwire, no Criterion run
 run-benches.sh --crate selene-db-graph          # every bench in one package
-run-benches.sh --bench wal --filter body_size   # one criterion group within a bin
+run-benches.sh --bench logical_wal --filter encode   # one criterion group within a bin
 run-benches.sh --bench graph_hub_delete --sample-size 50 --measurement-time 5   # A/B fidelity knobs
 run-benches.sh --bench single_graph --filter graph_exact_vector_scan --vector-scales million
 run-benches.sh --bench vector_index_rebuild --vector-scales 10000,50000
@@ -1081,19 +1081,19 @@ measurements.
 | `core_value_clone/json_parse_object64` | 8.7265 µs (quick) | Parse and validate a 64-field JSON object with nested scalar metadata values. Latest PR-local parse-validation A/B: 10.651 µs → 8.7265 µs with the same fused validation and single-lookup duplicate-key insertion. Earlier map-backed duplicate check: 13.320 µs → 10.944 µs. |
 | `core_value_clone/property_map_from_pairs_1` | 8.509 ns (quick) | Build a one-property standard `PropertyMap`. PR-local singleton fast path A/B: 20.617 ns → 8.509 ns by returning len 0/1 maps before sort/dedup work. |
 | `core_value_clone/property_map_compact_1` | 22.327 ns (quick) | Build a one-key compact `PropertyMap`. PR-local singleton fast path A/B: 50.580 ns → 22.327 ns by collecting keys/values inline and returning len 0/1 maps before sort/dedup work. |
-| `core_value_clone/property_map_compact_postcard_encode_1` | 22.413 ns (quick) | Encode a canonical one-key compact `PropertyMap` with postcard. Latest PR-local borrowed-serde A/B: 35.921 ns → 22.413 ns by serializing canonical key/value storage by reference instead of cloning it before encode. Earlier canonical fast path: 60.158 ns → 35.470 ns by reusing length-aligned sorted compact storage. |
+| `core_value_clone/property_map_compact_logical_encode_1` | ~110 ns (quick) | Encode a one-key compact `PropertyMap` as a format-2 logical `NodeCreated` change. F02-PR08 cutover row; prior postcard row retired with the generic serde encoding (was 22.413 ns quick — the logical delta envelope costs more than the bare postcard map). |
 | `core_value_clone/property_map_from_pairs_256_reverse` | 2.6387 µs (quick) | Build a 256-property map from reverse-sorted pairs. Quick local A/B after `DbString` moved to shared storage: 3.45 µs → 2.68 µs. Canonical-scan guard after the sorted-input fast path: 2.6488 µs → 2.6387 µs. |
 | `core_value_clone/property_map_from_pairs_256_sorted` | 1.6249 µs (quick) | Build a 256-property map from already-canonical pairs. PR-local canonical fast path A/B: 2.5746 µs → 1.6249 µs by reusing the collected sorted entries directly. |
-| `core_value_clone/property_map_standard_postcard_encode_256` | 2.2996 µs (quick) | Encode a canonical 256-entry standard `PropertyMap` with postcard. PR-local borrowed-serde A/B: 3.5841 µs → 2.2996 µs by avoiding clone/sort on already-canonical entries while preserving the non-canonical public-construction fallback. |
+| `core_value_clone/property_map_standard_logical_encode_256` | ~4.0 µs (quick) | Encode a 256-entry standard `PropertyMap` as a format-2 logical `NodeCreated` change. F02-PR08 cutover row; prior postcard row retired with the generic serde encoding (was 2.2996 µs quick). |
 | `core_value_clone/property_map_compact_256_reverse` | 4.7462 µs (quick) | Build a 256-key compact map from reverse-sorted schema keys. PR-local canonical-key guard: 4.7589 µs → 4.7462 µs, preserving the existing sort/dedup path for non-canonical input. |
 | `core_value_clone/property_map_compact_256_sorted` | 1.7334 µs (quick) | Build a 256-key compact map from already-canonical schema keys. PR-local canonical-key fast path A/B: 4.6719 µs → 1.7334 µs by reusing aligned keys/values directly. |
-| `core_value_clone/property_map_compact_postcard_encode_256` | 2.5201 µs (quick) | Encode a canonical 256-key compact `PropertyMap` with postcard. PR-local borrowed-serde A/B: 3.5046 µs → 2.5201 µs by borrowing aligned compact key/value slices instead of cloning them before encode. |
+| `core_value_clone/property_map_compact_logical_encode_256` | ~4.1 µs (quick) | Encode a 256-key compact `PropertyMap` as a format-2 logical `NodeCreated` change. F02-PR08 cutover row; prior postcard row retired with the generic serde encoding (was 2.5201 µs quick). |
 | `core_change_diff/property_diff_set_1` | 9.0227 ns (quick) | Build a `PropertyDiff` with one set property and no removals. PR-local A/B: 23.291 ns → 9.0227 ns (-61.3%) by collecting directly into inline `SmallVec` storage and skipping sort/dedup for len 0/1 set inputs. |
 | `core_change_diff/property_diff_set_256_reverse` | 2.6632 µs (quick) | Build a 256-property `PropertyDiff` from reverse-sorted set entries. PR-local canonical-set guard: 2.6779 µs → 2.6632 µs, preserving the existing stable sort/dedup path for non-canonical input. |
 | `core_change_diff/property_diff_set_256_sorted` | 1.6691 µs (quick) | Build a 256-property `PropertyDiff` from already-canonical set entries. PR-local canonical-set fast path A/B: 2.5985 µs → 1.6691 µs by skipping redundant sort/dedup work. |
 | `core_change_diff/property_diff_removed_256_sorted` | 719.80 ns (quick) | Build a removal-only `PropertyDiff` with 256 already-canonical removed keys; grounds removed-side constructor and overlap-check cost separately from set-side rows. |
 | `core_change_diff/property_diff_set_removed_128_each_sorted` | 1.3453 µs (quick) | Build a disjoint `PropertyDiff` with 128 canonical set entries and 128 canonical removed keys. PR-local merge-scan overlap A/B: 2.7893 µs → 1.3453 µs (-51.9%) by walking the two sorted key lists once instead of binary-searching every set key. |
-| `core_change_diff/property_diff_postcard_encode_256_sorted` | 2.0383 µs (quick) | Encode a canonical 256-property `PropertyDiff` with postcard. PR-local borrowed-serde A/B: 3.4432 µs → 2.0383 µs by serializing canonical set/removal slices by reference while preserving the public-field sort fallback. |
+| `core_change_diff/property_diff_logical_encode_256_sorted` | ~4.2 µs (quick) | Encode a 256-property `PropertyDiff` as a format-2 logical `NodeUpdated` change. F02-PR08 cutover row; prior postcard row retired with the generic serde encoding (was 2.0383 µs quick). |
 | `core_change_diff/label_diff_added_100_reverse` | 636.81 ns (quick) | Build a 100-label `LabelDiff` from reverse-sorted added labels. PR-local canonical-label guard: 636.46 ns → 636.81 ns, preserving the existing sort/dedup path for non-canonical input. |
 | `core_change_diff/label_diff_added_100_sorted` | 411.80 ns (quick) | Build a 100-label `LabelDiff` from already-canonical added labels. PR-local canonical-label fast path A/B: 625.95 ns → 411.80 ns by skipping redundant sort/dedup work. |
 | `core_change_diff/label_diff_removed_100_sorted` | 281.86 ns (quick) | Build a removal-only `LabelDiff` with 100 already-canonical removed labels; complements the existing add-only rows. |
@@ -1103,7 +1103,7 @@ measurements.
 | `core_label_set/from_iter_100_sorted` | 395.12 ns (quick) | Build a 100-label `LabelSet` from already-canonical labels. PR-local canonical fast path A/B: 2.6632 µs → 395.12 ns by reusing the collected sorted labels directly. |
 | `core_vector_value/construct_validate/128/768/1536` | 55.4 ns / 276 ns / 528 ns (quick) | Validate finite, non-empty `f32` vectors while constructing `VectorValue`; roughly linear in dimension. |
 | `core_vector_value/clone_arc/128/768/1536` | 3.12 ns / 3.12 ns / 3.13 ns (quick) | Clone `VectorValue` shared component storage; intentionally dimension-independent. |
-| `core_vector_value/postcard_roundtrip/128/768/1536` | 240 ns / 1.04 µs / 2.07 µs (quick) | Serialize and deserialize `Value::Vector`, including deserialize-time invariant checks. |
+| `core_vector_value/logical_roundtrip/128/768/1536` | ~604 ns / 3.11 µs / 6.0 µs (quick) | Encode and decode `Value::Vector` through the format-2 logical value codec (`StoredValue`), including decode-time invariant checks. F02-PR08 cutover row; prior postcard row retired with the generic serde encoding (was 240 ns / 1.04 µs / 2.07 µs quick). |
 | `core_vector_distance/squared_euclidean/128/768/1536` | 19.0 ns / 116.3 ns / 224.2 ns (full B9) | Exact lower-is-better L2-squared metric, safe `f64x4` accumulation; B9 keeps the 128-dim single-chain path and improves the widest row. |
 | `core_vector_distance/cosine/128/768/1536` | 31.0 ns / 179.7 ns / 358.6 ns (full B9) | Exact cosine distance with zero-norm checks and clamped similarity; B9 keeps one-off cosine mostly noise-flat while accelerating bound-query ANN paths. |
 | `core_vector_distance/negative_inner_product/128/768/1536` | 15.6 ns / 90.0 ns / 179.7 ns (full B9) | Max-inner-product adapter (`-dot`) with lower-is-better ordering; B9 uses four independent dot accumulators for wider vectors. |
@@ -2740,16 +2740,10 @@ already mostly Arc-backed and does not dominate the commit floor.
 | `provider_fanout/extra_k4_with_panic_one` | extra=4 + panic | n/a | Opt-in `SELENE_BENCH_INCLUDE_PANIC_PROVIDER=1`. |
 | `provider_fanout/active_set_edge_create_k40` | 40 edge creates + active-set provider | 283.2 µs | In-memory commit/provider path for `CONTRADICTS`-style active-set removal; no WAL. |
 | `provider_fanout/active_set_edge_delete_k40` | 40 edge deletes + active-set provider | 218.8 µs | Delete path uses provider-owned `edge_id -> source` state to reinsert active nodes; seed excluded from timed body. |
-| `provider_fanout/active_set_wal_edge_create_k40` | 40 edge creates + WAL + active-set provider | 4.75 ms | Core WAL durability plus provider removal; provider state itself remains in-memory. |
-| `provider_fanout/active_set_wal_edge_delete_k40` | 40 edge deletes + WAL + active-set provider | 4.21 ms | Core WAL durability plus provider reinsertion; seed excluded from timed body. |
 | `provider_fanout/active_hint_recent_edge_create_k40` | 40 `RECENT_IN` creates + active-hint provider | 242.5 µs | Maintains window→member state in provider memory; no WAL. |
 | `provider_fanout/active_hint_recent_edge_delete_k40` | 40 `RECENT_IN` deletes + active-hint provider | 199.4 µs | Delete path uses provider-owned edge provenance to remove window members. |
-| `provider_fanout/active_hint_wal_recent_edge_create_k40` | 40 `RECENT_IN` creates + WAL + active-hint provider | 4.78 ms | Core WAL durability dominates active-hint membership maintenance. |
-| `provider_fanout/active_hint_wal_recent_edge_delete_k40` | 40 `RECENT_IN` deletes + WAL + active-hint provider | 4.41 ms | WAL-backed delete path remains near the active-set WAL boundary. |
 | `provider_fanout/active_hint_dependency_edge_create_k40` | 40 `DEPENDS_ON` creates + active-hint provider | 300.3 µs | Maintains anchor→dependency state for one broad task anchor; no WAL. |
 | `provider_fanout/active_hint_dependency_edge_delete_k40` | 40 `DEPENDS_ON` deletes + active-hint provider | 199.4 µs | Delete path removes dependency targets through provider-owned edge provenance. |
-| `provider_fanout/active_hint_wal_dependency_edge_create_k40` | 40 `DEPENDS_ON` creates + WAL + active-hint provider | 4.57 ms | Core WAL durability dominates dependency maintenance. |
-| `provider_fanout/active_hint_wal_dependency_edge_delete_k40` | 40 `DEPENDS_ON` deletes + WAL + active-hint provider | 4.55 ms | WAL-backed dependency deletes stay in the same cost band as active-set deletes. |
 | `bound_type_validation/unbound_commit` | 10k / 50k / 100k | 291 / 246 / 320 µs | Commit without graph-type validation. |
 | `bound_type_validation/bound_commit_simple` | 10k / 50k / 100k | 304 / 250 / 350 µs | Typed-commit validation delta (small). |
 | `bound_type_validation/bound_commit_unique` | 1k quick | 108.11 µs | Unique declaration present, but the 100-write batch updates a non-unique property and stays on the delta gate. Command: `scripts/run-benches.sh --profile quick --bench bound_type_validation --filter bound_commit_unique/1000`. |
@@ -2812,7 +2806,6 @@ and
 | `graph_mixed_workload/point_read_indexed_update_r60w40` | 10k / 50k / 100k | 9.261 / 11.129 / 16.842 ms | Same scalar cycle, but the 40 writes update `Person.age`, a registered typed property index. The close delta to the non-indexed row keeps property-index maintenance below the dominant sequential commit cost at these scales. |
 | `graph_mixed_workload/candidate_state_edge_update_r60w40` | 10k / 50k / 100k | 3.196 / 5.310 / 11.826 ms | One maintained candidate-state cycle: 60 generation-checked `current` set reads plus 20 `SUPERSEDED_BY` edge deletes and 20 creates. Exercises provider reactivation and invalidation without WAL. |
 | `graph_mixed_workload/candidate_state_metadata_edge_update_r60w40` | 10k / 50k / 100k | 2.976 / 4.333 / 9.922 ms | Same provider write cycle, but the 60 reads fetch generation-checked candidate-state metadata rather than materializing the full `current` set. The widening delta against the full-set row isolates set materialization cost. |
-| `graph_mixed_workload/point_read_update_r60w40_wal` | 10k / 50k / 100k | 139.11 / 130.07 / 134.45 ms | Same scalar 60/40 cycle backed by a real per-iteration WAL tempdir with committer batching off. Setup/teardown excluded; the near scale-flat cost shows per-commit durability barriers dominate this sequential 40-write shape. |
 
 PR-local candidate-state member-cache A/B:
 
@@ -2914,21 +2907,14 @@ lock collapses this. Dual of `concurrent_writers` (which times the writers).
 ### §3e `concurrent_writers` — serialized writer queueing under contention
 
 Thread fan-in arms sweep `[1, 2, 4, 8, 16, 32]` (representative `1/8/32` shown).
-Two axes:
+One axis:
 
 - **In-memory** (`threads{N}`, `threads{N}_with_readers8`) — no WAL; pure
-  single-committer queueing + lock-free reads under contention. Group commit has
-  nothing to coalesce here (no `fsync`), so it is not run on this axis.
-- **WAL-backed** (`wal_threads{N}_batchOFF` vs `_batchON`) — a real on-disk WAL
-  (tempdir per iteration; the committer is the sole `fsync` caller in
-  `SyncPolicy::OnFlushOnly`). The only axis where group commit can win, because
-  the win is coalesced `fsync` syscalls. `batchOFF` = `CommitBatching::Off` (one
-  `fsync`/commit); `batchON` = `CommitBatching::DEFAULT_ON` (coalesce ≤64 commits
-  / 8 MiB per `fsync`).
+  single-committer queueing + lock-free reads under contention.
 
-On `full`/`stress`, each WAL-backed arm also prints an **untimed**
-`[concurrent_writers percentiles] … p50/p99/p999` line to stderr (the
-tail-latency story the mean sample can't show).
+Durable contention rows belong to the facade-owned commit path
+(`durable_commit`); the WAL-backed `wal_threads{N}_batchOFF/_batchON` arms and
+their untimed percentile dumps were retired in F02-PR08 with the format-1 WAL.
 
 _Re-measured 2026-08-16 (same M5 box, rustc 1.97.1) via
 `scripts/run-benches.sh --profile full --bench concurrent_writers`._
@@ -2937,8 +2923,6 @@ _Re-measured 2026-08-16 (same M5 box, rustc 1.97.1) via
 |---|---:|---:|---:|---|
 | `concurrent_writers/threads{N}` | 102.8 ms | 389.3 ms | 372.2 ms | In-memory; 1000 commits, 10 updates each. **Shape changed — see below.** |
 | `concurrent_writers/threads{N}_with_readers8` | 171.3 ms | 319.3 ms | 305.5 ms | Same load + 8 snapshot readers. −76% / −50% / −53%. |
-| `concurrent_writers/wal_threads{N}_batchOFF` | 4.023 s | 3.905 s | 3.857 s | Real WAL, one `fsync`/commit. Flat, as expected — `fsync` latency is the term. |
-| `concurrent_writers/wal_threads{N}_batchON` | 3.800 s | 889.3 ms | **243.7 ms** | Group commit — **15.8× over batchOFF at 32 threads** (was 14×); ≈ batchOFF at 1 thread (nothing to coalesce). |
 
 **The in-memory row is no longer flat, and that is the headline.** It used to
 read 332 / 304 / 305 ms across 1 / 8 / 32 threads — near-flat, which said
@@ -2961,13 +2945,9 @@ improving 50–76% across the board while the writer-only row regresses is the
 part that most deserves a follow-up: it says lock-free reads under contention
 got cheaper at the same time writer queueing got more expensive.
 
-The WAL axis is unaffected in shape — `fsync` latency still dominates it, group
-commit still coalesces, and the 32-thread group-commit win got slightly better.
+## §4 selene-persist — empty-store control
 
-## §4 selene-persist — WAL & snapshot
-
-Bench bins: `wal`, `snapshot`, `store_control`, plus `graph_snapshot_roundtrip` (lives in the
-`selene-graph` crate but exercises the persist/D14 path end to end).
+Bench bin: `store_control` (format-2 empty-store directory/control overhead).
 
 ### Empty-store directory/control overhead (F02-PR01)
 
@@ -3063,376 +3043,16 @@ change. These runs are not an isolated optimization A/B and no causal speedup
 is claimed. Publication had three high outliers. No sync barrier was removed to
 obtain these numbers. Native process/fault evidence is not power-loss proof.
 
-### §4a WAL
-
-_§4a re-measured 2026-08-16 (same M5 box, rustc 1.97.1) via
-`scripts/run-benches.sh --profile full --bench wal`. The file-level
-2026-06-01 stamp still governs every other section._
-
-`scale` = WAL entries, not graph nodes. `_no_fsync` rows use
-`SyncPolicy::OnFlushOnly` (append/threshold/drop fsync suppressed; a caller
-`flush()` would still sync).
-
-| Bench | 10k | 50k | 100k | 100k Δ | Notes |
-|---|---:|---:|---:|---:|---|
-| `persist_wal_append_single` | 58.49 ms | 295.5 ms | 604.7 ms | −4.2% | Single-entry loop, `EveryN(1000)`. |
-| `persist_wal_append_single_no_fsync` | 12.4 ms | 59.03 ms | 120.2 ms | **+8.1%** | Donor-parity diagnostic, no append fsync. |
-| `persist_wal_append_batch_1000` | 6.295 ms | 8.585 ms | 10.28 ms | −18.3% | 1000-change entries — **~59× faster than per-entry at 100k**. |
-| `persist_wal_append_batch_1000_no_fsync` | 2.239 ms | 3.997 ms | 6.092 ms | −26.4% | Batched, no flush in timed body. |
-| `persist_wal_replay` | 3.882 ms | 15.15 ms | 22.83 ms | −29.3% | Fixed-layout header + xxh3 + BufReader. |
-| `persist_wal_open_scan` | 233.79 µs | 1.21 ms | 2.228 ms | **+45.5%** | Writer reopen validation scan. |
-
-**The two regressions are the priced-in cost of WAL 3.0.** The window between
-the two measurements contains `bfb904c4` (#1108, "bring WAL framing under
-integrity protection"), which widened the entry prefix to 40 bytes and put a
-checksum on it. `append_single_no_fsync` pays that on every write and
-`open_scan` verifies it on every entry — at 100k, +0.7 ms over the scan is
-~7 ns/entry, the right order for an xxh3 over 40 bytes. Both are consistent
-with that single cause; neither was bisected, so treat the attribution as
-the leading explanation rather than a measured one.
-
-Replay moving the other way (−29.3%) is the same change paying for itself: a
-prefix checksum lets replay reject a bad entry without decoding its body.
-
-#### `persist_wal_open_scan` — writer reopen validation (B16)
-
-Measures `WalWriter::open` over an existing WAL with `scale` single-change
-entries. The timed body covers file open/lock, file header read, entry-header
-scan, payload checksum validation, and final committed-offset positioning; the
-WAL fixture is created outside the timed body.
-
-Commands:
-
-```bash
-scripts/run-benches.sh --profile full --bench wal --filter persist_wal_open_scan --save-baseline b16_pre
-scripts/run-benches.sh --profile full --bench wal --filter persist_wal_open_scan --baseline b16_pre
-```
-
-| Bench | Before | After | Signal |
-|---|---:|---:|---|
-| `persist_wal_open_scan/10000` | 7.9089 ms | 161.75 µs | Buffered sequential scan avoids per-entry seek and reuses the payload buffer; Criterion reported −97.533%. |
-| `persist_wal_open_scan/50000` | 43.344 ms | 760.79 µs | Criterion reported −98.083%. |
-| `persist_wal_open_scan/100000` | 87.278 ms | 1.5317 ms | Criterion reported −98.083%. |
-
-#### `persist_wal_body_size_no_fsync` — entry-body packing (PERSIST-04)
-
-Fixed total changes (100k), swept changes-per-entry packing — isolates the
-per-byte serialize+write cost from the per-entry overhead the count sweeps
-cover. Per-entry overhead dominates at small bodies; the minimum is ~10k
-changes/entry, after which large-`Vec` build/alloc creeps back in. This was the
-PERSIST-04 measurement surface; the stable manual `write_vectored` candidate was
-measured-rejected on 2026-06-01 because it regressed the WAL append hot path, so
-the contiguous `Vec` + `write_all` path remains the baseline.
-
-| Bench | per-entry=100 | =1000 | =10000 | =50000 | Notes |
-|---|---:|---:|---:|---:|---|
-| `persist_wal_body_size_no_fsync` | 12.5 ms | 8.42 ms | 7.22 ms | 13.1 ms | Equal total work; U-shaped in packing; vectored write rejected. |
-
-PR-local quick WAL record-buffer reuse A/B:
-
-Commands:
-`scripts/run-benches.sh --profile quick --bench wal --filter persist_wal_append_single_no_fsync`;
-`scripts/run-benches.sh --profile quick --bench wal --filter persist_wal_body_size_no_fsync`.
-
-| Bench | Before | After | Signal |
-|---|---:|---:|---|
-| `persist_wal_append_single_no_fsync/1000` | 3.1835 ms | 1.8447 ms | Writer-owned record buffer keeps the contiguous `write_all` record shape while avoiding per-append `Vec` allocation; median is ~42% below the local pre-change baseline. |
-| `persist_wal_body_size_no_fsync/100` | 2.9168 ms | 1.9143 ms | Same allocation reuse on the 100-change packing; the 4 MiB retention cap keeps ordinary hot buffers reusable without pinning pathological max-entry allocations. |
-| `persist_wal_body_size_no_fsync/1000` | 2.4978 ms | 1.4411 ms | Same allocation reuse on the 1000-change packing; median is ~42% below the local pre-change baseline while preserving the contiguous `write_all` path. |
-
-#### `persist_wal_payload_shape_*` — scalar / JSON / vector payloads
-
-These rows keep the WAL format unchanged and isolate payload shape for the
-future WAL/compression overhaul. Quick profile writes/replays 1k changes as ten
-100-change entries with `SyncPolicy::OnFlushOnly`; setup is outside the replay
-timed body. The JSON fixture models an agent-memory metadata document, and the
-vector fixtures use 128-dim and 768-dim first-class `Value::Vector` payloads.
-
-Command:
-
-```bash
-scripts/run-benches.sh --profile quick --bench wal --filter payload_shape
-```
-
-| Bench | scalar i64 | JSON metadata | vector128 | vector768 | Notes |
-|---|---:|---:|---:|---:|---|
-| `persist_wal_payload_shape_no_fsync` | 1.084 ms | 1.677 ms | 1.826 ms | 2.185 ms | Append path only; no fsync in timed body. |
-| `persist_wal_payload_shape_replay` | 1.433 ms | 2.870 ms | 2.514 ms | 2.908 ms | Reader open + checksum + optional decompression + postcard decode. |
-
-#### `persist_wal_payload_compression_sweep` — compression threshold pressure
-
-Benchmark-only codec sweep for the future WAL rewrite. The fixture serializes
-`ChangeSet` payloads with `postcard` outside the timed body, then the timed body
-applies a candidate compression threshold, optionally runs zstd level 1, and
-computes the xxh3 checksum over the bytes that would be framed in the WAL. This
-does not write to disk and does not measure fsync.
-
-Command:
-
-```bash
-scripts/run-benches.sh --profile quick --bench wal --filter persist_wal_payload_compression_sweep
-```
-
-Quick profile on 2026-06-06 before the default threshold was raised to 4096
-bytes. `current128` was the production `COMPRESS_THRESHOLD` at measurement
-time; `never` is checksum-only. `always` mostly confirms the cost of
-compressing sub-threshold bodies, so the table keeps representative threshold
-rows and calls out sub-threshold compression in the notes.
-
-| Payload | batch | current128 | 512 | 4096 | never | Notes |
-|---|---:|---:|---:|---:|---:|---|
-| scalar i64 | 1 | 2.23 ns | 2.23 ns | 2.23 ns | 2.23 ns | `always` compressed the tiny body at 1.19 us. |
-| scalar i64 | 10 | 1.19 us | 10.1 ns | 10.1 ns | 10.1 ns | 512 avoids compression that current128 takes. |
-| scalar i64 | 100 | 5.99 us | 6.01 us | 6.00 us | 96.4 ns | Crosses all swept thresholds below `never`. |
-| JSON metadata | 1 | 3.87 us | 6.63 ns | 6.63 ns | 6.62 ns | Single JSON record crosses current128 only. |
-| JSON metadata | 10 | 4.91 us | 4.91 us | 51.0 ns | 51.0 ns | 4096 avoids compression for this batch. |
-| JSON metadata | 100 | 15.1 us | 14.9 us | 14.8 us | 552 ns | Crosses all swept thresholds below `never`. |
-| vector128 | 1 | 4.92 us | 4.91 us | 11.3 ns | 11.3 ns | 4096 avoids single-vector compression. |
-| vector128 | 10 | 9.86 us | 9.87 us | 9.89 us | 113 ns | Crosses all swept thresholds below `never`. |
-| vector128 | 100 | 21.4 us | 21.4 us | 21.5 us | 1.18 us | Checksum-only cost rises with body size. |
-| vector768 | 1 | 7.48 us | 7.50 us | 62.3 ns | 62.3 ns | 4096 avoids single-vector compression. |
-| vector768 | 10 | 13.8 us | 13.8 us | 13.8 us | 654 ns | Crosses all swept thresholds below `never`. |
-| vector768 | 100 | 35.6 us | 35.7 us | 35.7 us | 6.59 us | Large vector batches dominate checksum too. |
-
-Decision signal: the existing 128-byte threshold is aggressive for scalar,
-single JSON, and single-vector entries. Raising the threshold would avoid
-microsecond-scale zstd work on many small writes, but this benchmark is only a
-codec threshold surface; an actual WAL format or policy change still needs
-end-to-end append/replay and recovery evidence.
-
-#### `persist_wal_payload_compression_policy_*` — real writer policy sweep
-
-End-to-end companion to the codec threshold sweep. These rows use the real
-`WalWriter::open_with_compression` path added after the codec-only baseline.
-Append rows include postcard serialization, policy selection, optional zstd,
-header framing, checksum, and file writes with `SyncPolicy::OnFlushOnly`.
-Flush rows add one explicit `WalWriter::flush()` durability barrier at the end
-of the append cycle and include deterministic WAL file sizes in the row IDs.
-Replay rows build a WAL file with the selected policy in setup, then time
-reader iteration, checksum, optional decompression, and postcard decode.
-
-Command:
-
-```bash
-scripts/run-benches.sh --profile quick --bench wal --filter compression_policy
-scripts/run-benches.sh --profile quick --bench wal --filter compression_policy_flush
-```
-
-Quick profile on 2026-06-06 before the default threshold was raised to 4096
-bytes. `total=1000` changes. `batch` is changes per WAL entry. `current128`
-was the production default at measurement time, `threshold4096` avoids
-single-record JSON/vector compression, and `disabled` leaves every payload
-uncompressed.
-
-| Payload / batch | append current128 | append 4096 | append disabled | replay current128 | replay 4096 | replay disabled | Signal |
-|---|---:|---:|---:|---:|---:|---:|---|
-| scalar i64 / b10 | 1.70 ms | 1.33 ms | 1.51 ms | 1.36 ms | 1.21 ms | 1.17 ms | Raised threshold avoids compressing small scalar batches. |
-| JSON metadata / b1 | 6.53 ms | 2.77 ms | 2.59 ms | 3.17 ms | 1.51 ms | 1.35 ms | Single JSON records are over-compressed at current128. |
-| JSON metadata / b10 | 2.38 ms | 2.04 ms | 2.02 ms | 2.21 ms | 2.28 ms | 2.24 ms | Append improves; replay is noise-level. |
-| vector128 / b1 | 7.36 ms | 2.74 ms | 2.61 ms | 2.48 ms | 1.03 ms | 993 us | Single 128-dim vectors are over-compressed at current128. |
-| vector128 / b100 | 1.69 ms | 1.75 ms | 1.51 ms | 2.24 ms | 2.03 ms | 1.84 ms | Large vector batches need size/latency trade-off work. |
-| vector768 / b1 | 10.54 ms | 3.85 ms | 3.77 ms | 4.65 ms | 1.64 ms | 1.55 ms | Single 768-dim vectors strongly favor no compression. |
-| vector768 / b100 | 1.84 ms | 2.11 ms | 2.20 ms | 2.88 ms | 2.93 ms | 2.58 ms | Current compression can help large append bytes; replay still favors no decompression. |
-
-Flush-inclusive companion rows, with bytes-on-disk from the row IDs:
-
-| Payload / batch | file current128 | file 4096 | file disabled | flush current128 | flush 4096 | flush disabled | Signal |
-|---|---:|---:|---:|---:|---:|---:|---|
-| scalar i64 / b1 | 81,016 B | 81,016 B | 81,016 B | 7.01 ms | 7.61 ms | 7.27 ms | Tiny scalar rows do not cross either compression threshold. |
-| scalar i64 / b100 | 4,386 B | 4,386 B | 48,706 B | 5.20 ms | 5.22 ms | 5.23 ms | Large scalar batches compress heavily without a flush penalty. |
-| JSON metadata / b1 | 239,016 B | 293,016 B | 293,016 B | 11.02 ms | 7.99 ms | 7.97 ms | Current128 saves bytes but is slower for single JSON records. |
-| JSON metadata / b100 | 17,056 B | 17,056 B | 264,406 B | 6.03 ms | 6.47 ms | 6.53 ms | Large JSON batches keep the compression size win. |
-| vector128 / b1 | 439,016 B | 594,016 B | 594,016 B | 11.66 ms | 7.96 ms | 7.77 ms | Current128 saves bytes but is slower for single vectors. |
-| vector128 / b100 | 61,126 B | 61,126 B | 561,346 B | 6.03 ms | 6.10 ms | 5.72 ms | Compression gives a ~9x size win; latency is fsync/noise level. |
-| vector768 / b1 | 1,962,016 B | 3,154,016 B | 3,154,016 B | 14.98 ms | 9.03 ms | 8.56 ms | Current128 saves bytes but strongly hurts single large vectors. |
-| vector768 / b100 | 63,296 B | 63,296 B | 3,121,346 B | 6.41 ms | 6.94 ms | 7.36 ms | Compression gives a ~49x size win and remains competitive. |
-
-PR-local WAL zstd compressor-reuse A/B:
-
-Commands:
-`scripts/run-benches.sh --profile quick --bench wal --filter 'compression_policy_no_fsync/vector768/b1_threshold128|compression_policy_no_fsync/json_metadata/b1_threshold128|compression_policy_no_fsync/vector128/b1_threshold128'`;
-`scripts/run-benches.sh --profile quick --bench wal --filter 'compression_policy_no_fsync/vector768/b100_default4096|compression_policy_no_fsync/json_metadata/b100_default4096|compression_policy_no_fsync/vector128/b100_default4096'`.
-
-| Bench | Before | After | Signal |
-|---|---:|---:|---|
-| `persist_wal_payload_compression_policy_no_fsync/json_metadata/b1_threshold128` | 6.1906 ms | 5.1691 ms | Writer-owned zstd context avoids per-entry compressor setup for repeated compressed records; Criterion reported -17.542%, p=0.00. |
-| `persist_wal_payload_compression_policy_no_fsync/vector128/b1_threshold128` | 7.2361 ms | 5.9544 ms | Same repeated-compression path; Criterion reported -17.593%, p=0.00. |
-| `persist_wal_payload_compression_policy_no_fsync/vector768/b1_threshold128` | 11.197 ms | 9.8407 ms | Same repeated-compression path; Criterion reported -13.444%, p=0.00. |
-| `persist_wal_payload_compression_policy_no_fsync/json_metadata/b100_default4096` | 845.34 us | 783.59 us | Production default threshold sanity row; no statistically significant change detected. |
-| `persist_wal_payload_compression_policy_no_fsync/vector128/b100_default4096` | 592.36 us | 567.23 us | Production default threshold sanity row; no statistically significant change detected. |
-| `persist_wal_payload_compression_policy_no_fsync/vector768/b100_default4096` | 1.0910 ms | 991.21 us | Production default threshold row; Criterion reported -8.6144%, p=0.02. |
-
-Decision signal: the follow-up production policy raises the default threshold
-from 128 bytes to 4096 bytes. Disabling compression entirely is still not a
-clear global win because larger JSON/vector batches save substantial bytes with
-similar durability-inclusive latency. Future reruns compare the old policy as
-`threshold128` against the new default as `default4096`.
-
-#### `persist_wal_sync_sweep` — sync-policy sweep
-
-Append + explicit `flush()` across sync policies. The fsync-frequent policies
-(`every1`/`every10`/`every100`) are bound by `fsync` syscall latency, not
-selene-db code, and balloon to tens of seconds at 100k — they are **capped at
-≤10k** so a full sweep is not dominated by one durability cell.
-
-_The **10k column** was re-measured 2026-08-16 alongside the rest of §4a; the 1k
-and 100k columns still carry the file-level 2026-06-01 stamp. #1132 measured
-this sweep and published it in `docs/performance.md` without recording it here,
-so the two documents disagreed by 5–10% on identical rows until this update._
-
-| Bench | 1k | 10k | 100k | Notes |
-|---|---:|---:|---:|---|
-| `persist_wal_sync_sweep/every1` | 3.74 s | 35.97 s | n/a (capped) | `EveryN(1)` — fsync per entry. |
-| `persist_wal_sync_sweep/every10` | 378 ms | 3.668 s | n/a (capped) | `EveryN(10)`. |
-| `persist_wal_sync_sweep/every100` | 47.5 ms | 475.8 ms | n/a (capped) | `EveryN(100)`. |
-| `persist_wal_sync_sweep/every1000` | 7.79 ms | 60.61 ms | 655 ms | `EveryN(1000)`. |
-| `persist_wal_sync_sweep/on_flush_only` | 7.60 ms | 17.18 ms | 113 ms | `OnFlushOnly` + caller flush. |
-
-`EveryN(1)` to `OnFlushOnly` at 10k is a **~2,090× spread**, which is the single
-widest policy-choice consequence in the engine. `docs/performance.md` carries
-the same table with a changes/s column.
-
-### §4b Snapshot
-
-`persist_snapshot_*` measure the SLSN **container** (framing + per-section zstd +
-body hash) over synthetic byte payloads. The uncompressed companion rows isolate
-raw framing/body-hash cost with `SectionCompression::None`. `scale` drives section
-bytes.
-
-_All five rows in the table below were re-measured 2026-08-16 (same M5 box,
-rustc 1.97.1) via `scripts/run-benches.sh --profile full --bench snapshot`, at
-the profile's default sample size of 30. Deltas quoted in the Notes column are
-point-estimate deltas against the prior medians, not Criterion `--baseline`
-comparisons, so they carry no p-value. The PR-local A/B tables further down
-retain their own original commands and sample sizes._
-
-The rows were previously refreshed/added with
-`scripts/run-benches.sh --profile full --bench snapshot --filter 'persist_snapshot_(write|read|uncompressed_write|uncompressed_read)'`,
-and the read rows with
-`scripts/run-benches.sh --profile full --sample-size 20 --measurement-time 2 --bench snapshot --filter 'persist_snapshot_(read|uncompressed_read)'`.
-
-| Bench | 10k | 50k | 100k | Notes |
-|---|---:|---:|---:|---|
-| `persist_snapshot_write` | 371.6 µs | 523.3 µs | 640.5 µs | Five independently-compressed sections over highly-compressible synthetic bytes. 100k −10.7%. |
-| `persist_snapshot_read` | 297.3 µs | 469.7 µs | 659.1 µs | Snapshot read-and-apply for compressed sections. Flat (100k +0.6%). |
-| `persist_snapshot_uncompressed_write` | 723.6 µs | 2.11 ms | 3.55 ms | Five uncompressed sections; exposes raw envelope write, body hash, and payload I/O cost. 100k −3.2%. |
-| `persist_snapshot_uncompressed_read` | 410.5 µs | 1.67 ms | 3.26 ms | Snapshot read-and-apply for uncompressed sections. 100k −4.4%. |
-| `persist_full_recovery` | 2.41 ms | 9.17 ms | 16.31 ms | Snapshot reconcile + WAL replay. **100k −21.4%** — the only row here that moved materially, and the WAL half explains it: §4a measured `persist_wal_replay` at −29.3% over the same window. The snapshot container rows are synthetic-byte framing work and are correctly insensitive to WAL 3.0. |
-
-PR-local snapshot compression scheduling A/B:
-
-Commands:
-
-- `scripts/run-benches.sh --profile quick --bench snapshot --filter persist_snapshot_write --save-baseline snapshot-compression-scheduling-pre`
-- `scripts/run-benches.sh --profile quick --bench snapshot --filter persist_snapshot_write --baseline snapshot-compression-scheduling-pre`
-- `scripts/run-benches.sh --profile full --bench snapshot --filter persist_snapshot_write --sample-size 10 --measurement-time 1 --save-baseline snapshot-compression-scheduling-parallel-full`
-- `scripts/run-benches.sh --profile full --bench snapshot --filter persist_snapshot_write --sample-size 10 --measurement-time 1 --baseline snapshot-compression-scheduling-parallel-full`
-
-| Bench | Before | After | Change | Notes |
-|---|---:|---:|---:|---|
-| `persist_snapshot_write/1000` | 400.73 µs | 328.08 µs | -17.491%, p=0.00 | 64 KiB synthetic snapshot stays serial below the 1 MiB parallel-compression floor. |
-| `persist_snapshot_write/10000` | 402.28 µs | 358.67 µs | -10.946%, p=0.00 | 640 KiB synthetic snapshot also avoids Rayon setup. |
-| `persist_snapshot_write/50000` | 517.88 µs | 525.57 µs | no change, p=0.13 | 3.2 MiB synthetic snapshot keeps the existing parallel path. |
-| `persist_snapshot_write/100000` | 653.13 µs | 658.25 µs | within Criterion noise threshold | 6.4 MiB synthetic snapshot keeps the existing parallel path. |
-
-PR-local snapshot body-hash buffer A/B:
-
-Commands:
-
-- `scripts/run-benches.sh --profile full --sample-size 20 --measurement-time 2 --bench snapshot --filter 'persist_snapshot_(read|uncompressed_read)' --save-baseline snapshot-read-nozero-full-pre`
-- `scripts/run-benches.sh --profile full --sample-size 20 --measurement-time 2 --bench snapshot --filter 'persist_snapshot_(read|uncompressed_read)' --baseline snapshot-read-nozero-full-pre`
-
-| Bench | Before | After | Change | Notes |
-|---|---:|---:|---:|---|
-| `persist_snapshot_read/10000` | 291.80 µs | 295.27 µs | within Criterion noise threshold | Compressed sections are small after zstd, so the larger verification buffer does not materially move this row. |
-| `persist_snapshot_read/50000` | 473.47 µs | 462.28 µs | within Criterion noise threshold | Same compressed-read guard row. |
-| `persist_snapshot_read/100000` | 669.08 µs | 654.88 µs | within Criterion noise threshold | Same compressed-read guard row. |
-| `persist_snapshot_uncompressed_read/10000` | 574.66 µs | 412.43 µs | -27.114%, p=0.00 | Body-hash verification now streams payloads with a 64 KiB buffer instead of 8 KiB, reducing read calls over raw sections. |
-| `persist_snapshot_uncompressed_read/50000` | 2.4329 ms | 1.7219 ms | -28.537%, p=0.00 | Same large raw-section verification path. |
-| `persist_snapshot_uncompressed_read/100000` | 4.7570 ms | 3.4118 ms | -29.538%, p=0.00 | Same large raw-section verification path. |
-
-### §4c `graph_snapshot_roundtrip` — real rkyv graph encode/decode (D14)
-
-Unlike the synthetic-bytes snapshot bench above, this drives the **real**
-`CoreProvider` path over fixture rows: `IndexProvider::write_section` over every
-`CORE/*` sub-tag (rkyv archive of `CORE/NODE`+`CORE/EDGE` positional rows, D14),
-then a recovery-mode provider + `finish_recovery` (positional placement / id↔row
-rebuild). Self-validating: asserts node/edge counts survive the roundtrip once
-(untimed) before measuring. `scale` = fixture node count.
-
-| Bench | 10k | 50k | 100k | Notes |
-|---|---:|---:|---:|---|
-| `graph_snapshot_roundtrip/encode` | 2.11 ms | 14.58 ms | 31.42 ms | rkyv encode of all `CORE/*` sections. Re-measured 2026-08-16; 100k −0.7%. |
-| `graph_snapshot_roundtrip/decode` | 13.22 ms | 86.26 ms | 177.10 ms | Positional recovery + `finish_recovery`; duplicate-id validation is fused with row conversion. Re-measured 2026-08-16; 100k +1.9%. |
-| `graph_snapshot_roundtrip/roundtrip` | 17.24 ms | 102.20 ms | 208.60 ms | End-to-end (≈ encode + decode). Re-measured 2026-08-16; 100k −5.1%. |
-
-_Re-measured 2026-08-16 (same M5 box, rustc 1.97.1) via
-`scripts/run-benches.sh --profile full --bench graph_snapshot_roundtrip`. **The
-sample size changed:** the prior rows used `--sample-size 10
---measurement-time 1` and these use the `full` profile default of 30, so the
-new rows are the better-conditioned estimate and the small deltas below should
-not be read as movement. The rkyv graph encode/decode path took no format
-change this cycle, and these rows agreeing to within a few percent is the
-expected result._
-
-The prior rows were refreshed with
-`scripts/run-benches.sh --profile full --sample-size 10 --measurement-time 1 --bench graph_snapshot_roundtrip --filter graph_snapshot_roundtrip`
-(encode/roundtrip) and
-`scripts/run-benches.sh --profile full --sample-size 10 --measurement-time 1 --bench graph_snapshot_roundtrip --filter graph_snapshot_roundtrip/decode`
-(decode).
-
-PR-local fused duplicate-id validation A/B:
-
-Commands:
-
-- `scripts/run-benches.sh --profile full --sample-size 10 --measurement-time 1 --bench graph_snapshot_roundtrip --filter graph_snapshot_roundtrip/decode --save-baseline d14-decode-fuse-full-pre`
-- `scripts/run-benches.sh --profile full --sample-size 10 --measurement-time 1 --bench graph_snapshot_roundtrip --filter graph_snapshot_roundtrip/decode --baseline d14-decode-fuse-full-pre`
-
-| Bench | Before | After | Delta | Notes |
-|---|---:|---:|---:|---|
-| `graph_snapshot_roundtrip/decode/10000` | 15.31 ms | 14.55 ms | -4.3014%, p=0.00 | `CORE/NODE` and `CORE/EDGE` now validate non-tombstone id uniqueness while converting archive rows into runtime rows, avoiding a separate full traversal. |
-| `graph_snapshot_roundtrip/decode/50000` | 88.63 ms | 86.57 ms | -2.3267%, p=0.00 | Same fused row-validation path. |
-| `graph_snapshot_roundtrip/decode/100000` | 181.54 ms | 173.76 ms | -4.2833%, p=0.00 | Same fused row-validation path. |
-
-PR-local snapshot row-position carrier A/B:
-
-Command:
-`scripts/run-benches.sh --profile quick --bench graph_snapshot_roundtrip --filter graph_snapshot_roundtrip/decode`.
-
-| Bench | Before | After | Delta | Notes |
-|---|---:|---:|---:|---|
-| `graph_snapshot_roundtrip/decode/1000` | 1.1709 ms | 1.0824 ms | -7.7946% | Recovery now carries the decoded snapshot row position beside each recovered node/edge row instead of maintaining separate `id -> position` BTreeMaps and looking them up during materialization. Criterion reports p=0.00. |
-
-PR-local recovery row scratch-map A/B:
-
-Command:
-`scripts/run-benches.sh --profile quick --bench graph_snapshot_roundtrip --filter graph_snapshot_roundtrip/decode`.
-
-| Bench | Before | After | Delta | Notes |
-|---|---:|---:|---:|---|
-| `graph_snapshot_roundtrip/decode/1000` | 1.0696 ms | 956.20 µs | -10.732% | Recovery stores decoded snapshot rows in hash maps and carries separate positional order vectors, avoiding per-row `BTreeMap` inserts while preserving compacted-snapshot row placement and WAL-created dense append order. Criterion reports p=0.00. |
-
-PR-local recovery bulk-liveness A/B:
-
-Commands:
-
-- `scripts/run-benches.sh --profile quick --sample-size 30 --measurement-time 3 --bench graph_snapshot_roundtrip --filter graph_snapshot_roundtrip/decode --save-baseline recovery-alive-bulk-pre`
-- `scripts/run-benches.sh --profile quick --sample-size 30 --measurement-time 3 --bench graph_snapshot_roundtrip --filter graph_snapshot_roundtrip/decode --baseline recovery-alive-bulk-pre`
-
-| Bench | Before | After | Delta | Notes |
-|---|---:|---:|---:|---|
-| `graph_snapshot_roundtrip/decode/1000` | 982.93 µs | 952.37 µs | -3.1446% | Recovery now builds node/edge liveness bitmaps locally and installs each `Arc<RoaringBitmap>` once after materialization instead of calling `Arc::make_mut` per recovered row. Criterion reports p=0.00. |
-
-PR-local direct archive-row encode A/B:
-
-Commands:
-
-- `scripts/run-benches.sh --profile quick --sample-size 30 --measurement-time 3 --bench graph_snapshot_roundtrip --filter graph_snapshot_roundtrip/encode --save-baseline snapshot-encode-direct-pre`
-- `scripts/run-benches.sh --profile quick --sample-size 30 --measurement-time 3 --bench graph_snapshot_roundtrip --filter graph_snapshot_roundtrip/encode --baseline snapshot-encode-direct-pre`
-
-| Bench | Before | After | Delta | Notes |
-|---|---:|---:|---:|---|
-| `graph_snapshot_roundtrip/encode/1000` | 336.17 µs | 270.58 µs | -19.184% | CORE/NODE and CORE/EDGE archive rows now encode borrowed row `PropertyMap`s directly instead of cloning them into temporary runtime rows before postcard serialization. Criterion reports p=0.00. |
+### Retired format-1 WAL / snapshot rows (F02-PR08)
+
+The format-1 `wal`, `snapshot`, and `graph_snapshot_roundtrip` bench bins
+were retired with the format-1 persistence cutover: the `/wal|snapshot/` criterion
+targets measured the deleted `WalWriter`/`SnapshotBuilder` APIs, and
+`graph_snapshot_roundtrip` measured the deleted rkyv `CoreProvider` section
+path. Their historical numbers are preserved in git history, not repeated here.
+Format-2 durable-cost evidence lives in the top-of-file sections
+(`durable_commit`, `durable_checkpoint`, `logical_wal`) and the
+`store_control` rows above.
 
 ## §5 selene-gql — parse / plan / execute
 
@@ -3855,10 +3475,8 @@ indexes. B20 makes per-group aggregate slots borrow the immutable plan
 
 ### §5b `write_e2e` — GQL write end-to-end
 
-Two families. The **in-memory CPU** family runs on a no-WAL `SharedGraph` to
-isolate parse/plan/execute + in-memory commit CPU. The **durable** family
-(`*_with_flush`, `direct_*`) keeps a real WAL on `OnFlushOnly` /
-`CommitBatching::Off`. The `match_*` / `insert_node_with_edge` arms scan the
+All arms run on a no-WAL in-memory `SharedGraph` to isolate parse/plan/execute
++ in-memory commit CPU. The `match_*` / `insert_node_with_edge` arms scan the
 fixture and so scale with N; the single-node arms are flat.
 
 | Bench | 10k | 50k | 100k | Notes |
@@ -3874,9 +3492,11 @@ fixture and so scale with N; the single-node arms are flat.
 | `write_e2e/gql_multi_statement_txn_preplanned` | 280 µs | 191 µs | 350 µs | START, three INSERTs, COMMIT. |
 | `write_e2e/explicit_txn_3_inserts_rust_api` | 275 µs | 223 µs | 363 µs | Three inserts via the Rust txn API. |
 | `write_e2e/explicit_txn_3_inserts_rollback` | 279 µs | 198 µs | 355 µs | Same, rolled back. |
-| `write_e2e/gql_insert_single_node_preplanned_with_flush` | 4.22 ms | 4.27 ms | 3.95 ms | Durable: preplanned insert + WAL flush. |
-| `write_e2e/direct_insert_single_node_with_wal_flush` | 4.20 ms | 4.30 ms | 4.17 ms | Direct mutation + one WAL flush. |
-| `write_e2e/direct_insert_single_node_with_wal_flush_every10` | 30.5 ms | 32.2 ms | 32.4 ms | Ten direct inserts over one flush. |
+
+The durable family (`gql_insert_single_node_preplanned_with_flush`,
+`direct_insert_single_node_with_wal_flush`, `..._every10`) was retired in
+F02-PR08 with the format-1 WAL: durable commit baselines live in
+`durable_commit` / `durable_checkpoint`, not in these CPU arms.
 
 PR-local B18/B20 write-control guard (`scripts/run-benches.sh --profile full
 --bench write_e2e`, followed by an isolated rerun of the noisy direct-WAL 50k
@@ -3888,7 +3508,6 @@ row):
 | `write_e2e/gql_cached_json_read_patch_r60w40/100000` | 5.3239 ms | 5.2953 ms | No statistically significant change; JSON read/patch guard. |
 | `write_e2e/gql_match_set_preplanned/100000` | 11.020 ms | 10.500 ms | −4.7% median; scan/set row benefits from runtime binding-index hoisting. |
 | `write_e2e/gql_match_delete_preplanned/100000` | 12.167 ms | 11.566 ms | −4.9% median. |
-| `write_e2e/direct_insert_single_node_with_wal_flush/50000` | 4.2367 ms | 4.1545 ms | Isolated rerun after one transient 14.791 ms sample; no reproducible direct-WAL regression. |
 
 PR-local quick JSON mixed row:
 
@@ -5613,14 +5232,14 @@ confirm the win and guard the surrounding rows against regression.
 |---|---|---|---|
 | CORE-06 ✓ | Box `Value` `Path` + time variants (shrink `size_of`) | `core_value_clone/*` + `size_of::<Value>` stderr | **32 B** (was 128); vec 4.62 µs / pmap 53.8 ns |
 | GRAPH-05 ✓ | In-place adjacency delete O(D²)→O(D) | `graph_hub_delete` (now linear) | **4.54 ms** @ degree 10k (was 133 ms — 30×) |
-| PERSIST-04 rejected | WAL vectored write regressed append on Darwin/macOS | `persist_wal_body_size_no_fsync` (large-body arms) | measured-rejected 2026-06-01; keep contiguous `Vec` + `write_all` |
+| PERSIST-04 rejected | WAL vectored write regressed append on Darwin/macOS | retired format-1 `wal` bin (F02-PR08) | measured-rejected 2026-06-01; keep contiguous `Vec` + `write_all` |
 | ALGO-01/02/05 ✓ | CSR dense-`u32` cache on `ProjNeighbor` | `algo/projection_build` + `…_neighbor_iter` + algo medians | **pagerank −15..31% · louvain −23..26% · apsp −9..52% · triangle −6..11% · iter −4..6%**; build +4–7% one-time (24→32 B/neighbor) |
 | GQLRT-05 ✓ | Memoize correlated-subquery target schema (per statement, by expr id) | `gql_correlated_subquery/{exists,count}` | **−2 to −7%** — memo elides the per-row `schema_for_pattern` walk |
 | B3 ✓ | Short-circuit scans already bound by the correlated outer row | `gql_correlated_subquery/{exists,count}` + `read_pipeline` guard | **~339x EXISTS / ~349x COUNT @10k**; ordinary read-pipeline rows remain noise-scale |
 | B5 ✓ | Use `FxBuildHasher` for immutable maps keyed only by engine-assigned ids | `graph_node_fetch` + `gql_correlated_subquery/{exists,count}` + `bulk_mutation` guard | **graph_node_fetch −22.7% @1k quick; post-B3 correlated residual −11.8..15.3%**; update-batch writes remain noisy/no claimed win |
 | B18/B20 ✓ | Hoist runtime column resolution and borrow aggregate descriptors | `read_pipeline` + `gql_correlated_subquery/{exists,count}` + `write_e2e` guard | **read_pipeline −3.8..11.7% on significant rows; correlated residual −4.7..5.9%**; mixed write guards neutral, isolated WAL spike not reproduced |
 | D10 (guard) | Lock-free reads stay flat under writes | `graph_read_under_write` | 24.5 ms @100k |
-| D14 (guard) | Snapshot rkyv encode/positional recovery | `graph_snapshot_roundtrip/{encode,decode}` | enc 32 ms / dec 183 ms @100k |
+| D14 (guard, retired F02-PR08) | Snapshot rkyv encode/positional recovery | `logical_wal` (format-2 successor) | historical: enc 32 ms / dec 183 ms @100k |
 
 ## Update protocol
 

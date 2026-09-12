@@ -5,7 +5,6 @@ use std::fs::File;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
-use std::time::{Duration, UNIX_EPOCH};
 
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
 
@@ -66,23 +65,10 @@ pub(super) fn metadata(dir: &File, name: &Path) -> PersistResult<Option<EntryMet
         Err(rustix::io::Errno::NOENT) => return Ok(None),
         Err(error) => return Err(std::io::Error::from(error).into()),
     };
-    let seconds = stat.st_mtime;
-    let modified = if seconds >= 0 {
-        UNIX_EPOCH.checked_add(Duration::from_secs(seconds as u64))
-    } else {
-        UNIX_EPOCH.checked_sub(Duration::from_secs(seconds.unsigned_abs()))
-    }
-    .and_then(|time| {
-        u32::try_from(stat.st_mtime_nsec)
-            .ok()
-            .filter(|nanos| *nanos < 1_000_000_000)
-            .and_then(|nanos| time.checked_add(Duration::from_nanos(u64::from(nanos))))
-    });
     Ok(Some(EntryMetadata {
         regular: FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile,
         single_link: stat.st_nlink == 1,
         len: stat.st_size.max(0) as u64,
-        modified,
     }))
 }
 
@@ -104,11 +90,6 @@ pub(super) fn entries(dir: &File, limit: usize) -> PersistResult<Vec<OsString>> 
 
 pub(super) fn rename(dir: &File, from: &Path, to: &Path) -> PersistResult<()> {
     fs::renameat(dir, from, dir, to).map_err(std::io::Error::from)?;
-    Ok(())
-}
-
-pub(super) fn hard_link(dir: &File, from: &Path, to: &Path) -> PersistResult<()> {
-    fs::linkat(dir, from, dir, to, AtFlags::empty()).map_err(std::io::Error::from)?;
     Ok(())
 }
 

@@ -2,20 +2,13 @@
 
 mod exec_common;
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
-};
-
-use selene_core::{Change, DbString, GraphId, HlcTimestamp, Origin, Value};
+use selene_core::{DbString, GraphId, Value};
 use selene_gql::{
     Binding, BindingTable, BindingTableSchema, BuiltinProcedureRegistry, EmptyProcedureRegistry,
     ExecutionPlan, ExecutorError, Session, StatementOutput, TxContext, analyze, execute_pipeline,
     feature_walk, parse, plan,
 };
 use selene_graph::{CommitOutcome, GraphTypeDef, SharedGraph, TypedIndexKind};
-use selene_persist::{DEFAULT_WAL_FILE_NAME, SyncPolicy, WalConfig, WalWriter};
 use selene_profile::{CapabilityStatus, FeatureId, capability};
 
 use exec_common::db_string;
@@ -138,35 +131,6 @@ fn rows(output: StatementOutput) -> BindingTable {
     }
 }
 
-fn temp_dir(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "selene-gql-index-{name}-{}-{nanos}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir(&dir).unwrap();
-    dir
-}
-
-fn append_wal(dir: &Path, changes: &[Change]) {
-    let mut writer = WalWriter::open(
-        &dir.join(DEFAULT_WAL_FILE_NAME),
-        WalConfig {
-            sync_policy: SyncPolicy::EveryN(1),
-            snapshot_seq: 0,
-        },
-    )
-    .unwrap();
-    writer
-        .append(HlcTimestamp::zero(), Origin::Local, None, changes)
-        .unwrap();
-    writer.flush().unwrap();
-}
-
 #[test]
 fn create_show_drop_and_idempotency_paths_work() {
     let graph = empty_closed_graph(14_001);
@@ -276,8 +240,7 @@ fn create_index_infers_all_supported_storage_kinds() {
 }
 
 #[test]
-fn named_index_survives_wal_recovery() {
-    let dir = temp_dir("wal");
+fn named_index_survives_native_runtime_reconstruction() {
     let graph_id = GraphId::new(14_004);
     let base = empty_graph_type();
     let graph = SharedGraph::builder(graph_id)
@@ -302,15 +265,13 @@ fn named_index_survives_wal_recovery() {
         .unwrap()
         .changes,
     );
-    append_wal(&dir, &changes);
-
-    let recovered = SharedGraph::recover_closed(&dir, graph_id, base).unwrap();
+    assert_eq!(changes.len(), 2);
+    let recovered = SharedGraph::try_from_graph(graph.read().as_ref().clone()).unwrap();
     assert_eq!(index_entry(&recovered, "Sensor", "active"), None);
     assert_eq!(
         index_entry(&recovered, "Sensor", "reading_total"),
         Some((TypedIndexKind::Decimal, Some(db_string("sensor_total_idx"))))
     );
-    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]

@@ -182,7 +182,7 @@ fn collect_node_candidates<'g>(
         properties,
         selection,
         candidates,
-    );
+    )?;
     Ok(())
 }
 
@@ -208,7 +208,7 @@ fn collect_edge_candidates<'g>(
         properties,
         selection,
         candidates,
-    );
+    )?;
     Ok(())
 }
 
@@ -220,7 +220,7 @@ fn collect_entity_candidates<'g>(
     properties: &'g PropertyMap,
     selection: UniqueSelection<'_>,
     candidates: &mut Vec<UniqueCandidate<'g>>,
-) {
+) -> Result<(), TypeViolation> {
     for declaration in declarations
         .iter()
         .filter(|declaration| declaration.unique && selection.includes(&declaration.name))
@@ -238,10 +238,11 @@ fn collect_entity_candidates<'g>(
                 entity_kind,
                 declared_in: declared_in.clone(),
                 property: declaration.name.clone(),
-                value: UniqueValueKey::new(value),
+                value: UniqueValueKey::new(value, entity_id, &declaration.name, &declared_in)?,
             },
         });
     }
+    Ok(())
 }
 
 type IndexedUniqueCandidates = (
@@ -355,7 +356,7 @@ fn validate_entity_candidate_conflicts(
             value,
         )?;
         let key = UniquePropertyKey {
-            value: UniqueValueKey::new(value),
+            value: UniqueValueKey::new(value, entity_id, &domain.property, &domain.declared_in)?,
             entity_kind: domain.entity_kind,
             declared_in: domain.declared_in.clone(),
             property: domain.property.clone(),
@@ -434,10 +435,22 @@ enum UniqueEntityKind {
 struct UniqueValueKey(Vec<u8>);
 
 impl UniqueValueKey {
-    fn new(value: &Value) -> Self {
+    fn new(
+        value: &Value,
+        entity_id: EntityId,
+        property: &DbString,
+        declared_in: &DbString,
+    ) -> Result<Self, TypeViolation> {
         let mut bytes = Vec::new();
-        write_value_key(value, &mut bytes);
-        Self(bytes)
+        key::write(value, &mut bytes, 1).map_err(|source| {
+            TypeViolation::UniquePropertyComparison {
+                entity_id,
+                property: property.clone(),
+                declared_in: declared_in.clone(),
+                source,
+            }
+        })?;
+        Ok(Self(bytes))
     }
 }
 
@@ -461,7 +474,7 @@ fn record_unique_properties(
             entity_kind,
             declared_in: declared_in.clone(),
             property: declaration.name.clone(),
-            value: UniqueValueKey::new(value),
+            value: UniqueValueKey::new(value, entity_id, &declaration.name, &declared_in)?,
         };
         observe_unique_value(
             domains.entry(key.domain()).or_default(),
@@ -500,108 +513,4 @@ fn observe_unique_value(
         })
 }
 
-fn write_value_key(value: &Value, out: &mut Vec<u8>) {
-    if let Some(number) = selene_core::NumericKey::of(value) {
-        out.push(2);
-        number.append_grouping_key(out);
-        return;
-    }
-    match value {
-        Value::ZonedDateTime(instant) | Value::ZonedTime(instant) => {
-            // Runtime temporal equality is timestamp identity. Zone spelling
-            // remains in the value's legacy serialization, not in this key.
-            out.push(if matches!(value, Value::ZonedDateTime(_)) {
-                15
-            } else {
-                16
-            });
-            out.extend_from_slice(&instant.timestamp().as_nanosecond().to_le_bytes());
-        }
-        Value::Duration(value) => {
-            out.push(14);
-            let (months, nanos) = selene_core::duration_order_key(value);
-            out.extend_from_slice(&months.to_le_bytes());
-            out.extend_from_slice(&nanos.to_le_bytes());
-        }
-        Value::Bool(value) => {
-            out.push(1);
-            out.push(u8::from(*value));
-        }
-        Value::String(value) => write_variable_key(9, value.as_str().as_bytes(), out),
-        Value::Bytes(value) => write_variable_key(10, value, out),
-        Value::List(values) => {
-            out.push(11);
-            write_len(values.len(), out);
-            for value in values {
-                write_value_key(value, out);
-            }
-        }
-        Value::Record(record) => {
-            out.push(12);
-            match record.as_ref() {
-                selene_core::Record::Open(fields) => {
-                    write_len(fields.len(), out);
-                    let mut fields: Vec<_> = fields.iter().collect();
-                    fields.sort_by(|a, b| a.0.cmp(&b.0));
-                    for (name, value) in fields {
-                        write_variable_key(0, name.as_str().as_bytes(), out);
-                        write_value_key(value, out);
-                    }
-                }
-                _ => write_fallback_key(record.as_ref(), out),
-            }
-        }
-        Value::RecordTyped(record) => {
-            out.push(13);
-            write_fallback_key(record.type_id, out);
-            write_len(record.values.len(), out);
-            for value in &record.values {
-                match value {
-                    Some(value) => {
-                        out.push(1);
-                        write_value_key(value, out);
-                    }
-                    None => out.push(0),
-                }
-            }
-        }
-        Value::Json(value) => write_variable_key(30, value.to_canonical_string().as_bytes(), out),
-        Value::Vector(value) => {
-            out.push(31);
-            write_len(value.dimension(), out);
-            for component in value.as_slice() {
-                out.extend_from_slice(&canonical_f32_bits(*component).to_le_bytes());
-            }
-        }
-        _ => {
-            out.push(255);
-            write_fallback_key(value, out);
-        }
-    }
-}
-
-fn write_variable_key(tag: u8, bytes: &[u8], out: &mut Vec<u8>) {
-    out.push(tag);
-    write_len(bytes.len(), out);
-    out.extend_from_slice(bytes);
-}
-
-fn write_len(len: usize, out: &mut Vec<u8>) {
-    out.extend_from_slice(&(len as u64).to_le_bytes());
-}
-
-fn write_fallback_key<T: serde::Serialize>(value: T, out: &mut Vec<u8>) {
-    let bytes = postcard::to_allocvec(&value).expect("Value uniqueness key payload serializes");
-    write_len(bytes.len(), out);
-    out.extend_from_slice(&bytes);
-}
-
-fn canonical_f32_bits(value: f32) -> u32 {
-    if value.is_nan() {
-        f32::NAN.to_bits()
-    } else if value == 0.0 {
-        0.0_f32.to_bits()
-    } else {
-        value.to_bits()
-    }
-}
+mod key;
