@@ -109,12 +109,16 @@ pub(crate) fn plan_call(
         Some("procedure tier changed")
     } else if metadata.handle != resolved.metadata().handle {
         Some("procedure handle changed")
+    } else if metadata.declaration != resolved.metadata().declaration {
+        Some("procedure declaration changed")
     } else if !resolved.same_signature(&metadata) {
         Some("resolved procedure signature changed")
     } else {
         None
     };
     let mut planned = PlannedCall {
+        registry_version: registry.registry_version(),
+        metadata: metadata.clone(),
         optional: call.optional,
         procedure: call.name.clone().into_vec().into_boxed_slice(),
         handle: metadata.handle,
@@ -566,6 +570,8 @@ mod defensive_tests {
         let name = selene_core::db_string("pkg").expect("test string fits DB string cap");
         let col = selene_core::db_string("out").expect("test string fits DB string cap");
         let planned = PlannedCall {
+            registry_version: 0,
+            metadata: registry(Vec::new(), Vec::new(), ProcedureMutability::Read).metadata,
             optional: false,
             procedure: Box::new([name.clone()]),
             handle: ProcedureHandle::new(1),

@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use selene_graph::SeleneGraph;
+use selene_graph::{CandidateSet, Node, SeleneGraph};
 
 use crate::error::AlgorithmsError;
 use crate::projection::{GraphProjection, ProjectionConfig};
@@ -42,6 +42,19 @@ use crate::projection::{GraphProjection, ProjectionConfig};
 struct CatalogEntry {
     projection: Arc<GraphProjection>,
     config: ProjectionConfig,
+    // An empty candidate set retains identity, generation and private workspace
+    // binding without an O(nodes) freshness scan or any exposed physical rows.
+    snapshot: CandidateSet<Node>,
+}
+
+impl CatalogEntry {
+    fn is_current(&self, snapshot: &SeleneGraph) -> bool {
+        // Graph-owned algebra validates both private identity tokens. The sets
+        // are empty, so this performs no graph scan and exposes no row handles.
+        snapshot
+            .intersect_candidates(&self.snapshot, &self.snapshot)
+            .is_ok()
+    }
 }
 
 /// Named cache of [`GraphProjection`]s with generation-based staleness
@@ -93,6 +106,7 @@ impl ProjectionCatalog {
             CatalogEntry {
                 projection: Arc::new(projection),
                 config: config.clone(),
+                snapshot: snapshot.bind_node_candidates([])?,
             },
         );
         Ok((node_count, edge_count))
@@ -101,14 +115,27 @@ impl ProjectionCatalog {
     /// Ensure the named projection exists and is fresh against `snapshot`.
     ///
     /// - If absent: returns [`AlgorithmsError::NoSuchProjection`].
-    /// - If present and generation matches `snapshot.meta.generation`: no-op.
-    /// - If present and generation differs: rebuild from the stored config.
+    /// - If present and the full snapshot identity matches: no-op.
+    /// - Otherwise: rebuild from the stored config, including for distinct
+    ///   detached workspaces with equal numeric generations.
     ///   Because catalog projections are unscoped by construction (spec 16
     ///   §3 E06), the rebuild reproduces exactly what [`Self::project`]
     ///   registered, evaluated against the fresh snapshot.
     pub fn ensure_fresh(&self, snapshot: &SeleneGraph, name: &str) -> Result<(), AlgorithmsError> {
-        let current_gen = snapshot.meta.generation;
+        self.resolve(snapshot, name).map(|_| ())
+    }
 
+    /// Resolve and pin a projection for exactly this immutable snapshot.
+    ///
+    /// Validation includes graph identity and private workspace/layout identity,
+    /// not just a numeric generation (detached transactions can share one).
+    /// The returned reference is captured under the same lock as validation, so
+    /// another reader cannot substitute a different snapshot before it is pinned.
+    pub fn resolve(
+        &self,
+        snapshot: &SeleneGraph,
+        name: &str,
+    ) -> Result<ProjectionRef, AlgorithmsError> {
         // Phase 1: fast-path read-lock check.
         {
             let guard = self.entries.read();
@@ -118,8 +145,10 @@ impl ProjectionCatalog {
                         name: name.to_string(),
                     });
                 }
-                Some(entry) if entry.projection.generation() == current_gen => {
-                    return Ok(());
+                Some(entry) if entry.is_current(snapshot) => {
+                    return Ok(ProjectionRef {
+                        projection: Arc::clone(&entry.projection),
+                    });
                 }
                 Some(_) => {
                     // stale; fall through to rebuild under the write lock.
@@ -137,19 +166,22 @@ impl ProjectionCatalog {
             .ok_or_else(|| AlgorithmsError::NoSuchProjection {
                 name: name.to_string(),
             })?;
-        if entry.projection.generation() == current_gen {
-            return Ok(());
+        if entry.is_current(snapshot) {
+            return Ok(ProjectionRef {
+                projection: Arc::clone(&entry.projection),
+            });
         }
         let config = entry.config.clone();
-        let projection = GraphProjection::build(snapshot, &config, None)?;
+        let projection = Arc::new(GraphProjection::build(snapshot, &config, None)?);
         guard.insert(
             name.to_string(),
             CatalogEntry {
-                projection: Arc::new(projection),
+                projection: Arc::clone(&projection),
                 config,
+                snapshot: snapshot.bind_node_candidates([])?,
             },
         );
-        Ok(())
+        Ok(ProjectionRef { projection })
     }
 
     /// Access a named projection. Returns `None` when absent.

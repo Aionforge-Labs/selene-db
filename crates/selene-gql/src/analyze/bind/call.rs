@@ -47,6 +47,9 @@ pub(crate) fn bind_procedure_call_with_metadata(
     call: &ProcedureCall,
     metadata: ProcedureMetadata,
 ) -> Result<(), AnalysisError> {
+    if let Some(catalog) = &mut ctx.catalog {
+        catalog.use_procedure(&call.name, &metadata, call.span)?;
+    }
     let arity = metadata.signature.arity();
     ctx.use_working_graph(call.span)?;
     let actual = call.args.len();

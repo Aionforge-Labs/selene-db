@@ -15,6 +15,50 @@ iai-callgrind instruction-count layer — it needs valgrind, which never runs on
 the macOS dev machine, so it was dropped rather than left as a perpetually-TBD
 placeholder.
 
+## Native call boundary — procedure_call_repeat
+
+F04-PR06 working tree over `d1ef2652ad57d11c67fe9970a2425ce5ebfe22e1`,
+2026-09-12, native Apple M5 / 16 GiB / macOS 27.0 (26A5425a), Rust 1.97.1,
+optimized Cargo bench profile, mimalloc, `test-harness`. No new bench target:
+`procedure_native_call` extends the existing `procedure_call_repeat` target.
+
+```bash
+scripts/run-benches.sh --bench procedure_call_repeat --compile-only
+scripts/run-benches.sh --profile quick --bench procedure_call_repeat --filter procedure_native_call
+scripts/run-benches.sh --profile quick --bench procedure_call_repeat --filter procedure_native_call/preplanned
+```
+
+Deterministic 8/64 isolated `N` nodes, no edges, WCC-count queries; 10 samples,
+100 ms warm-up, 500 ms requested measurement. Builds and measurements ran serially.
+The Plotters backend wrote `target/criterion/procedure_native_call/` artifacts.
+Values below are Criterion central estimates with reported intervals, not an A/B
+comparison or a throughput/capacity promise.
+
+| Operation | 8 nodes | 64 nodes |
+|---|---:|---:|
+| One warm cached statement | 1.095 µs (1.064–1.126) | 1.101 µs (1.089–1.121) |
+| N separate warm cached statements | 9.480 µs (8.574–10.792) | 72.392 µs (71.435–73.959) |
+| One N-input batch query | 104.56 µs (96.766–116.79) | 108.33 µs (106.99–110.76) |
+| Direct projection construction | 281.44 ns (232.53–357.46) | 1.231 µs (1.220–1.250) |
+| Validated projection resolve/reuse | 24.411 ns (23.555–25.536) | 22.317 ns (22.028–22.754) |
+| N preplanned statements (separate run) | 21.727 µs (16.979–24.143) | 235.90 µs (192.26–260.95) |
+| One preplanned N-input batch (separate run) | 16.500 µs (13.362–20.270) | 90.015 µs (74.299–106.38) |
+
+Each N-input query still invokes WCC N times. The statement rows include lower
+GQL session/executor/result overhead, not the facade's catalog request overhead.
+The multi-input query includes parsing/planning because the existing CALL cache
+does not cache embedded pipeline calls; the repeated top-level calls hit that
+cache. Thus these product costs **do not establish a batch speedup** or isolate
+physical dispatch amortization. In these tiny workloads planning dominates the
+multi-input query. The additional preplanned rows remove parsing/planning from
+both sides, use the same statement execution entry point, and include scan and
+result materialization for the batch. They measure per-statement versus per-input
+amortization, not row-executor versus batch-executor kernel speed. Their broad
+intervals and higher timings than the earlier cached run indicate host/run noise;
+no cross-run speedup or regression is inferred. The construction/reuse rows exclude query planning and run
+against a retained immutable snapshot. Larger graphs, edges, cold caches and
+Linux performance were not measured in this slice.
+
 ## Format-2 checkpoint and reopen — durable_checkpoint
 
 F02-PR05 working-tree measurement over base `bd219118e8a22adbc4bbb0f4265cf91f8df6c37d`,

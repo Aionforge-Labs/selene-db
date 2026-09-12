@@ -1,7 +1,7 @@
 //! Binding-table pipeline executor.
 
 pub(crate) mod aggregate;
-mod call;
+pub(crate) mod call;
 mod call_subquery;
 mod chain;
 pub(crate) mod distinct;

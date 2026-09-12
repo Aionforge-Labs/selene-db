@@ -6,8 +6,11 @@ use selene_gql::{
     PipelineStatement, ProcedureOutputColumn, ProcedureParameter, ProcedureRegistry, Statement,
     analyze, parse,
 };
+use selene_testing::MockProcedureRegistry;
 use selene_testing::analyzed_corpus::load_default_analyzed_gql_corpus;
-use selene_testing::{MockProcedureRegistry, default_corpus_registry};
+
+#[path = "support/analyze_bind_catalog.rs"]
+mod catalog_fixture;
 
 fn analyze_one(source: &str) -> Result<selene_gql::AnalyzedStatement, AnalysisError> {
     let statement = parse(source).expect("test input parses");
@@ -39,9 +42,9 @@ fn db_string(value: &str) -> DbString {
 
 #[test]
 fn positive_corpus_analyzes_and_resolves_references() {
-    let registry = default_corpus_registry();
-    let positives = load_default_analyzed_gql_corpus(&registry, corpus_catalog_environment())
-        .expect("positive corpus analyzes");
+    let (registry, environment) = catalog_fixture::fixture();
+    let positives =
+        load_default_analyzed_gql_corpus(&registry, environment).expect("positive corpus analyzes");
     assert!(!positives.is_empty());
 
     for entry in positives {
@@ -59,61 +62,6 @@ fn positive_corpus_analyzes_and_resolves_references() {
             );
         }
     }
-}
-
-fn corpus_catalog_environment() -> selene_gql::analyze::catalog::CatalogEnvironment {
-    use selene_catalog::{
-        CatalogDescriptor, CatalogGeneration, CatalogId, CatalogName, CatalogSnapshotBuilder,
-        CreationMetadata, DirectoryId, GraphId, SchemaId,
-    };
-    let generation = CatalogGeneration::new(1).unwrap();
-    let creation = CreationMetadata::new(generation, None);
-    let catalog_id = CatalogId::new(1).unwrap();
-    let directory = DirectoryId::new(1).unwrap();
-    let schema = SchemaId::new(1).unwrap();
-    let graph = GraphId::new(1).unwrap();
-    let catalog = CatalogDescriptor::catalog(
-        catalog_id,
-        CatalogName::regular("selene").unwrap(),
-        generation,
-        creation.clone(),
-    )
-    .unwrap();
-    let root =
-        CatalogDescriptor::root_directory(directory, catalog_id, generation, creation.clone())
-            .unwrap();
-    let mut builder = CatalogSnapshotBuilder::new(generation, catalog, root).unwrap();
-    builder
-        .insert(
-            CatalogDescriptor::schema(
-                schema,
-                CatalogName::regular("memory").unwrap(),
-                directory,
-                generation,
-                creation.clone(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    builder
-        .insert(
-            CatalogDescriptor::graph(
-                graph,
-                CatalogName::regular("main").unwrap(),
-                schema,
-                generation,
-                creation,
-                None,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    selene_gql::analyze::catalog::CatalogEnvironment::new(
-        builder.build().unwrap(),
-        schema,
-        graph,
-        None,
-    )
 }
 
 #[test]

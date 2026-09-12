@@ -62,6 +62,8 @@ repository or issue evidence.
 
 ## Policy and evidence documents
 
+- [Catalog-resolved native calls and algorithm batches](native-calls.md)
+
 - [Coherent checkpoint and facade reopen](checkpoint-reopen.md)
 - [Full read-only recovery verification and diagnostics](recovery-verification.md)
 - [Checkpoint rotation, artifact leases and explicit retention](rotation-retention.md)

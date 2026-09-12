@@ -6,7 +6,7 @@
 //! the pipeline index where row execution resumes. The plan runner executes
 //! any remaining (suffix) pipeline operators through the row dispatcher on
 //! that prefix table. Mutations now drain it through the physical mutation
-//! barrier (F04-PR05); procedures, paths, and other not-yet-batched families
+//! barrier (F04-PR05); write procedures, paths, and other not-yet-batched families
 //! keep their exact row behavior while already
 //! receiving batch-produced input through the stable [`BindingTable`]
 //! interface.
@@ -29,6 +29,7 @@
 //!   for the same reason; correlation *inside* an unseeded execution runs
 //!   through nested batch contexts (see [`tree`](super::tree)).
 //! - Pipeline prefix: the leading run of `Filter`, `Project`, `Limit`,
+//!   graph-read `Call` (eager per-input invocation and typed output),
 //!   `GroupBy`, `OrderBy`, fused `TopK`, `Distinct`, `TrimOrderCarriers`,
 //!   non-leading `Match`/`OptionalMatch` (over batchable inner patterns),
 //!   set-composition `Union` (all set/multiset variants plus `OTHERWISE`,
@@ -83,6 +84,7 @@ use crate::{
 use super::super::{pattern, pipeline, plan_runner};
 use super::aggregate::BatchGroupBy;
 use super::budget::MemoryBudget;
+use super::call::BatchCall;
 use super::chain::{BatchChain, BatchCorrelatedChain, BatchMatch};
 use super::distinct::BatchDistinct;
 use super::filter::BatchFilter;
@@ -326,6 +328,7 @@ fn execute_prefix(
 
 /// One batchable pipeline operator borrowed from the plan.
 enum BatchPrefixOp<'p> {
+    Call(&'p crate::PlannedCall),
     Filter(&'p FilterPredicate),
     Project(&'p [ProjectExpr], BindingTableSchema),
     Limit(u64, u64),
@@ -378,6 +381,13 @@ fn split_prefix<'p>(
     let mut prefix = Vec::new();
     for (index, op) in pipeline.iter().enumerate() {
         match op {
+            PipelineOp::Call(call)
+                if call.tier == crate::ProcedureTier::Graph
+                    && call.mutability == crate::ProcedureMutability::Read =>
+            {
+                pipeline::call::validate_registration(call, ctx)?;
+                prefix.push(BatchPrefixOp::Call(call));
+            }
             PipelineOp::Filter(predicate) => prefix.push(BatchPrefixOp::Filter(predicate)),
             PipelineOp::Project(items) => {
                 let schema = pipeline::schema_for_items(items);
@@ -480,6 +490,9 @@ where
 {
     for op in prefix {
         match op {
+            BatchPrefixOp::Call(call) => {
+                root = Box::new(BatchCall::new(root, call, eval, policy));
+            }
             BatchPrefixOp::Filter(predicate) => {
                 root = Box::new(BatchFilter::new(root, predicate, eval));
             }

@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use selene_algorithms::{AlgorithmsError, GraphProjection, ProjectionConfig};
+use selene_algorithms::{GraphProjection, ProjectionConfig};
 use selene_core::Value;
 use selene_graph::SeleneGraph;
 
@@ -93,12 +93,7 @@ pub(super) fn get(
     expect_arity(GET_PROC, args, 1)?;
     let name = required_string(GET_PROC, args, 0, "name")?;
     catalogs.with_catalog(snapshot.graph_id(), |catalog| {
-        catalog
-            .ensure_fresh(snapshot, &name)
-            .map_err(algorithm_error)?;
-        let projection = catalog.get(&name).ok_or_else(|| {
-            algorithm_error(AlgorithmsError::NoSuchProjection { name: name.clone() })
-        })?;
+        let projection = catalog.resolve(snapshot, &name).map_err(algorithm_error)?;
         Ok(ProcedureResult {
             rows: vec![projection_row(projection.projection())],
         })
@@ -130,12 +125,7 @@ pub(super) fn list(
         let snapshots: Vec<ProjectionSnapshot> = names
             .iter()
             .map(|name| {
-                catalog
-                    .ensure_fresh(snapshot, name)
-                    .map_err(algorithm_error)?;
-                let projection = catalog.get(name).ok_or_else(|| {
-                    algorithm_error(AlgorithmsError::NoSuchProjection { name: name.clone() })
-                })?;
+                let projection = catalog.resolve(snapshot, name).map_err(algorithm_error)?;
                 Ok(ProjectionSnapshot::from(projection.projection()))
             })
             .collect::<Result<_, ProcedureError>>()?;

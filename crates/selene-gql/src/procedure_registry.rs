@@ -60,9 +60,12 @@ pub trait ProcedureRegistry: Send + Sync {
 ///
 /// Owned by `selene-gql` so the planner can consume procedure metadata without
 /// reaching outside the gql crate.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct ProcedureMetadata {
+    /// Exact durable declaration attached to this runtime implementation.
+    /// Test-only registries without a catalog may leave this absent.
+    pub declaration: Option<std::sync::Arc<selene_catalog::CatalogDescriptor>>,
     /// Opaque handle returned to the executor after successful planning.
     pub handle: ProcedureHandle,
     /// Human-readable procedure summary for catalog introspection.
@@ -88,6 +91,7 @@ impl ProcedureMetadata {
         mutability: ProcedureMutability,
     ) -> Self {
         Self {
+            declaration: None,
             handle,
             description: "",
             signature,
@@ -131,7 +135,7 @@ impl ProcedureHandle {
 }
 
 /// Static signature used for plan-time argument validation.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct ProcedureSignature {
     /// Positional parameters in declaration order.
@@ -183,7 +187,7 @@ impl Default for ProcedureSignature {
 }
 
 /// One declared procedure parameter.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct ProcedureParameter {
     /// Parameter name. Diagnostic-only; arguments are currently positional.
@@ -277,14 +281,14 @@ impl ProcedureArity {
 }
 
 /// Output schema as a relation of named columns.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ProcedureOutputSchema {
     /// Output columns in declaration order.
     pub columns: Vec<ProcedureOutputColumn>,
 }
 
 /// One output column from a procedure call.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct ProcedureOutputColumn {
     /// Column name matched against `YIELD col` references.
@@ -357,6 +361,15 @@ pub struct ProcedureResult {
 #[derive(Clone, Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProcedureError {
+    /// Native algorithm failure retaining its typed cause and procedure context.
+    #[error("invalid procedure argument: {detail}")]
+    Native {
+        /// Procedure-qualified diagnostic, preserving the existing message.
+        detail: String,
+        /// Original algorithm error, available through the standard error chain.
+        #[source]
+        source: std::sync::Arc<dyn std::error::Error + Send + Sync>,
+    },
     /// An operation accessed a deleted graph referent, distinct from copying it.
     #[error("procedure accessed a deleted graph reference")]
     InvalidReferenceValue,
@@ -418,7 +431,9 @@ impl ProcedureError {
         match self {
             Self::InvalidReferenceValue => GqlStatus::INVALID_REFERENCE_VALUE,
             Self::UnknownProcedure { .. } => GqlStatus::UNKNOWN_PROCEDURE,
-            Self::InvalidArgument { .. } => GqlStatus::INVALID_PROCEDURE_ARGUMENT,
+            Self::InvalidArgument { .. } | Self::Native { .. } => {
+                GqlStatus::INVALID_PROCEDURE_ARGUMENT
+            }
             Self::TierMismatch { .. } | Self::Internal { .. } => {
                 GqlStatus::IMPLEMENTATION_DEFINED_ERROR
             }

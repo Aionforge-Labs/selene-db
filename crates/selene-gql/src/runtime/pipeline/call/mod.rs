@@ -1,7 +1,10 @@
 //! Procedure-call pipeline operator.
 
-mod context;
-mod project;
+pub(crate) mod context;
+pub(crate) mod project;
+mod validation;
+
+pub(crate) use validation::{validate_arguments, validate_registration};
 
 use selene_core::Value;
 
@@ -18,7 +21,7 @@ pub(super) fn execute(
     expr_ids: &ExprIdLookup,
     subqueries: &SubqueryRegistry,
 ) -> Result<BindingTable, ExecutorError> {
-    context::validate_call_tier(call)?;
+    validate_registration(call, ctx)?;
     let registry = ctx.registry();
     let (input_schema, rows) = table.into_parts();
     let output_schema = output_schema(&input_schema, call);
@@ -35,6 +38,7 @@ pub(super) fn execute(
             };
             evaluate_args(&call.args, &row, &input_schema, &eval_ctx)?
         };
+        validate_arguments(call, &args)?;
         let result = {
             let deadline = ctx.deadline();
             let mut procedure_ctx = context::build(call, ctx)?;
@@ -63,7 +67,7 @@ pub(super) fn execute_read_only(
     expr_ids: &ExprIdLookup,
     subqueries: &SubqueryRegistry,
 ) -> Result<BindingTable, ExecutorError> {
-    context::validate_call_tier(call)?;
+    validate_registration(call, ctx)?;
     let registry = ctx.registry();
     let (input_schema, rows) = table.into_parts();
     let output_schema = output_schema(&input_schema, call);
@@ -80,6 +84,7 @@ pub(super) fn execute_read_only(
             };
             evaluate_args(&call.args, &row, &input_schema, &eval_ctx)?
         };
+        validate_arguments(call, &args)?;
         let result = {
             let deadline = ctx.deadline();
             let mut procedure_ctx = context::build_read_only(call, ctx)?;
@@ -101,7 +106,7 @@ pub(super) fn execute_read_only(
     Ok(BindingTable::new(output_schema, output))
 }
 
-fn evaluate_args(
+pub(crate) fn evaluate_args(
     args: &[ProjectExpr],
     row: &Binding,
     schema: &BindingTableSchema,
@@ -112,12 +117,12 @@ fn evaluate_args(
         .collect()
 }
 
-fn output_schema(input: &BindingTableSchema, call: &PlannedCall) -> BindingTableSchema {
+pub(crate) fn output_schema(input: &BindingTableSchema, call: &PlannedCall) -> BindingTableSchema {
     let mut schema = input.clone();
     schema.columns.extend(call.yield_schema.clone());
     schema
 }
 
-fn optional_output_row(call: &PlannedCall, input: &Binding) -> Binding {
+pub(crate) fn optional_output_row(call: &PlannedCall, input: &Binding) -> Binding {
     input.with_appended_values(std::iter::repeat_n(Value::Null, call.yield_schema.len()))
 }

@@ -363,18 +363,20 @@ impl std::fmt::Display for SourcePrefix<'_> {
 }
 
 #[cfg(test)]
+#[path = "plan_cache_call_fixture.rs"]
+mod call_fixture;
+
+#[cfg(test)]
 mod tests {
     use std::{num::NonZeroUsize, sync::Arc};
 
-    use selene_core::{DbString, db_string};
     use selene_profile::{ProfileIdentity, current_profile_identity};
 
     use super::*;
     use crate::{
         BindingTableSchema, EmptyProcedureRegistry, ExprId, ImplDefinedCaps, PipelineOpId,
-        PlannedCall, PlannedSubquery, ProcedureHandle, ProcedureMutability, ProcedureOutputSchema,
-        ProcedureTier, SourceSpan, StatementCategory, SubqueryBody, SubqueryKind, analyze::analyze,
-        parser::parse, plan::plan,
+        PlannedSubquery, SourceSpan, StatementCategory, SubqueryBody, SubqueryKind,
+        analyze::analyze, parser::parse, plan::plan,
     };
 
     fn planned(source: &str) -> Arc<ExecutionPlan> {
@@ -384,40 +386,11 @@ mod tests {
         Arc::new(plan(&analyzed, &EmptyProcedureRegistry).expect("test source plans"))
     }
 
-    fn admitted(value: &str) -> DbString {
-        db_string(value).expect("test name admits")
-    }
-
     fn profile() -> ProfileIdentity {
         current_profile_identity()
     }
 
-    fn call_plan() -> Arc<ExecutionPlan> {
-        Arc::new(ExecutionPlan {
-            category: StatementCategory::ReadOnly,
-            pattern_plan: None,
-            pipeline: vec![PipelineOp::Call(PlannedCall {
-                optional: false,
-                procedure: Box::from([admitted("cache"), admitted("call")]),
-                handle: ProcedureHandle::new(1),
-                args: Vec::new(),
-                yield_cols: Vec::new(),
-                output_schema: ProcedureOutputSchema::default(),
-                yield_schema: Vec::new(),
-                tier: ProcedureTier::Graph,
-                mutability: ProcedureMutability::Read,
-                span: SourceSpan::default(),
-            })],
-            output_schema: BindingTableSchema {
-                columns: Vec::new(),
-            },
-            impl_defined_caps: ImplDefinedCaps::default(),
-            expr_ids: Default::default(),
-            subqueries: Default::default(),
-            next_expr_id: ExprId::new(0),
-            next_pipeline_op_id: PipelineOpId::new(1),
-        })
-    }
+    use super::call_fixture::call_plan;
 
     fn explain_call_plan() -> Arc<ExecutionPlan> {
         let inner = call_plan();
