@@ -77,6 +77,7 @@ impl TextIndexBuilder {
         self.document_lengths.shrink_to_fit();
         self.document_terms.shrink_to_fit();
         TextIndex {
+            contract_version: super::contract::VERSION,
             label: self.label,
             property: self.property,
             rows: self.rows,

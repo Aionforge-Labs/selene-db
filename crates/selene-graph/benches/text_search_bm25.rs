@@ -6,6 +6,7 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod common;
+mod text_json_boundary;
 mod text_search_bm25_hybrid;
 
 use std::sync::Arc;
@@ -606,6 +607,6 @@ fn text_value(text: &str) -> Value {
 criterion_group! {
     name = text_search;
     config = common::criterion_config();
-    targets = bench_exact_bm25, bench_indexed_bm25, bench_mixed_bm25, bench_text_rebuild, bench_hybrid_bm25_vector
+    targets = bench_exact_bm25, bench_indexed_bm25, bench_mixed_bm25, bench_text_rebuild, bench_hybrid_bm25_vector, text_json_boundary::bench
 }
 criterion_main!(text_search);

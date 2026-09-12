@@ -184,6 +184,18 @@ impl BuiltinProcedureRegistry {
                 if native.metadata.state == selene_catalog::DeclarationState::Ready)
                 && descriptor.parent()
                     != selene_catalog::CatalogParent::Catalog(catalog.catalog_id())
+                && !matches!(
+                    (descriptor.parent(), descriptor.payload()),
+                    (
+                        selene_catalog::CatalogParent::Graph(_),
+                        selene_catalog::CatalogPayload::Procedure(
+                            selene_catalog::NativeDeclaration {
+                                binding: selene_catalog::NativeBinding::CandidateState(_),
+                                ..
+                            }
+                        )
+                    )
+                )
             {
                 return Err(selene_catalog::CatalogError::InvalidDeclaration {
                     reason: "unsupported_native_activation",

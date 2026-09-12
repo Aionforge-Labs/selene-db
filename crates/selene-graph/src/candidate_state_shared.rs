@@ -12,6 +12,26 @@ use crate::{
 };
 
 impl SeleneGraph {
+    /// Resolve a provider result against this pinned snapshot, including empty sets.
+    /// Invalid graph/generation/layout/workspace identity is an explicit failure,
+    /// never converted to raw IDs and rebound to a different snapshot.
+    #[doc(hidden)]
+    pub fn maintained_node_candidates(
+        &self,
+        provider: &dyn crate::IndexProvider,
+        name: &DbString,
+    ) -> Result<Option<CandidateSet<Node>>, ProviderError> {
+        let candidates = provider.node_candidate_set(name, self)?;
+        if let Some(candidates) = &candidates {
+            candidates.validate_identity_for(self).map_err(|error| {
+                ProviderError::Inconsistent {
+                    reason: format!("maintained candidate identity mismatch: {error}"),
+                }
+            })?;
+        }
+        Ok(candidates)
+    }
+
     /// Build candidates for every node alive in this immutable snapshot.
     pub fn live_node_candidates(&self) -> GraphResult<CandidateSet<Node>> {
         self.node_candidates_from_rows(&self.node_store.alive, "live node store")
@@ -221,7 +241,7 @@ impl SharedGraph {
         else {
             return Ok(None);
         };
-        provider.node_candidate_set(name, &snapshot)
+        snapshot.maintained_node_candidates(provider.as_ref(), name)
     }
 
     /// Look up a generation-checked maintained vector candidate set by name.

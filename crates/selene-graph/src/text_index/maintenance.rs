@@ -101,13 +101,12 @@ pub(crate) fn rebuild_text_indexes(graph: &mut SeleneGraph) -> GraphResult<()> {
         .iter()
         .map(|(key, entry)| (key.clone(), entry.name.clone()))
         .collect();
-    graph.text_index.clear();
+    let mut rebuilt = TextIndexMap::default();
     for ((label, property), name) in registrations {
         let index = TextIndex::build(graph, label.clone(), property.clone())?;
-        graph
-            .text_index
-            .insert((label, property), TextIndexEntry::new(index, name));
+        rebuilt.insert((label, property), TextIndexEntry::new(index, name));
     }
+    graph.text_index = rebuilt;
     Ok(())
 }
 

@@ -257,6 +257,12 @@ impl SeleneGraph {
         })
     }
 
+    pub(crate) fn catalog_declarations(&self) -> impl Iterator<Item = &CatalogDescriptor> {
+        self.catalog_binding
+            .iter()
+            .flat_map(|binding| &binding.0.declarations)
+    }
+
     /// Carry declaration authority over a rebuilt layout, validating the new
     /// implementations. Compaction must never turn a bound graph into unbound.
     pub(crate) fn rebind_catalog_after_rebuild(&mut self, source: &Self) -> CatalogResult<()> {

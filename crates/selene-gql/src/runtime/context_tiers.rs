@@ -75,6 +75,20 @@ impl<'a> GraphContext<'a> {
         provider.vector_candidate_set(name, self.snapshot.meta.generation)
     }
 
+    /// Resolve maintained candidates against this exact pinned graph snapshot.
+    /// Unavailable names return `None`; stale provider or candidate identity is an error.
+    pub fn node_candidate_set(
+        &self,
+        name: &DbString,
+    ) -> Result<Option<selene_graph::CandidateSet<selene_graph::Node>>, ProviderError> {
+        let Some(provider) = self.index_provider_by_tag(ProviderTag(CANDIDATE_STATE_PROVIDER_TAG))
+        else {
+            return Ok(None);
+        };
+        self.snapshot
+            .maintained_node_candidates(provider.as_ref(), name)
+    }
+
     /// List maintained vector candidate-state descriptors for this snapshot generation.
     ///
     /// # Errors

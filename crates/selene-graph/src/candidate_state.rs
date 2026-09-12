@@ -1,5 +1,5 @@
 //! Policy-neutral, maintained in-memory graph candidate sets.
-//! Provider-owned state is rebuildable from a graph, not persisted by the facade preview.
+//! Provider-owned members are rebuildable; the facade persists only catalog rules.
 
 use crate::{
     CandidateSet, IndexProvider, Node, ProviderError, ProviderTag, SeleneGraph, VectorCandidateSet,
@@ -87,6 +87,7 @@ pub struct MaintainedCandidateStateProvider {
     runtime: Mutex<CandidateStateRuntime>,
 }
 struct CandidateStateRuntime {
+    graph: Option<selene_core::GraphId>,
     live: CandidateState,
     live_typed: BTreeMap<DbString, CandidateSet<Node>>,
 }
@@ -103,6 +104,7 @@ impl MaintainedCandidateStateProvider {
         validate_unique_specs(&specs)?;
         Ok(Self {
             runtime: Mutex::new(CandidateStateRuntime {
+                graph: None,
                 live: CandidateState::new(&specs),
                 live_typed: BTreeMap::new(),
             }),
@@ -159,6 +161,7 @@ impl MaintainedCandidateStateProvider {
         rebuilt.rebuild_derived(&self.specs);
         rebuilt.generation = graph.meta.generation;
         let mut runtime = self.runtime.lock();
+        runtime.graph = Some(graph.graph_id());
         runtime.live = rebuilt;
         runtime.live_typed.clear();
         Ok(())
@@ -271,6 +274,11 @@ impl IndexProvider for MaintainedCandidateStateProvider {
     ) -> Result<Option<CandidateSet<Node>>, ProviderError> {
         let mut runtime = self.runtime.lock();
         check_generation(&runtime, graph.meta.generation)?;
+        if runtime.graph.is_some_and(|id| id != graph.graph_id()) {
+            return Err(inconsistent(
+                "candidate-state belongs to another graph".into(),
+            ));
+        }
         if runtime
             .live_typed
             .get(name)
