@@ -74,7 +74,11 @@ pub(super) fn execute(
     Ok(BindingTable::new(output_schema, rows))
 }
 
-fn group_by_key_cap_exceeded() -> ExecutorError {
+/// Byte-identical `GROUP BY` distinct-group-cap diagnostic.
+///
+/// Shared with the batch group operator so both engines bound hash state
+/// with the same `5GQL1` resource error.
+pub(crate) fn group_by_key_cap_exceeded() -> ExecutorError {
     ExecutorError::ProgramLimitExceeded {
         detail: "GROUP BY distinct-group cap exceeded",
         span: SourceSpan::default(),
@@ -119,7 +123,12 @@ impl<'plan> Group<'plan> {
     }
 }
 
-fn output_schema(
+/// Grouping output schema: the input columns plus one synthesized column
+/// per aggregate, in discovery order.
+///
+/// Shared with the batch group operator so empty grouped results keep the
+/// same declared descriptor on both engines.
+pub(crate) fn output_schema(
     input_schema: &crate::BindingTableSchema,
     aggregates: &[Aggregate],
 ) -> crate::BindingTableSchema {

@@ -1,11 +1,14 @@
-//! Independent relation-model oracle for join/set differentials (F04-PR03).
+//! Independent relation-model oracle for join/set differentials (F04-PR03)
+//! and grouping/sorting differentials (F04-PR04).
 //!
 //! Comparing batch results only against the row executor is insufficient
 //! where both engines could share a wrong rewrite, so this module implements
 //! a small, separately written relation model: a nested-loop join and
-//! multiset set operators over plain row vectors. It shares no executor code
+//! multiset set operators over plain row vectors, plus grouping assignment
+//! and ordering models. It shares no executor code
 //! with either engine path — no [`RuntimeEqKey`], no join/domain validators,
-//! no row adapters. Its only shared authority with production is
+//! no aggregate slots, no sort comparators, no row adapters. Its only shared
+//! authority with production is
 //! [`selene_core`] itself (exact numeric keys, duration order keys, canonical
 //! JSON), which is the specification-level ground truth, not an optimizer
 //! rewrite.
@@ -19,6 +22,13 @@
 //!   compare by field name.
 //! - Set rows follow the distinctness regime where null equals null, so
 //!   `UNION` deduplicates null rows and `EXCEPT` removes them.
+//! - Group keys follow the grouping-equivalence regime: nulls belong
+//!   together (one all-null group), cross-type numerics collapse, records
+//!   compare by field name. Groups emit in first-emission order.
+//! - Sort keys follow the ordering regime with per-key direction and null
+//!   placement: nulls sort as a block before or after every non-null value,
+//!   strings order by binary contents (the engine's selected collation),
+//!   and ties keep input order (stable sort, no implicit total order).
 //!
 //! Order rules mirror the row path (probe-major joins, left-arm-first sets)
 //! so differentials can compare exactly, but the primary assertions compare
@@ -292,6 +302,127 @@ pub(crate) fn multiset_op(
 /// Row equality under the set regime.
 fn rows_equal(lhs: &[Value], rhs: &[Value]) -> bool {
     lhs.len() == rhs.len() && lhs.iter().zip(rhs.iter()).all(|(a, b)| values_equal(a, b))
+}
+
+/// Assign row indexes to groups under the grouping-equivalence regime.
+///
+/// `key_width` leading columns of each row form the group key. Rows join
+/// the first group whose key tuple is [`values_equal`]-equal (nulls belong
+/// together, so an all-null key forms one group); otherwise they open a new
+/// group. Groups emit in first-emission order, matching the engine's group
+/// emission order. Returns one index list per group.
+pub(crate) fn groups_of(rows: &[Vec<Value>], key_width: usize) -> Vec<Vec<usize>> {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let key = &row[..key_width.min(row.len())];
+        let hit = groups.iter().position(|members| {
+            let first = &rows[members[0]];
+            let first_key = &first[..key_width.min(first.len())];
+            first_key.len() == key.len()
+                && first_key
+                    .iter()
+                    .zip(key.iter())
+                    .all(|(a, b)| values_equal(a, b))
+        });
+        match hit {
+            Some(group) => groups[group].push(index),
+            None => groups.push(vec![index]),
+        }
+    }
+    groups
+}
+
+/// Deduplicate rows keeping first occurrences under the set regime.
+///
+/// Independent first-seen retention without sharing the engine's key or
+/// domain code: a row is kept exactly when no earlier kept row is
+/// [`rows_equal`]-equal to it.
+pub(crate) fn model_distinct(rows: &[Vec<Value>]) -> Vec<Vec<Value>> {
+    let mut kept: Vec<Vec<Value>> = Vec::new();
+    for row in rows {
+        if !kept.iter().any(|seen| rows_equal(seen, row)) {
+            kept.push(row.clone());
+        }
+    }
+    kept
+}
+
+/// One independently specified sort key: a column with a direction and a
+/// null placement.
+pub(crate) struct ModelSortKey {
+    /// Sorted column index.
+    pub(crate) column: usize,
+    /// True for ascending, false for descending.
+    pub(crate) ascending: bool,
+    /// True when nulls sort before every non-null value.
+    pub(crate) nulls_first: bool,
+}
+
+/// Stable sort of row indexes under the ordering regime.
+///
+/// Returns the input indexes in sorted order; ties keep input order (a
+/// stable sort, so no implicit total order is invented). Values compare
+/// through [`model_values_cmp`]; rows carrying a value outside the
+/// model-ordered families panic rather than inventing an order.
+pub(crate) fn model_sort(rows: &[Vec<Value>], keys: &[ModelSortKey]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    order.sort_by(|lhs, rhs| model_rows_cmp(&rows[*lhs], &rows[*rhs], keys));
+    order
+}
+
+/// Compare two rows key by key under the ordering regime.
+fn model_rows_cmp(lhs: &[Value], rhs: &[Value], keys: &[ModelSortKey]) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    for key in keys {
+        let lhs = lhs.get(key.column).cloned().unwrap_or(Value::Null);
+        let rhs = rhs.get(key.column).cloned().unwrap_or(Value::Null);
+        let ordering = match (&lhs, &rhs) {
+            (Value::Null, Value::Null) => Ordering::Equal,
+            (Value::Null, _) => {
+                if key.nulls_first {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            }
+            (_, Value::Null) => {
+                if key.nulls_first {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                }
+            }
+            _ => {
+                let ordering = model_values_cmp(&lhs, &rhs);
+                if key.ascending {
+                    ordering
+                } else {
+                    ordering.reverse()
+                }
+            }
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    Ordering::Equal
+}
+
+/// Compare two non-null values under the ordering regime.
+///
+/// Cross-type numerics order through exact numeric keys, strings order by
+/// binary contents (the engine's selected collation), and booleans order
+/// `false < true`. Anything else panics: the model covers the fixture
+/// families and refuses to invent an order beyond them.
+fn model_values_cmp(lhs: &Value, rhs: &Value) -> std::cmp::Ordering {
+    if let (Some(lhs), Some(rhs)) = (NumericKey::of(lhs), NumericKey::of(rhs)) {
+        return lhs.sort_cmp(rhs);
+    }
+    match (lhs, rhs) {
+        (Value::Bool(lhs), Value::Bool(rhs)) => lhs.cmp(rhs),
+        (Value::String(lhs), Value::String(rhs)) => lhs.as_str().cmp(rhs.as_str()),
+        _ => panic!("relation model does not order {lhs:?} against {rhs:?}"),
+    }
 }
 
 /// Assert two row multisets carry the same equality classes with the same

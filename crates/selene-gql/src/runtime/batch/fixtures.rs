@@ -17,7 +17,8 @@ use selene_core::{GraphId, LabelSet, PropertyMap, Value, db_string};
 use selene_graph::{SeleneGraph, SharedGraph, TypedIndexKind};
 
 use crate::{
-    EmptyProcedureRegistry, ExecutionPlan, analyze, parse, plan,
+    Aggregate, AggregateArg, EmptyProcedureRegistry, ExecutionPlan, NullsPolicy, OrderDirection,
+    OrderKey, ProjectExpr, SourceSpan, ValueExpr, analyze, parse, plan,
     plan::{BindingTableColumn, BindingTableSchema},
     runtime::{BindingTable, EvalCtx, ExecutorError, TxContext},
 };
@@ -63,6 +64,101 @@ pub(super) fn pair_schema() -> BindingTableSchema {
 /// One hand-built `(key, value)` kernel row.
 pub(super) fn pair(key: Value, value: Value) -> crate::runtime::Binding {
     crate::runtime::Binding::new([key, value])
+}
+
+/// Single-column schema over `k` for hand-built sort keys.
+pub(super) fn single_schema() -> BindingTableSchema {
+    BindingTableSchema {
+        columns: vec![kernel_column("k")],
+    }
+}
+
+/// One single-column kernel row.
+pub(super) fn cell(value: Value) -> crate::runtime::Binding {
+    crate::runtime::Binding::new([value])
+}
+
+/// Assert a kernel table carries exactly `expected` rows in order.
+///
+/// Shared by the grouping/sorting/dedup kernel tests so each file keeps
+/// one comparison shape; `what` names the calling context.
+pub(super) fn assert_kernel_rows(table: &BindingTable, expected: &[Vec<Value>], what: &str) {
+    let actual = table
+        .rows()
+        .iter()
+        .map(|row| row.values().to_vec())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual, expected,
+        "{what}: rows diverged (actual {actual:?})"
+    );
+}
+
+/// Variable reference to a kernel-schema column.
+pub(super) fn kernel_var(name: &str) -> ValueExpr {
+    ValueExpr::Variable {
+        name: db_string(name).unwrap(),
+        span: SourceSpan::default(),
+    }
+}
+
+/// Grouping key over one kernel-schema column.
+pub(super) fn kernel_key(name: &str, id: u32) -> ProjectExpr {
+    ProjectExpr {
+        expr: kernel_var(name),
+        expr_id: crate::analyze::ExprId::new(id),
+        ty: crate::analyze::AnalyzedType::Dynamic,
+        declared_type: None,
+        alias: None,
+        binding_refs: Vec::new(),
+        span: SourceSpan::default(),
+    }
+}
+
+/// Aggregate descriptor over one kernel-schema column (or none for `*`).
+pub(super) fn kernel_agg(
+    function: &str,
+    arg: Option<&str>,
+    star: bool,
+    distinct: bool,
+    id: u32,
+) -> Aggregate {
+    Aggregate {
+        aggregate_id: crate::analyze::ExprId::new(id),
+        output_name: db_string(&format!("{function}_{id}")).unwrap(),
+        function: db_string(function).unwrap(),
+        args: arg
+            .map(|name| AggregateArg {
+                expr: kernel_var(name),
+                expr_id: crate::analyze::ExprId::new(id + 100),
+                ty: crate::analyze::AnalyzedType::Dynamic,
+            })
+            .into_iter()
+            .collect(),
+        star,
+        distinct,
+        ty: crate::analyze::AnalyzedType::Dynamic,
+        span: SourceSpan::default(),
+    }
+}
+
+/// Sort key over one kernel-schema column.
+pub(super) fn kernel_order_key(
+    name: &str,
+    id: u32,
+    direction: OrderDirection,
+    nulls: Option<NullsPolicy>,
+) -> OrderKey {
+    OrderKey {
+        expr: kernel_var(name),
+        expr_id: crate::analyze::ExprId::new(id),
+        ty: crate::analyze::AnalyzedType::Dynamic,
+        direction,
+        nulls,
+        binding_refs: Vec::new(),
+        access: None,
+        span: SourceSpan::default(),
+    }
 }
 
 /// Boundary-cardinality policy: tiny batches so every test crosses pull
