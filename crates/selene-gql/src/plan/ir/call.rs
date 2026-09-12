@@ -11,6 +11,10 @@ use super::{BindingTableColumn, ProjectExpr};
 /// Planned procedure call.
 #[derive(Clone, Debug)]
 pub struct PlannedCall {
+    /// Runtime epoch at resolution; drift invalidates this call before dispatch.
+    pub registry_version: u64,
+    /// Complete resolved signature, effects, and durable declaration identity.
+    pub metadata: crate::ProcedureMetadata,
     /// Whether an empty procedure result preserves the input row with null yields.
     pub optional: bool,
     /// Qualified procedure name.

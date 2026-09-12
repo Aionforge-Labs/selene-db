@@ -10,7 +10,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use parking_lot::RwLock;
-use selene_algorithms::{AlgorithmsError, GraphProjection, ProjectionCatalog};
+use selene_algorithms::{GraphProjection, ProjectionCatalog};
 use selene_core::GraphId;
 use selene_graph::SeleneGraph;
 
@@ -58,12 +58,12 @@ impl AlgorithmCatalogs {
     }
 }
 
-/// Resolve a fresh, read-locked view of `projection_name` for `snapshot` from
+/// Resolve a fresh, pinned view of `projection_name` for `snapshot` from
 /// the per-`GraphId` catalog and run `f` against it.
 ///
-/// Mirrors the historical `with_algorithm_projection`: `ensure_fresh`
-/// (rebuild-if-stale) → `get` (read-locked) → run `f` while the read guard is
-/// held. The graph write lock MUST NOT be held across this call.
+/// Validation and pinning share one catalog lock acquisition. The owned
+/// projection reference releases that lock before running the algorithm.
+/// The graph write lock MUST NOT be held across this call.
 pub(super) fn with_projection<R>(
     catalogs: &AlgorithmCatalogs,
     snapshot: &SeleneGraph,
@@ -71,14 +71,9 @@ pub(super) fn with_projection<R>(
     f: impl FnOnce(&GraphProjection) -> Result<R, ProcedureError>,
 ) -> Result<R, ProcedureError> {
     catalogs.with_catalog(snapshot.graph_id(), |catalog| {
-        catalog
-            .ensure_fresh(snapshot, projection_name)
+        let projection = catalog
+            .resolve(snapshot, projection_name)
             .map_err(algorithm_error)?;
-        let projection = catalog.get(projection_name).ok_or_else(|| {
-            algorithm_error(AlgorithmsError::NoSuchProjection {
-                name: projection_name.to_owned(),
-            })
-        })?;
         f(projection.projection())
     })
 }

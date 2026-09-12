@@ -70,7 +70,7 @@ where
     }
 }
 
-pub(super) fn build_read_only<'borrow, 'ctx, 'g>(
+pub(crate) fn build_read_only<'borrow, 'ctx, 'g>(
     call: &PlannedCall,
     ctx: &'borrow TxContext<'ctx, 'g>,
 ) -> Result<ProcedureContext<'borrow, 'g>, ExecutorError>
@@ -112,7 +112,7 @@ pub(super) const fn tier_for_mutability(mutability: ProcedureMutability) -> Proc
     }
 }
 
-pub(super) fn procedure_error(
+pub(crate) fn procedure_error(
     source: ProcedureError,
     span: crate::SourceSpan,
     deadline: Option<Instant>,

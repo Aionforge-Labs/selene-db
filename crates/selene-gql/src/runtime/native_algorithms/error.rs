@@ -19,7 +19,17 @@ pub(super) fn invalid_argument(detail: impl Into<String>) -> ProcedureError {
 }
 
 pub(super) fn algorithm_error(error: AlgorithmsError) -> ProcedureError {
-    invalid_argument(error.to_string())
+    native_error(error.to_string(), error)
+}
+
+fn native_error(
+    detail: impl Into<String>,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> ProcedureError {
+    ProcedureError::Native {
+        detail: detail.into(),
+        source: std::sync::Arc::new(source),
+    }
 }
 
 pub(super) fn algorithm_aborted(error: AlgorithmAborted) -> ProcedureError {
@@ -34,11 +44,12 @@ pub(super) fn algorithm_aborted(error: AlgorithmAborted) -> ProcedureError {
 
 pub(super) fn topo_sort_error(error: TopoSortError) -> ProcedureError {
     match error {
-        TopoSortError::NotADag { .. } => {
-            invalid_argument("algo.topological_sort: projection contains a directed cycle")
-        }
+        TopoSortError::NotADag { .. } => native_error(
+            "algo.topological_sort: projection contains a directed cycle",
+            error,
+        ),
         TopoSortError::Aborted { source } => algorithm_aborted(source),
-        other => invalid_argument(other.to_string()),
+        other => native_error(other.to_string(), other),
     }
 }
 
@@ -47,16 +58,18 @@ pub(super) fn pathfinding_error(
     error: PathfindingError,
 ) -> ProcedureError {
     match error {
-        PathfindingError::NegativeWeight { .. } => {
-            invalid_argument(format!("{procedure}: traversed edge has negative weight"))
-        }
+        PathfindingError::NegativeWeight { .. } => native_error(
+            format!("{procedure}: traversed edge has negative weight"),
+            error,
+        ),
         PathfindingError::NaNWeight { .. } => {
-            invalid_argument(format!("{procedure}: traversed edge has NaN weight"))
+            native_error(format!("{procedure}: traversed edge has NaN weight"), error)
         }
-        PathfindingError::TooLarge { .. } => {
-            invalid_argument("algo.apsp: projection node count exceeds max_nodes limit")
-        }
+        PathfindingError::TooLarge { .. } => native_error(
+            "algo.apsp: projection node count exceeds max_nodes limit",
+            error,
+        ),
         PathfindingError::Aborted { source } => algorithm_aborted(source),
-        _other => invalid_argument(format!("{procedure}: pathfinding failed")),
+        other => native_error(format!("{procedure}: pathfinding failed"), other),
     }
 }

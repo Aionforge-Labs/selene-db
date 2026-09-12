@@ -7,7 +7,7 @@ use crate::{
 
 use super::context::procedure_error;
 
-pub(super) fn project_yield_row(
+pub(crate) fn project_yield_row(
     call: &PlannedCall,
     output_row: Vec<Value>,
 ) -> Result<Vec<Value>, ExecutorError> {

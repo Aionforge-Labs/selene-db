@@ -248,6 +248,37 @@ impl CatalogResolver {
         Ok(())
     }
 
+    pub(crate) fn use_procedure(
+        &mut self,
+        name: &[selene_core::DbString],
+        metadata: &crate::ProcedureMetadata,
+        span: SourceSpan,
+    ) -> Result<(), AnalysisError> {
+        let unavailable = || {
+            invalid(
+                span,
+                "procedure declaration has no matching available implementation",
+            )
+        };
+        let expected = metadata.declaration.as_deref().ok_or_else(unavailable)?;
+        let catalog = &self.environment.catalog;
+        let key = CatalogName::delimited(
+            name.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("."),
+        )
+        .map_err(|_| unavailable())?;
+        let actual = catalog
+            .declaration(CatalogObjectId::Catalog(catalog.catalog_id()), &key)
+            .ok_or_else(unavailable)?;
+        if actual != expected || catalog.descriptor(expected.id()) != Some(expected) {
+            return Err(unavailable());
+        }
+        self.objects.insert(actual.id(), actual.clone());
+        Ok(())
+    }
+
     pub(crate) fn record_site(&mut self, scope: super::ScopeId, origin: SourceSpan) {
         self.sites.push(WorkingSite {
             scope,

@@ -370,6 +370,14 @@ fn planned_call_effects_resolve_from_metadata_not_names() {
 #[allow(dead_code, reason = "documents the planned-call shape used above")]
 fn example_planned_call_shape() -> PlannedCall {
     PlannedCall {
+        registry_version: 0,
+        metadata: ProcedureMetadata::new(
+            ProcedureHandle::new(1),
+            Default::default(),
+            Default::default(),
+            ProcedureTier::Graph,
+            ProcedureMutability::Read,
+        ),
         optional: false,
         procedure: Box::new([db_string("pkg")]),
         handle: ProcedureHandle::new(1),

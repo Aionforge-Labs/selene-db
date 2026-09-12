@@ -48,6 +48,7 @@
 pub(crate) mod aggregate;
 pub(crate) mod binding_batch;
 pub(crate) mod budget;
+pub(crate) mod call;
 pub(crate) mod candidates;
 pub(crate) mod catalog;
 pub(crate) mod catalog_index;
@@ -79,6 +80,8 @@ pub(crate) mod unit;
 mod aggregate_differentials;
 #[cfg(test)]
 mod aggregate_tests;
+#[cfg(test)]
+mod call_tests;
 #[cfg(test)]
 mod chain_tests;
 #[cfg(test)]

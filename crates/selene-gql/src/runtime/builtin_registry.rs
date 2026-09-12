@@ -110,6 +110,7 @@ impl BuiltinProcedureRegistry {
         let mut by_name = HashMap::new();
         let mut by_handle = HashMap::new();
         let mut ordered = Vec::new();
+        let mut declarations = Vec::new();
 
         // Handles are 1-based and assigned in registration order: the 19
         // `algo.*` procedures first (handles 1..=19), then the 50 `selene.*`
@@ -120,7 +121,10 @@ impl BuiltinProcedureRegistry {
             let handle = ProcedureHandle::new(next_handle);
             next_handle += 1;
             let name = procedure_name_segments(spec.name);
-            let metadata = spec.kind.metadata(handle, spec.description);
+            let mut metadata = spec.kind.metadata(handle, spec.description);
+            let declaration = native_declarations::descriptor(handle.raw(), &name, &metadata);
+            metadata.declaration = Some(std::sync::Arc::new(declaration.clone()));
+            declarations.push(declaration);
 
             by_handle.insert(handle, Dispatch::Algo(spec.kind));
             by_name.insert(name.clone().into_boxed_slice(), metadata.clone());
@@ -130,22 +134,18 @@ impl BuiltinProcedureRegistry {
             let handle = ProcedureHandle::new(next_handle);
             next_handle += 1;
             let name = procedure_name_segments(spec.name);
-            let metadata = spec
+            let mut metadata = spec
                 .kind
                 .metadata(handle, spec.description, spec.since_version);
+            let declaration = native_declarations::descriptor(handle.raw(), &name, &metadata);
+            metadata.declaration = Some(std::sync::Arc::new(declaration.clone()));
+            declarations.push(declaration);
 
             by_handle.insert(handle, Dispatch::Builtin(spec.kind));
             by_name.insert(name.clone().into_boxed_slice(), metadata.clone());
             ordered.push((name, metadata));
         }
 
-        let declarations = ordered
-            .iter()
-            .enumerate()
-            .map(|(index, (name, metadata))| {
-                native_declarations::descriptor(index as u64 + 1, name, metadata)
-            })
-            .collect();
         Self {
             by_name,
             by_handle,
