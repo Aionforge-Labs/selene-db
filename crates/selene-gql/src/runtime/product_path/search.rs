@@ -19,112 +19,15 @@ use std::collections::VecDeque;
 use std::mem::size_of;
 use std::time::Instant;
 
+mod setup;
 mod support;
+pub(super) use setup::execute;
 
 pub(super) struct SearchResult {
     pub(super) table: BindingTable,
     pub(super) stats: PathExecutionStats,
     pub(super) observations: Vec<PathObservation>,
     pub(super) reserved: usize,
-}
-
-pub(super) fn execute(
-    program: &BoundedPathProgram<'_>,
-    limits: PathExecutionLimits,
-    ctx: &mut BatchExecutionContext<'_>,
-    qualify: Option<&Qualifier<'_>>,
-) -> Result<SearchResult, ExecutorError> {
-    ctx.ensure_generation()?;
-    ctx.check_cancel(program.paths[0].automaton.origin)?;
-    for path in &program.paths {
-        if path.upper > limits.max_hops {
-            return Err(limit("max_path_hops", path.automaton.origin));
-        }
-    }
-    // A conservative capacity envelope per state/observation/result, including
-    // Vec growth slack and all edge-list payloads. It bounds this executor's
-    // retained storage; it is deliberately not an allocator/RSS measurement.
-    let path_hops: Vec<_> = program
-        .paths
-        .iter()
-        .map(|p| {
-            if !p.open {
-                return p.upper;
-            }
-            // Natural history bounds, not a graph-distance cache. If a policy cap
-            // is smaller, the first legal continuation beyond it fails the request.
-            let graph = ctx.snapshot().expect("validated pin");
-            let natural =
-                if program.different_edges || p.automaton.mode.mode == crate::PathMode::Trail {
-                    graph.edge_count()
-                } else if matches!(
-                    p.automaton.mode.mode,
-                    crate::PathMode::Simple | crate::PathMode::Acyclic
-                ) {
-                    graph.node_count()
-                } else {
-                    limits.max_hops as usize
-                };
-            limits
-                .max_hops
-                .min(u32::try_from(natural).unwrap_or(u32::MAX))
-        })
-        .collect();
-    let hops = path_hops
-        .iter()
-        .try_fold(0usize, |sum, &hops| sum.checked_add(hops as usize))
-        .ok_or_else(|| invalid("product path memory estimate overflow"))?;
-    let elements: usize = program
-        .paths
-        .iter()
-        .map(|p| p.automaton.semantic.elements.len())
-        .sum();
-    let state_bytes = hops
-        .checked_add(elements)
-        .and_then(|n| n.checked_add(program.bindings.len()))
-        .and_then(|n| n.checked_add(1))
-        .and_then(|n| n.checked_mul(size_of::<Value>() * 16))
-        .ok_or_else(|| invalid("product path memory estimate overflow"))?;
-    let budget = *ctx.budget_mut();
-    let mut run = Search {
-        program,
-        limits,
-        ctx,
-        budget,
-        reserved: 0,
-        state_bytes,
-        stats: PathExecutionStats::default(),
-        observations: Vec::new(),
-        stack: VecDeque::new(),
-        rows: Vec::new(),
-        candidates: Vec::new(),
-        path_hops,
-        qualify,
-        breadth: false,
-        cutoff: false,
-        pairs: None,
-    };
-    let outcome = run.run();
-    if outcome.is_err() {
-        run.budget.release(run.reserved);
-        run.reserved = 0;
-    }
-    let Search {
-        budget,
-        stats,
-        observations,
-        rows,
-        reserved,
-        ..
-    } = run;
-    *ctx.budget_mut() = budget;
-    outcome?;
-    Ok(SearchResult {
-        table: BindingTable::new(program.schema.clone(), rows),
-        stats,
-        observations,
-        reserved,
-    })
 }
 
 struct Search<'a, 'p, 'g> {
@@ -200,14 +103,18 @@ impl Search<'_, '_, '_> {
         Ok(())
     }
 
-    fn run(&mut self) -> Result<(), ExecutorError> {
+    fn run(&mut self, seed: Option<Vec<Option<Value>>>) -> Result<(), ExecutorError> {
         // Covers the single live scratch state and length histogram, in addition
         // to charged stack clones. Charge before any execution-sized allocation.
         self.reserve(self.state_bytes)?;
         let max_hops = self.path_hops.iter().copied().max().unwrap_or(0) as usize;
         self.stats.hop_lengths = vec![0; max_hops + 1];
         self.reserve(self.state_bytes)?;
-        let mut pending = vec![SearchState::new(self.program.bindings.len())];
+        let mut initial = SearchState::new(self.program.schema.columns.len());
+        if let Some(seed) = seed {
+            initial.locals = seed;
+        }
+        let mut pending = vec![initial];
         while let Some(seed) = pending.pop() {
             let pattern = seed.pattern;
             let path = &self.program.paths[pattern];

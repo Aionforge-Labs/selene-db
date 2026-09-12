@@ -6,11 +6,10 @@ fired_rules: none
 output: [b]
 pattern:
   bindings: 2 [a, b]
-  join_tree: AnyShortest(Scan(a)->Repeat(_->b;1..2))
+  join_tree: ProductPaths(patterns=1)
   pattern_filters: 0
   scans:
-    - a (Node): Linear residual=0 consumed=0
-    - <anonymous-repeat-edge> (Edge): Linear residual=0 consumed=0
+    - none
   order_access: []
 pipeline:
   - Project(columns=[b])

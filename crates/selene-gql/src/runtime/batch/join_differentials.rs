@@ -262,14 +262,13 @@ fn driver_accepts_join_shapes_and_declines_the_rest() {
             "join shape left a row suffix: {source}"
         );
     }
-    // Non-selected shapes still decline: variable-length repeats stay on
-    // the row path.
+    // F05-PR04 routes variable-length paths through the same batch tree.
     let plan = plan_source("MATCH (a)-[:KNOWS*1..2]->(b) RETURN a, b");
     assert!(
         batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
             .expect("driver probes")
-            .is_none(),
-        "variable-length expansion must decline"
+            .is_some(),
+        "variable-length expansion must use batches"
     );
     // An optimizer-emitted disjunctive scan declines as well: the union
     // point stays row-covered in this slice. The tree is built by hand so

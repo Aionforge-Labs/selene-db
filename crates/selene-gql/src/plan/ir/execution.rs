@@ -81,15 +81,8 @@ impl ExecutionPlan {
 
 fn refresh_join_tree_pipeline_op_high_water(tree: &mut JoinTree) {
     match tree {
-        JoinTree::Unit | JoinTree::Scan(_) => {}
-        JoinTree::Expand { child, .. }
-        | JoinTree::Questioned { child, .. }
-        | JoinTree::Repeat { child, .. }
-        | JoinTree::PathSearch { child, .. }
-        | JoinTree::PathModeFilter { child, .. }
-        | JoinTree::MatchModeFilter { child, .. } => {
-            refresh_join_tree_pipeline_op_high_water(child)
-        }
+        JoinTree::Unit | JoinTree::Scan(_) | JoinTree::Paths(_) => {}
+        JoinTree::Expand { child, .. } => refresh_join_tree_pipeline_op_high_water(child),
         JoinTree::HashJoin { left, right, .. } | JoinTree::Outer { left, right, .. } => {
             refresh_join_tree_pipeline_op_high_water(left);
             refresh_join_tree_pipeline_op_high_water(right);

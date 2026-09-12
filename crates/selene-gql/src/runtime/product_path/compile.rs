@@ -29,12 +29,59 @@ pub(super) struct CompiledPath<'a> {
 }
 
 impl<'a> BoundedPathProgram<'a> {
+    pub(super) fn from_plan(plan: &'a crate::PathProgram) -> Result<Self, ExecutorError> {
+        let first = plan
+            .automata
+            .first()
+            .ok_or_else(|| invalid("empty path program"))?;
+        if plan.conditions.len() != plan.automata.len()
+            || plan.bindings.len() != plan.schema.columns.len()
+            || plan
+                .bindings
+                .iter()
+                .enumerate()
+                .any(|(i, id)| plan.bindings[..i].contains(id))
+            || plan
+                .input_bindings
+                .iter()
+                .any(|id| !plan.bindings.contains(id))
+            || plan
+                .automata
+                .iter()
+                .flat_map(|a| a.semantic.named_bindings())
+                .any(|id| !plan.bindings.contains(&id))
+        {
+            return Err(invalid("path program metadata shape mismatch"));
+        }
+        let mut paths = Vec::new();
+        for (index, (a, conditions)) in plan.automata.iter().zip(&plan.conditions).enumerate() {
+            if a.clause_index != first.clause_index
+                || a.pattern_index != index
+                || a.match_mode != first.match_mode
+                || conditions.len() != a.semantic.elements.len()
+            {
+                return Err(invalid("path program requires one complete clause"));
+            }
+            let mut path = validate(a)?;
+            path.conditions = conditions.clone();
+            paths.push(path);
+        }
+        Ok(Self {
+            paths,
+            bindings: plan.bindings.clone(),
+            schema: plan.schema.clone(),
+            different_edges: first.match_mode.mode.unwrap_or(default_match_mode()?)
+                == MatchMode::DifferentEdges,
+            expr_ids: Default::default(),
+        })
+    }
     /// Validate one clause's automata and resolve its named output columns.
     ///
     /// # Errors
     /// Unsatisfiable bounds fail with an implementation-defined diagnostic.
-    /// Malformed or mixed-clause IR never degrades. Expression subqueries require
-    /// the statement integration owned by F05-PR04 and are rejected at this seam.
+    /// Malformed or mixed-clause IR never degrades. Expression subqueries need
+    /// the matching plan metadata on the execution's `TxContext`; missing
+    /// metadata fails at evaluation rather than reparsing or falling back.
     pub fn compile(
         automata: &'a [PathAutomaton],
         analyzed: &AnalyzedStatement,

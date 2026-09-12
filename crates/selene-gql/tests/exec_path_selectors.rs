@@ -465,7 +465,7 @@ fn path_selector_keeps_repeat_inline_group_predicate_shape() {
 }
 
 #[test]
-fn shortest_selectors_default_to_trail() {
+fn shortest_selectors_preserve_default_walk_without_inventing_trail() {
     let node = db_string("N");
     let edge = db_string("K");
     let name = db_string("name");
@@ -490,11 +490,17 @@ fn shortest_selectors_default_to_trail() {
         fixture.row_count(
             "MATCH ALL SHORTEST (a:N {name: 'A'})-[:K*2..2]->(b:N {name: 'A'}) RETURN b"
         ),
-        0
+        1
     );
     assert_eq!(
         fixture.row_count(
             "MATCH ANY SHORTEST (a:N {name: 'A'})-[:K]->(:N {name: 'A'})-[:K]->(b:N {name: 'A'}) RETURN b"
+        ),
+        1
+    );
+    assert_eq!(
+        fixture.row_count(
+            "MATCH ALL SHORTEST TRAIL (a:N {name: 'A'})-[:K*2..2]->(b:N {name: 'A'}) RETURN b"
         ),
         0
     );

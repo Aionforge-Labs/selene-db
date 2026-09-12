@@ -22,11 +22,7 @@ fn optimized(source: &str, catalog: &MockIndexCatalog) -> ExecutionPlan {
 
 fn leaf(tree: &JoinTree) -> &JoinTree {
     match tree {
-        JoinTree::Expand { child, .. }
-        | JoinTree::Questioned { child, .. }
-        | JoinTree::Repeat { child, .. }
-        | JoinTree::PathSearch { child, .. }
-        | JoinTree::PathModeFilter { child, .. } => leaf(child),
+        JoinTree::Expand { child, .. } => leaf(child),
         JoinTree::HashJoin { left, .. } | JoinTree::Outer { left, .. } => leaf(left),
         _ => tree,
     }

@@ -6,12 +6,10 @@ fired_rules: none
 output: [r]
 pattern:
   bindings: 4 [a, b, c, r]
-  join_tree: All(Scan(a)->Expand(_->b)->Repeat(r->c;1..2))
+  join_tree: ProductPaths(patterns=1)
   pattern_filters: 0
   scans:
-    - a (Node): Linear residual=0 consumed=0
-    - <anonymous-edge> (Edge): Linear residual=0 consumed=0
-    - r (Edge): Linear residual=0 consumed=0
+    - none
   order_access: []
 pipeline:
   - Project(columns=[r])

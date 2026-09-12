@@ -19,7 +19,6 @@ mod duration_ops;
 mod identity_length_fns;
 mod json_fns;
 mod modulus_fns;
-mod path_constructor;
 mod predicates;
 mod scalar_fns;
 mod string_fns;
@@ -108,7 +107,11 @@ pub fn evaluate(
             eval_list_literal(items, *span, binding, schema, ctx)
         }
         ValueExpr::PathConstructor { elements, span } => {
-            path_constructor::eval_path_constructor(elements, *span, binding, schema, ctx)
+            let values = elements
+                .iter()
+                .map(|element| evaluate(element, binding, schema, ctx))
+                .collect::<Result<Vec<_>, _>>()?;
+            super::product_path::construct_path(values, *span, ctx)
         }
         ValueExpr::Parameter {
             name,
@@ -401,7 +404,7 @@ fn property_from_edge(
         .unwrap_or(Value::Null)
 }
 
-fn literal_value(literal: &Literal) -> Value {
+pub(crate) fn literal_value(literal: &Literal) -> Value {
     match literal {
         Literal::Bool(value, _) => Value::Bool(*value),
         Literal::Integer(value, _) | Literal::RadixInteger(value, _, _) => Value::Int(*value),

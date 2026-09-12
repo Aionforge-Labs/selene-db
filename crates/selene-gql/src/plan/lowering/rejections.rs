@@ -124,21 +124,20 @@ fn edge_without_target_is_rejected() {
 }
 
 #[test]
-fn different_edges_match_mode_lowers_to_filter() {
-    // 812: G002 (DIFFERENT EDGES) is runtime-supported (ISO §16.4 GR8(a)). The
-    // `reject_unsupported_clause` backstop now lets it pass; lowering installs
-    // the pattern-wide `MatchModeFilter` wrapper. This pins that the (formerly
-    // rejecting) planner path now lowers the mode instead of erroring.
+fn different_edges_match_mode_is_transported_to_product_paths() {
     let mut analyzed = analyzed("MATCH (a)-[:E]->(b) RETURN a");
     mutate_match_clause(&mut analyzed, |clause| {
         clause.match_mode = Some(MatchMode::DifferentEdges);
     });
     let plan = plan(&analyzed, &EmptyProcedureRegistry).expect("DIFFERENT EDGES lowers");
     let pattern = plan.pattern_plan.as_ref().expect("pattern plan");
-    assert!(matches!(
-        pattern.join_tree,
-        JoinTree::MatchModeFilter { .. }
-    ));
+    let JoinTree::Paths(program) = &pattern.join_tree else {
+        panic!("path program")
+    };
+    assert_eq!(
+        program.automata[0].match_mode.mode,
+        Some(MatchMode::DifferentEdges)
+    );
 }
 
 #[test]
@@ -152,28 +151,11 @@ fn repeatable_elements_match_mode_lowers_without_filter() {
     });
     let plan = plan(&analyzed, &EmptyProcedureRegistry).expect("REPEATABLE ELEMENTS lowers");
     let pattern = plan.pattern_plan.as_ref().expect("pattern plan");
-    assert!(!matches!(
-        pattern.join_tree,
-        JoinTree::MatchModeFilter { .. }
-    ));
     assert!(matches!(pattern.join_tree, JoinTree::Expand { .. }));
 }
 
-// PLAN-17 coverage boundary: the questioned-edge / path-selector / path-mode
-// "without … node/edge binding" guards (match_clause.rs::lower_match_clause,
-// path_search.rs, path_mode.rs) are NOT reachable by black-box AST mutation.
-// `node_scan` / `edge_match` always allocate a hidden binding when no named
-// binding exists (`binding.is_none().then(|| hidden.next())`), so
-// `chain_tail_binding` over a lowered scan always returns `Some`. Triggering
-// those `None` arms requires hand-constructing the internal `JoinTree`, which
-// is not a public API. They remain pure defense-in-depth; this file pins every
-// tag that a parsed-then-analyzed AST can actually reach (empty /
-// non-alternating / edge-without-target / MATCH-mode here; correlated NEXT +
-// leading OPTIONAL MATCH are pinned in exec_pipeline_chain.rs +
-// plan_read_pipeline.rs). GP03 explicit variable-scope CALL is now SUPPORTED —
-// it is bound in the analyzer (the body sees only the named imports), so the
-// former planner backstop is gone; its positive + restriction tests live in
-// call_subqueries.rs.
+// Anonymous path identities and binding degree are now pinned by logical
+// automata tests and the native/facade differential suites, not row wrappers.
 
 // ---------------------------------------------------------------------------
 // PLAN-22: insert edge-endpoint resolution uses index.wrapping_sub(1).

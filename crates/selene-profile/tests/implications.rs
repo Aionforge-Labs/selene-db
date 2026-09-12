@@ -515,6 +515,7 @@ fn claimed_dependencies_require_claims_evidence_and_minimal_paths() {
 
     let mut incomplete = unclaimed;
     feature_mut(&mut incomplete, "G003")["claim_state"] = json!("claimed");
+    feature_mut(&mut incomplete, "G003")["evidence"] = json!([]);
     let error = parse_value(&incomplete).unwrap_err();
     assert!(error.contains("evidence=incomplete"), "{error}");
 
@@ -538,6 +539,7 @@ fn claimed_dependencies_require_claims_evidence_and_minimal_paths() {
 fn claimed_source_and_release_claimable_require_complete_evidence() {
     let mut claimed = source_value();
     feature_mut(&mut claimed, "G002")["claim_state"] = json!("claimed");
+    feature_mut(&mut claimed, "G002")["evidence"] = json!([]);
     assert!(
         parse_value(&claimed)
             .unwrap_err()

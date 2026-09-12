@@ -4,9 +4,8 @@
 //! tree over a single pinned snapshot. Accepted shapes are the primitive
 //! families plus the F04-PR03 join family: single scans, nested inner
 //! one-hop expansions, the `Unit` anchor, inner hash joins, and left-outer
-//! joins. Every other variant (variable-length repeats, path selectors and
-//! modes, WCO, subplans, disjunctive scans, optional/questioned forms)
-//! declines with `Ok(None)` so the row path keeps its exact behavior.
+//! joins, and complete logical path programs. WCO, subplans and disjunctive
+//! scans still decline; paths never fall back to a second evaluator.
 //!
 //! [`tree_is_batchable`] is the pure acceptance predicate over the same
 //! shapes. The driver consults it before committing to batch execution for
@@ -37,6 +36,22 @@ use super::{
     unit::BatchSeedRow,
 };
 
+pub(crate) fn contains_paths(tree: &JoinTree) -> bool {
+    match tree {
+        JoinTree::Paths(_) => true,
+        JoinTree::Expand { child, .. } => contains_paths(child),
+        JoinTree::HashJoin { left, right, .. } | JoinTree::Outer { left, right, .. } => {
+            contains_paths(left) || contains_paths(right)
+        }
+        JoinTree::WorstCaseOptimal { intersection, .. } => intersection.iter().any(contains_paths),
+        JoinTree::Subplan(plan) => plan
+            .pattern_plan
+            .as_ref()
+            .is_some_and(|p| contains_paths(&p.join_tree)),
+        JoinTree::Unit | JoinTree::Scan(_) | JoinTree::DisjunctiveScan { .. } => false,
+    }
+}
+
 /// True when `tree` lowers to batch operators without a row fallback.
 ///
 /// This must stay in lockstep with [`build_join_tree`]: any shape built
@@ -45,17 +60,12 @@ use super::{
 /// stays on the row path in this slice.
 pub(crate) fn tree_is_batchable(tree: &JoinTree) -> bool {
     match tree {
-        JoinTree::Unit | JoinTree::Scan(_) => true,
+        JoinTree::Unit | JoinTree::Scan(_) | JoinTree::Paths(_) => true,
         JoinTree::Expand { child, .. } => tree_is_batchable(child),
         JoinTree::HashJoin { left, right, .. } | JoinTree::Outer { left, right, .. } => {
             tree_is_batchable(left) && tree_is_batchable(right)
         }
-        JoinTree::Questioned { .. }
-        | JoinTree::Repeat { .. }
-        | JoinTree::PathSearch { .. }
-        | JoinTree::PathModeFilter { .. }
-        | JoinTree::MatchModeFilter { .. }
-        | JoinTree::WorstCaseOptimal { .. }
+        JoinTree::WorstCaseOptimal { .. }
         | JoinTree::Subplan(_)
         | JoinTree::DisjunctiveScan { .. } => false,
     }
@@ -90,6 +100,9 @@ where
     'plan: 'e,
 {
     match tree {
+        JoinTree::Paths(program) => Ok(Some(Box::new(
+            crate::runtime::product_path::BatchPath::new(program, eval, schema, seed, policy),
+        ))),
         JoinTree::Scan(scan) => {
             let operator = BatchScan::new(scan, pattern, schema, eval, policy);
             Ok(Some(Box::new(match seed {
@@ -164,15 +177,62 @@ where
                 policy,
             ))))
         }
-        JoinTree::Questioned { .. }
-        | JoinTree::Repeat { .. }
-        | JoinTree::PathSearch { .. }
-        | JoinTree::PathModeFilter { .. }
-        | JoinTree::MatchModeFilter { .. }
-        | JoinTree::WorstCaseOptimal { .. }
+        JoinTree::WorstCaseOptimal { .. }
         | JoinTree::Subplan(_)
         | JoinTree::DisjunctiveScan { .. } => Ok(None),
     }
+}
+
+/// Temporary generic-row caller seam, deleted with that dispatcher in F04-PR09.
+/// The path itself always uses the physical batch implementation, never fallback.
+pub(crate) fn path_from_row_dispatch(
+    tree: &JoinTree,
+    env: crate::runtime::pattern::WalkContext<'_, '_, '_, '_, '_, '_>,
+) -> Result<Vec<Binding>, ExecutorError> {
+    let mut ctx = BatchExecutionContext::borrowed(
+        env.ctx.tx.snapshot(),
+        env.ctx.tx.batch_cancel(),
+        super::budget::MemoryBudget::unlimited(),
+    );
+    trace_subtree(
+        tree,
+        env.pattern,
+        env.schema,
+        env.seed.cloned(),
+        *env.ctx,
+        BatchPolicy::default_policy(),
+        &mut ctx,
+    )
+}
+
+/// One-hop primitive adapter for generic-row parents; no second edge evaluator.
+pub(crate) fn expand_from_row_dispatch(
+    child: &JoinTree,
+    edge: &crate::EdgeMatch,
+    direction: crate::EdgeDirection,
+    env: crate::runtime::pattern::WalkContext<'_, '_, '_, '_, '_, '_>,
+) -> Result<Vec<Binding>, ExecutorError> {
+    let rows = crate::runtime::pattern::walk_join_tree(child, env)?;
+    let policy = BatchPolicy::default_policy();
+    let source = super::unit::BatchRowSource::new(
+        crate::BindingTable::new(env.schema.clone(), rows),
+        policy,
+    );
+    let mut root = BatchExpand::new(
+        Box::new(source),
+        edge,
+        direction,
+        env.pattern,
+        env.schema.clone(),
+        *env.ctx,
+        policy,
+    );
+    let mut ctx = BatchExecutionContext::borrowed(
+        env.ctx.tx.snapshot(),
+        env.ctx.tx.batch_cancel(),
+        super::budget::MemoryBudget::unlimited(),
+    );
+    super::tracer::trace_operator_to_table(&mut root, &mut ctx).map(|table| table.into_parts().1)
 }
 
 /// Evaluate one batchable subtree to materialized rows for a single seed.

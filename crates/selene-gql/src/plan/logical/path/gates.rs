@@ -56,21 +56,46 @@ fn collect_statement_clauses<'a>(statement: &'a Statement, out: &mut Vec<&'a Mat
                     crate::MutationStatement::Filter(value) => {
                         collect_value_expr_clauses(value, out);
                     }
-                    crate::MutationStatement::Insert(_)
-                    | crate::MutationStatement::Set(_)
-                    | crate::MutationStatement::Remove(_)
-                    | crate::MutationStatement::Delete(_) => {}
+                    crate::MutationStatement::Insert(insert) => {
+                        for pattern in &insert.patterns {
+                            collect_pattern_exprs(pattern, out);
+                        }
+                    }
+                    crate::MutationStatement::Set(items) => {
+                        for item in items {
+                            match item {
+                                crate::SetItem::Property { value, .. } => {
+                                    collect_value_expr_clauses(value, out)
+                                }
+                                crate::SetItem::PropertyMerge { properties, .. } => {
+                                    for (_, value) in properties {
+                                        collect_value_expr_clauses(value, out);
+                                    }
+                                }
+                                crate::SetItem::Label { .. } => {}
+                            }
+                        }
+                    }
+                    crate::MutationStatement::Remove(_) | crate::MutationStatement::Delete(_) => {}
                 }
             }
+            if let Some(crate::MutationTerminator::Return(clause)) = &pipeline.terminator {
+                collect_return_exprs(clause, out);
+            }
         }
-        Statement::Ddl(_) | Statement::Call(_) => {}
+        Statement::Call(call) => {
+            for arg in &call.args {
+                collect_value_expr_clauses(arg, out);
+            }
+        }
+        Statement::SessionSetValue { value, .. } => collect_value_expr_clauses(value, out),
+        Statement::Ddl(_) => {}
         Statement::Explain { inner, .. } => {
             collect_statement_clauses(inner, out);
         }
         Statement::StartTransaction { .. }
         | Statement::Commit { .. }
         | Statement::Rollback { .. }
-        | Statement::SessionSetValue { .. }
         | Statement::SessionSetTimeZone { .. }
         | Statement::SessionSetGraph { .. }
         | Statement::SessionReset { .. }
@@ -106,17 +131,7 @@ fn collect_query_pipeline_clauses<'a>(
             }
             crate::PipelineStatement::Limit(_) | crate::PipelineStatement::Offset(_) => {}
             crate::PipelineStatement::Return(clause) => {
-                for item in &clause.items {
-                    collect_value_expr_clauses(&item.expr, out);
-                }
-                if let Some(keys) = &clause.group_by {
-                    for key in keys {
-                        collect_value_expr_clauses(key, out);
-                    }
-                }
-                if let Some(having) = &clause.having {
-                    collect_value_expr_clauses(having, out);
-                }
+                collect_return_exprs(clause, out);
             }
             crate::PipelineStatement::With(clause) => {
                 for item in &clause.items {
@@ -153,23 +168,41 @@ fn collect_match_clause_exprs<'a>(clause: &'a MatchClause, out: &mut Vec<&'a Mat
         collect_value_expr_clauses(where_clause, out);
     }
     for pattern in &clause.patterns {
-        for element in &pattern.elements {
-            match element {
-                crate::PatternElement::Node(node) => {
-                    if let Some(where_clause) = &node.inline_where {
-                        collect_value_expr_clauses(where_clause, out);
-                    }
-                    for (_, value) in &node.properties {
-                        collect_value_expr_clauses(value, out);
-                    }
+        collect_pattern_exprs(pattern, out);
+    }
+}
+
+fn collect_return_exprs<'a>(clause: &'a crate::ReturnClause, out: &mut Vec<&'a MatchClause>) {
+    for item in &clause.items {
+        collect_value_expr_clauses(&item.expr, out);
+    }
+    if let Some(keys) = &clause.group_by {
+        for key in keys {
+            collect_value_expr_clauses(key, out);
+        }
+    }
+    if let Some(having) = &clause.having {
+        collect_value_expr_clauses(having, out);
+    }
+}
+
+fn collect_pattern_exprs<'a>(pattern: &'a GraphPattern, out: &mut Vec<&'a MatchClause>) {
+    for element in &pattern.elements {
+        match element {
+            crate::PatternElement::Node(node) => {
+                if let Some(where_clause) = &node.inline_where {
+                    collect_value_expr_clauses(where_clause, out);
                 }
-                crate::PatternElement::Edge(edge) => {
-                    if let Some(where_clause) = &edge.inline_where {
-                        collect_value_expr_clauses(where_clause, out);
-                    }
-                    for (_, value) in &edge.properties {
-                        collect_value_expr_clauses(value, out);
-                    }
+                for (_, value) in &node.properties {
+                    collect_value_expr_clauses(value, out);
+                }
+            }
+            crate::PatternElement::Edge(edge) => {
+                if let Some(where_clause) = &edge.inline_where {
+                    collect_value_expr_clauses(where_clause, out);
+                }
+                for (_, value) in &edge.properties {
+                    collect_value_expr_clauses(value, out);
                 }
             }
         }

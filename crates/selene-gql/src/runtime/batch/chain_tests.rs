@@ -256,22 +256,21 @@ fn correlated_chain_runs_its_block_per_input_row() {
 }
 
 #[test]
-fn unbatchable_inner_shapes_decline_with_identical_outcomes() {
-    // A variable-length inner pattern cannot run in batches: the match ends
-    // the prefix and the row suffix preserves the exact outcome.
+fn variable_length_inner_patterns_run_without_a_row_suffix() {
     let graph = person_graph();
     let source = "MATCH (a:Person) FILTER a.age > 20 MATCH (a)-[:KNOWS*1..2]->(b) RETURN a, b";
     let plan = plan_source(source);
     let prefix = batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
         .expect("driver probes")
         .expect("project prefix still runs");
-    assert!(
-        prefix.suffix_from < plan.pipeline.len(),
-        "unbatchable match must leave a row suffix"
+    assert_eq!(
+        prefix.suffix_from,
+        plan.pipeline.len(),
+        "path match must use batches"
     );
     let expected = row_table(&graph, source);
     let actual = production_table(&graph, source);
-    assert_tables_equivalent(&expected, &actual, "declined match composition");
+    assert_tables_equivalent(&expected, &actual, "batch path match composition");
 }
 
 #[test]

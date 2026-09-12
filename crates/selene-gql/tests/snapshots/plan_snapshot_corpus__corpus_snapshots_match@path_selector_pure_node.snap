@@ -6,7 +6,7 @@ fired_rules: none
 output: [n]
 pattern:
   bindings: 1 [n]
-  join_tree: All(Scan(n))
+  join_tree: Scan(n)
   pattern_filters: 0
   scans:
     - n (Node): Linear residual=0 consumed=0

@@ -74,17 +74,12 @@ impl Rule for LabelScan {
 
 fn rewrite_tree(tree: &mut JoinTree, catalog: &dyn crate::IndexCatalog) -> bool {
     match tree {
-        JoinTree::Unit => false,
+        JoinTree::Unit | JoinTree::Paths(_) => false,
         JoinTree::Scan(scan) => rewrite_scan(scan, catalog),
-        JoinTree::Expand { child, .. }
-        | JoinTree::Questioned { child, .. }
-        | JoinTree::Repeat { child, .. } => rewrite_tree(child, catalog),
+        JoinTree::Expand { child, .. } => rewrite_tree(child, catalog),
         JoinTree::HashJoin { left, right, .. } | JoinTree::Outer { left, right, .. } => {
             rewrite_tree(left, catalog) | rewrite_tree(right, catalog)
         }
-        JoinTree::PathSearch { child, .. }
-        | JoinTree::PathModeFilter { child, .. }
-        | JoinTree::MatchModeFilter { child, .. } => rewrite_tree(child, catalog),
         JoinTree::WorstCaseOptimal { .. } | JoinTree::Subplan(_) => false,
         // Each per-label branch (post disjunctive_label_expansion) is a leaf
         // single-label scan; promote each independently.

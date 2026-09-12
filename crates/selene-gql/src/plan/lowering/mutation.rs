@@ -21,7 +21,7 @@ use super::{expr, match_clause, sequential_match, visible_after_pattern};
 pub(crate) fn lower_mutation(
     pipeline: &MutationPipeline,
     analyzed: &AnalyzedStatement,
-    max_quantifier: u32,
+    max_quantifier: super::PathLowering<'_>,
 ) -> Result<ExecutionPlan, PlannerError> {
     let write_set = analyzed
         .write_set
@@ -140,7 +140,7 @@ use helpers::*;
 fn lower_read_prefix(
     statements: &[MutationStatement],
     analyzed: &AnalyzedStatement,
-    max_quantifier: u32,
+    max_quantifier: super::PathLowering<'_>,
 ) -> Result<
     (
         Option<crate::plan::PatternPlan>,

@@ -219,6 +219,15 @@ fn column_exists(schema: &BindingTableSchema, column: &crate::BindingTableColumn
 /// limit below an operator the row path left untruncated. See the row-limit
 /// helpers below for the safety cases.
 pub(crate) fn pattern_row_limit(plan: &ExecutionPlan) -> Option<usize> {
+    if plan
+        .pattern_plan
+        .as_ref()
+        .is_some_and(|p| super::batch::tree::contains_paths(&p.join_tree))
+    {
+        // Selection has an eager failure barrier. Even LIMIT 0 must not turn
+        // exhausted path work into a successful truncated result.
+        return None;
+    }
     leading_pattern_row_limit(plan.pipeline.as_slice()).or_else(|| {
         plan.pattern_plan
             .as_ref()

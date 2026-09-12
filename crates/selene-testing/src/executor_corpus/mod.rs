@@ -427,12 +427,7 @@ fn first_scan_mut(tree: &mut JoinTree) -> Option<&mut selene_gql::NodeOrEdgeScan
         // the first branch's label semantically matches mutating the
         // pre-expansion scan's label_predicate.
         JoinTree::DisjunctiveScan { branches, .. } => branches.first_mut(),
-        JoinTree::Questioned { .. }
-        | JoinTree::Repeat { .. }
-        | JoinTree::PathSearch { .. }
-        | JoinTree::PathModeFilter { .. }
-        | JoinTree::WorstCaseOptimal { .. }
-        | JoinTree::Subplan(_) => None,
+        JoinTree::Paths(_) | JoinTree::WorstCaseOptimal { .. } | JoinTree::Subplan(_) => None,
         // Required for `#[non_exhaustive]` cross-crate; semantics for any
         // future variant default to "no first scan" until the corresponding
         // arm above is added consciously.

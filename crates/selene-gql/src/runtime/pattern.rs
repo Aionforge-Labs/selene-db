@@ -13,10 +13,7 @@ use crate::{
     runtime::{Binding, BindingTable, EvalCtx, ExecutorError, TxContext},
 };
 
-use super::{
-    evaluator, expand, hash_join, match_mode, outer, path_mode, questioned, scan, subplan,
-    value_compare, wco,
-};
+use super::{evaluator, hash_join, outer, scan, subplan, value_compare, wco};
 
 /// Execute a pattern plan and produce its initial binding table.
 pub fn execute_pattern(
@@ -107,45 +104,8 @@ pub(crate) fn walk_join_tree(
             child,
             edge,
             direction,
-        } => expand::execute(child, edge, *direction, env),
-        JoinTree::Questioned {
-            child,
-            edge,
-            direction,
-            ..
-        } => questioned::execute(child, edge, *direction, env),
-        JoinTree::Repeat {
-            child,
-            edge,
-            direction,
-            min,
-            max,
-            path_mode,
-        } => super::repeat::execute(child, edge, *direction, *min, *max, *path_mode, env),
-        JoinTree::PathSearch {
-            selector,
-            child,
-            source_binding,
-            final_binding,
-            hop_contributors,
-        } => super::path_search::execute(
-            child,
-            *selector,
-            *source_binding,
-            *final_binding,
-            hop_contributors,
-            env,
-        ),
-        JoinTree::PathModeFilter {
-            path_mode,
-            child,
-            path_contributors,
-        } => path_mode::execute(child, *path_mode, path_contributors, env),
-        JoinTree::MatchModeFilter {
-            match_mode,
-            child,
-            path_contributors,
-        } => match_mode::execute(child, *match_mode, path_contributors, env),
+        } => super::batch::tree::expand_from_row_dispatch(child, edge, *direction, env),
+        JoinTree::Paths(_) => super::batch::tree::path_from_row_dispatch(tree, env),
         JoinTree::HashJoin {
             left,
             right,
@@ -270,27 +230,7 @@ fn collect_hidden_slots(tree: &JoinTree, slots: &mut BTreeMap<HiddenBindingId, A
             insert_hidden(slots, edge.hidden_binding, ScanKind::Edge);
             insert_hidden(slots, edge.right_hidden_binding, ScanKind::Node);
         }
-        JoinTree::Questioned { child, edge, .. } => {
-            collect_hidden_slots(child, slots);
-            insert_hidden(slots, edge.left_hidden_binding, ScanKind::Node);
-            insert_hidden(slots, edge.hidden_binding, ScanKind::Edge);
-            insert_hidden(slots, edge.right_hidden_binding, ScanKind::Node);
-        }
-        JoinTree::Repeat { child, edge, .. } => {
-            collect_hidden_slots(child, slots);
-            insert_hidden(slots, edge.left_hidden_binding, ScanKind::Node);
-            insert_hidden_type(
-                slots,
-                edge.group_hidden_binding,
-                AnalyzedType::Resolved(GqlType::List(Box::new(GqlType::EdgeRef))),
-            );
-            insert_hidden(slots, edge.final_hidden_binding, ScanKind::Node);
-        }
-        JoinTree::PathSearch { child, .. }
-        | JoinTree::PathModeFilter { child, .. }
-        | JoinTree::MatchModeFilter { child, .. } => {
-            collect_hidden_slots(child, slots);
-        }
+        JoinTree::Paths(_) => {}
         JoinTree::HashJoin { left, right, .. } | JoinTree::Outer { left, right, .. } => {
             collect_hidden_slots(left, slots);
             collect_hidden_slots(right, slots);
@@ -323,17 +263,6 @@ fn insert_hidden(
             ScanKind::Edge => GqlType::EdgeRef,
         })
     });
-}
-
-fn insert_hidden_type(
-    slots: &mut BTreeMap<HiddenBindingId, AnalyzedType>,
-    hidden: Option<HiddenBindingId>,
-    ty: AnalyzedType,
-) {
-    let Some(hidden) = hidden else {
-        return;
-    };
-    slots.entry(hidden).or_insert(ty);
 }
 
 pub(crate) fn binding_index(

@@ -127,13 +127,13 @@ fn driver_accepts_primitive_shapes_and_declines_the_rest() {
             "primitive shape left a row suffix: {source}"
         );
     }
-    // Variable-length expansion stays on the row path in this slice.
+    // F05-PR04 includes variable-length paths in the physical prefix.
     let plan = plan_source("MATCH (a)-[:KNOWS*1..2]->(b) RETURN a, b");
     assert!(
         batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
             .expect("driver probes")
-            .is_none(),
-        "variable-length expansion must decline"
+            .is_some(),
+        "variable-length expansion must use batches"
     );
 }
 

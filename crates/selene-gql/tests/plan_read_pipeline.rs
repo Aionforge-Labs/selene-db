@@ -57,11 +57,11 @@ fn expand(plan: &selene_gql::ExecutionPlan) -> (&selene_gql::EdgeMatch, EdgeDire
     }
 }
 
-fn repeat(plan: &selene_gql::ExecutionPlan) -> (&selene_gql::RepeatEdgeMatch, u32, Option<u32>) {
+fn path_program(plan: &selene_gql::ExecutionPlan) -> &selene_gql::PathProgram {
     let pattern = plan.pattern_plan.as_ref().expect("pattern plan");
     match &pattern.join_tree {
-        JoinTree::Repeat { edge, min, max, .. } => (edge, *min, *max),
-        other => panic!("expected repeat, got {other:?}"),
+        JoinTree::Paths(program) => program,
+        other => panic!("expected product paths, got {other:?}"),
     }
 }
 

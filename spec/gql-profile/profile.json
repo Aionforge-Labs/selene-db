@@ -219,7 +219,9 @@
       "unsupported_rationale": "",
       "runtime_order": 47,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -230,7 +232,9 @@
       "unsupported_rationale": "",
       "runtime_order": 48,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -241,7 +245,9 @@
       "unsupported_rationale": "",
       "runtime_order": 49,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -252,7 +258,9 @@
       "unsupported_rationale": "",
       "runtime_order": 50,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -263,7 +271,9 @@
       "unsupported_rationale": "",
       "runtime_order": 51,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -274,7 +284,9 @@
       "unsupported_rationale": "",
       "runtime_order": 52,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -285,7 +297,9 @@
       "unsupported_rationale": "",
       "runtime_order": 53,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -296,7 +310,9 @@
       "unsupported_rationale": "",
       "runtime_order": 54,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -307,7 +323,9 @@
       "unsupported_rationale": "",
       "runtime_order": 55,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -318,7 +336,9 @@
       "unsupported_rationale": "",
       "runtime_order": 56,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -329,7 +349,9 @@
       "unsupported_rationale": "",
       "runtime_order": 57,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -340,7 +362,9 @@
       "unsupported_rationale": "",
       "runtime_order": 58,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -351,7 +375,9 @@
       "unsupported_rationale": "",
       "runtime_order": 59,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -406,7 +432,9 @@
       "unsupported_rationale": "",
       "runtime_order": 60,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -417,7 +445,9 @@
       "unsupported_rationale": "",
       "runtime_order": 61,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -550,7 +580,9 @@
       "unsupported_rationale": "",
       "runtime_order": 62,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -561,7 +593,9 @@
       "unsupported_rationale": "",
       "runtime_order": 63,
       "clause_anchors": [],
-      "evidence": [],
+      "evidence": [
+        "EVID-PATH-BATCHES"
+      ],
       "applicability": "APP-ALWAYS"
     },
     {
@@ -5982,8 +6016,8 @@
     },
     {
       "id": "EVID-MATCH-MODE",
-      "reference": "crates/selene-gql/src/plan/lowering/match_mode.rs",
-      "description": "ID086 default lowering and REPEATABLE ELEMENTS equivalence."
+      "reference": "docs/gql/path-batches.md",
+      "description": "ID086 default and explicit REPEATABLE ELEMENTS equivalence through the independent product-path oracle and statement batch execution."
     },
     {
       "id": "EVID-MIXED-ORIENTATION",
@@ -6036,8 +6070,13 @@
       "description": "UTF-8 Rust source and typed parser rejection boundary."
     },
     {
+      "id": "EVID-PATH-BATCHES",
+      "reference": "docs/gql/path-batches.md",
+      "description": "F05-PR04 independent selected-path differentials and facade witnesses for binding degree, correlation, modes, selectors and explicit resource failure; implemented without a formal conformance claim."
+    },
+    {
       "id": "EVID-PATH-ERRORS",
-      "reference": "crates/selene-gql/src/runtime/path_search.rs",
+      "reference": "crates/selene-gql/src/runtime/product_path/differentials.rs",
       "description": "Selective path evaluation propagates errors without partial success."
     },
     {

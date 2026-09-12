@@ -46,18 +46,14 @@ fn rewrite_tree(
     catalog: &dyn crate::IndexCatalog,
 ) -> bool {
     match tree {
-        JoinTree::Unit => false,
+        JoinTree::Unit | JoinTree::Paths(_) => false,
         JoinTree::Scan(scan) => rewrite_scan(scan, bindings, catalog),
-        JoinTree::Expand { child, edge, .. } | JoinTree::Questioned { child, edge, .. } => {
+        JoinTree::Expand { child, edge, .. } => {
             rewrite_tree(child, bindings, catalog) | rewrite_edge(edge, bindings, catalog)
         }
-        JoinTree::Repeat { child, .. } => rewrite_tree(child, bindings, catalog),
         JoinTree::HashJoin { left, right, .. } | JoinTree::Outer { left, right, .. } => {
             rewrite_tree(left, bindings, catalog) | rewrite_tree(right, bindings, catalog)
         }
-        JoinTree::PathSearch { child, .. }
-        | JoinTree::PathModeFilter { child, .. }
-        | JoinTree::MatchModeFilter { child, .. } => rewrite_tree(child, bindings, catalog),
         JoinTree::WorstCaseOptimal { .. } | JoinTree::Subplan(_) => false,
         // Walk each per-label branch; the disjunctive_label_expansion rule
         // runs at slot 5 (before this rule), so DisjunctiveScan only carries

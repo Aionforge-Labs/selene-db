@@ -15,6 +15,52 @@ iai-callgrind instruction-count layer — it needs valgrind, which never runs on
 the macOS dev machine, so it was dropped rather than left as a perpetually-TBD
 placeholder.
 
+## Whole-query path batch integration — bounded_paths
+
+F05-PR04 working tree over `f2020f845c383b79d8ad808ff263667892ce04d0`,
+2026-09-12, Apple M5 / 16 GiB / macOS 27.0 (26A5425a), Rust 1.97.1,
+optimized Cargo bench profile, mimalloc. Added `path_queries.rs` rows to the
+existing registered `bounded_paths` target; **no new benchmark target**.
+
+```bash
+scripts/run-benches.sh --bench bounded_paths --compile-only
+scripts/run-benches.sh --profile quick --bench bounded_paths --filter gql_path_whole_query
+```
+
+Deterministic directed chain, N nodes and N−1 edges, one `Root` and N−1 `N`
+nodes. The full query joins `a:N` with `tag:Root`, filters, runs a correlated
+ALL SHORTEST path of 1–3 edges, joins another one-hop pattern, filters for path
+length ≥2, and projects node/group/typed-path results. It produces exactly
+`2*N - 9` rows. Timing includes the warm-plan-cache statement execution, all
+filter/join/selection/materialization work, and result allocation/drop; fixture
+creation and initial cache warming are outside timing. Ten Criterion samples,
+200 ms warm-up, 1 s requested collection (longer when needed).
+
+| N | Result rows | Whole-query central estimate | Reported interval |
+|---:|---:|---:|---:|
+| 64 | 119 | 833.89 µs | 827.69–842.36 µs |
+| 256 | 503 | 6.5385 ms | 6.4965–6.6018 ms |
+| 1,024 | 2,039 | 79.025 ms | 78.332–79.651 ms |
+
+Each memory row runs in a fresh child process. Native `ps` RSS is sampled after
+fixture creation and again while retaining the complete first-query result.
+The delta includes compiler/plan-cache initialization and allocator-retained
+query storage. It is **not peak RSS, allocator-exact ownership, or traversal-only
+memory**; it is separate from the engine's conservative reservation estimates.
+
+| N | Before query RSS, bytes | Retained-result RSS, bytes | Delta, bytes |
+|---:|---:|---:|---:|
+| 64 | 5,095,424 | 9,076,736 | 3,981,312 |
+| 256 | 6,340,608 | 11,993,088 | 5,652,480 |
+| 1,024 | 11,812,864 | 19,939,328 | 8,126,464 |
+
+These are absolute integration costs, **not a speedup over the legacy engine**.
+An earlier intermediate worktree measured 765.56 µs / 6.0070 ms / 76.504 ms;
+Criterion reported a regression against that local run after additional input
+accounting/validation and correctness repairs. That is not a controlled
+pre-cutover comparison. Correlated source enumeration and eager materialization
+remain visible scaling costs; this slice does not perform F05-PR07 optimization.
+
 ## Native text/JSON boundary — text_search_bm25
 
 F04-PR08 working tree over `9cb338ba7116e25d958776b3e3892ea0503c87f2`,

@@ -136,7 +136,6 @@ mod tests {
                     node_id_ordering: Vec::new(),
                 },
                 filters: Vec::new(),
-                paths: Vec::new(),
             })),
             outer_binding_refs: Vec::new(),
             span: SourceSpan::default(),

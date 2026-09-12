@@ -17,7 +17,7 @@ pub(super) fn lower_query_pipeline(
     pipeline: &QueryPipeline,
     registry: &dyn ProcedureRegistry,
     analyzed: &AnalyzedStatement,
-    max_quantifier: u32,
+    max_quantifier: super::PathLowering<'_>,
 ) -> Result<ExecutionPlan, PlannerError> {
     let (matches, tail_start) = leading_matches(&pipeline.statements);
     let pattern_plan = match_clause::lower_match_prefix(&matches, analyzed, max_quantifier)?;
@@ -184,7 +184,7 @@ fn lower_call_subquery(
     call: &InlineProcedureCall,
     registry: &dyn ProcedureRegistry,
     analyzed: &AnalyzedStatement,
-    max_quantifier: u32,
+    max_quantifier: super::PathLowering<'_>,
 ) -> Result<PlannedTableSubquery, PlannerError> {
     // GP03: explicit variable scope is bound in the analyzer (the body sees only
     // the named imports); the import set flows into `outer_binding_refs` below

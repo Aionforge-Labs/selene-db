@@ -160,11 +160,10 @@ fn independent_table_matches_all_forms_loops_parallel_and_reversed_creation() {
             wanted.sort();
             assert_eq!(actual, wanted, "{source}");
 
-            // Explicit DIFFERENT EDGES retains hidden edge columns, allowing
-            // the test harness to inspect identity without changing the default
-            // mode or inventing an abbreviated edge-variable syntax.
+            // Inspect the actual typed path, not removed executor-private slots;
+            // abbreviated edge syntax still exposes no invented edge variable.
             let p = planned(&format!(
-                "MATCH DIFFERENT EDGES (a:{label}){}(b) RETURN a",
+                "MATCH DIFFERENT EDGES p = (a:{label}){}(b) RETURN p",
                 case.abbreviated
             ));
             let ctx = TxContext::read_only(
@@ -182,10 +181,10 @@ fn independent_table_matches_all_forms_loops_parallel_and_reversed_creation() {
                     row.values()
                         .iter()
                         .find_map(|v| match v {
-                            Value::EdgeRef(e) => Some(*e),
+                            Value::Path(p) => Some(p.segments[0].edge),
                             _ => None,
                         })
-                        .expect("hidden edge identity")
+                        .expect("typed path edge identity")
                 })
                 .collect::<Vec<_>>();
             hidden.sort();

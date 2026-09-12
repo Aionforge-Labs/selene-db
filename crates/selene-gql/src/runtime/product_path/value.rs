@@ -1,36 +1,28 @@
-//! Evaluation for ISO `PATH[...]` value construction.
+//! Native typed path construction shared by matching and ISO `PATH[...]`.
 
-use selene_core::{EdgeDirection, EdgeDirectionality, Path, PathSegment, Value};
+use selene_core::{EdgeDirection, EdgeDirectionality, GraphId, NodeId, Path, PathSegment, Value};
 use smallvec::SmallVec;
 
 use crate::{
-    SourceSpan, ValueExpr,
-    runtime::{Binding, BindingTableSchema, DataExceptionSubclass, EvalCtx, ExecutorError},
+    SourceSpan,
+    runtime::{DataExceptionSubclass, EvalCtx, ExecutorError},
 };
 
-use super::evaluate;
-
-pub(super) fn eval_path_constructor(
-    elements: &[ValueExpr],
-    span: SourceSpan,
-    binding: &Binding,
-    schema: &BindingTableSchema,
-    ctx: &EvalCtx<'_, '_, '_, '_>,
-) -> Result<Value, ExecutorError> {
-    let values = elements
-        .iter()
-        .map(|element| evaluate(element, binding, schema, ctx))
-        .collect::<Result<Vec<_>, _>>()?;
-    construct_path(values, span, ctx)
+pub(super) fn finish(graph: GraphId, start: NodeId, segments: SmallVec<[PathSegment; 4]>) -> Value {
+    Value::Path(Box::new(Path {
+        graph,
+        start,
+        segments,
+    }))
 }
 
-fn construct_path(
+pub(crate) fn construct_path(
     values: Vec<Value>,
     span: SourceSpan,
     ctx: &EvalCtx<'_, '_, '_, '_>,
 ) -> Result<Value, ExecutorError> {
     for value in &values {
-        super::require_live_referent(value, span, ctx)?;
+        crate::runtime::evaluator::require_live_referent(value, span, ctx)?;
     }
     if values.is_empty() || values.len().is_multiple_of(2) {
         return malformed_path(
@@ -78,11 +70,7 @@ fn construct_path(
         });
         current = *node;
     }
-    Ok(Value::Path(Box::new(Path {
-        graph: ctx.tx.snapshot().graph_id(),
-        start,
-        segments,
-    })))
+    Ok(finish(ctx.tx.snapshot().graph_id(), start, segments))
 }
 
 fn malformed_path<T>(message: &'static str, span: SourceSpan) -> Result<T, ExecutorError> {
