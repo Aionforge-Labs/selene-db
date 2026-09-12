@@ -37,8 +37,14 @@ pub(super) fn row_key(row: &Binding) -> RuntimeEqKey {
 
 /// Shared limit/offset resolution for the row and batch page operators.
 pub(crate) use limit::resolve_amount;
+/// Shared non-leading-match schema and seed helpers for the row and batch
+/// match operators.
+pub(crate) use match_op::{seed_row, target_schema};
 /// Shared projection schema derivation for the row and batch projectors.
 pub(crate) use project::schema_for_items;
+/// Shared set-arm compatibility and key-cap diagnostics for the row and
+/// batch set operators.
+pub(crate) use union::{assert_compatible_schemas, set_op_key_cap_exceeded};
 
 /// Execute a sequence of pipeline operations against a binding table.
 pub fn execute_pipeline(

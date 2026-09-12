@@ -218,14 +218,22 @@ fn insert_seen(
     Ok(seen.insert(key))
 }
 
-fn set_op_key_cap_exceeded() -> ExecutorError {
+/// Typed resource error for set-operation key-cap exhaustion.
+///
+/// Shared with the batch set operator so both paths report the identical
+/// `5GQL1` diagnostic.
+pub(crate) fn set_op_key_cap_exceeded() -> ExecutorError {
     ExecutorError::ProgramLimitExceeded {
         detail: "set-op key cap exceeded",
         span: SourceSpan::default(),
     }
 }
 
-fn assert_compatible_schemas(
+/// Enforce positional column-count compatibility between set arms.
+///
+/// Shared with the batch set operator so both paths report the identical
+/// data exception for mismatched arms.
+pub(crate) fn assert_compatible_schemas(
     op_name: &'static str,
     lhs: &BindingTableSchema,
     rhs: &BindingTableSchema,
