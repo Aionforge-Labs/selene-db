@@ -194,6 +194,14 @@ impl PhysicalOperator for BatchRowSource {
             self.state = OperatorState::Exhausted;
             return Ok(None);
         }
+        // An anonymous path can reduce to multiple zero-column bindings.
+        // Empty column storage alone cannot encode their multiplicity; emit
+        // one unit batch per binding rather than silently turning it into zero.
+        if self.schema.columns.is_empty() {
+            self.cursor += 1;
+            ctx.finish_batch(1);
+            return Ok(Some(BindingBatch::unit()));
+        }
         let width = self.schema.columns.len();
         let take = self
             .policy

@@ -47,6 +47,7 @@ mod pipeline;
 mod plan_cache;
 mod plan_runner;
 mod prepared_catalog;
+pub mod product_path;
 mod property_filter_rows;
 mod questioned;
 mod reference_access;

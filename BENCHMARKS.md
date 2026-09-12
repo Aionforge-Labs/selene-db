@@ -3247,8 +3247,51 @@ Format-2 durable-cost evidence lives in the top-of-file sections
 ## §5 selene-gql — parse / plan / execute
 
 Bench bins: `parse`, `analyze`, `plan_optimize`, `expression_eval`, `mixed_orientation`,
-`procedure_call_repeat`, `correlated_subquery`, `read_pipeline`, `write_e2e`.
+`procedure_call_repeat`, `correlated_subquery`, `read_pipeline`, `write_e2e`, `bounded_paths`.
 The first four are scale-independent (single-query CPU).
+
+### F05-PR02 bounded product-graph execution
+
+`bounded_paths` measures the native bounded automaton executor through the existing
+batch materializer, **not** the legacy statement path or endpoint reachability.
+Precompiled WALK `{0,3}` patterns produce named `(a, r, b)` bindings. Timing includes
+search, group-list allocation, batch/table construction and result drop; parsing,
+lowering, fixture creation and cardinality assertions stay outside timing. Debug
+observations are disabled. There is no cheapest-selector execution or speedup claim.
+
+Fixed scales are 64 and 256: sparse directed chains, directed cycles, parallel-edge
+chains (two edges per link), and two-layer fanout with width `scale / 8`. Fanout
+anchors at the root; other shapes start at every node. The binary prints product
+states, seed/edge candidates, hop-length counts, complete rows, estimated reservation
+events/peak bytes and cost-model projections separately from latency. Reservations
+are conservative storage estimates, **not allocator calls, actual heap bytes or RSS**.
+
+```bash
+scripts/run-benches.sh --bench bounded_paths --compile-only
+scripts/run-benches.sh --profile quick --bench bounded_paths
+```
+
+Measured 2026-09-12, Apple M5 / 16 GiB, macOS 27.0 (26A5425a), native aarch64,
+rustc 1.97.1 / LLVM 22.1.6. Workspace bench profile (opt-level 3, thin LTO,
+one codegen unit), mimalloc, no extra features, 10 samples, 200 ms warmup,
+1-second measurement. Compilation finished before this serialized run. These
+are absolute first-slice costs, not comparisons against the old executor.
+
+| Shape / scale | Complete rows | Product states | Seed/edge candidates | Time estimate (95% interval) | Estimated peak bytes | Reservation events | Projected edge-cost evaluations |
+|---|---:|---:|---:|---|---:|---:|---:|
+| sparse / 64 | 250 | 751 | 250 | 84.894 µs (83.816–85.693) | 1,285,120 | 1,003 | 370 |
+| cycle / 64 | 256 | 769 | 256 | 87.143 µs (86.586–87.688) | 1,315,840 | 1,027 | 384 |
+| fanout / 64 | 73 | 220 | 89 | 26.127 µs (25.834–26.671) | 378,880 | 295 | 136 |
+| parallel / 64 | 926 | 2,779 | 926 | 339.61 µs (338.86–341.15) | 4,746,240 | 3,707 | 2,086 |
+| sparse / 256 | 1,018 | 3,055 | 1,018 | 361.38 µs (358.03–365.34) | 5,217,280 | 4,075 | 1,522 |
+| cycle / 256 | 1,024 | 3,073 | 1,024 | 362.98 µs (361.38–365.16) | 5,248,000 | 4,099 | 1,536 |
+| fanout / 256 | 1,057 | 3,172 | 1,121 | 395.77 µs (393.02–399.27) | 5,416,960 | 4,231 | 2,080 |
+| parallel / 256 | 3,806 | 11,419 | 3,806 | 1.4897 ms (1.4815–1.4984) | 19,491,840 | 15,227 | 8,614 |
+
+The row-count increase in parallel chains is real output multiplicity, not search
+overhead. Product states include binding/test/accept positions as well as hops;
+the distinct candidate count prevents presenting output growth as an optimization.
+Allocator instrumentation and non-macOS performance remain unmeasured.
 
 ### F03-PR01 immutable source/semantic separation
 
