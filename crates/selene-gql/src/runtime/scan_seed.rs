@@ -13,7 +13,13 @@ use super::{
     scan_resolve::{range_satisfiable_runtime, resolve_bitmap_union_key_values, resolve_bounds},
 };
 
-pub(super) fn try_seeded_scan(
+/// Seed-bound scan short-circuit for correlated pattern execution.
+///
+/// Shared by the row scan and the batch scan: when the seed already binds the
+/// scanned variable to a live entity, the result is at most that single entity
+/// (checked against label, access, and property predicates). `None` falls
+/// through to the general candidate walk with seed unification.
+pub(crate) fn try_seeded_scan(
     scan: &NodeOrEdgeScan,
     pattern: &PatternPlan,
     schema: &BindingTableSchema,

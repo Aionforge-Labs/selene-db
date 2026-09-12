@@ -8,11 +8,15 @@
 
 use selene_core::Value;
 
-use crate::{plan::BindingTableSchema, runtime::ExecutorError};
+use crate::{
+    plan::BindingTableSchema,
+    runtime::{Binding, BindingTable, ExecutorError},
+};
 
 use super::{
-    binding_batch::{BatchBuffer, BindingBatch},
+    binding_batch::{BatchBuffer, BatchColumn, BindingBatch},
     operator::{BatchExecutionContext, OperatorState, PhysicalOperator},
+    policy::BatchPolicy,
 };
 
 /// Pull-based single-row source.
@@ -118,6 +122,129 @@ impl PhysicalOperator for BatchSeedRow {
 
     fn close(&mut self, ctx: &mut BatchExecutionContext<'_>) {
         self.emitted = false;
+        self.state = OperatorState::Closed;
+        ctx.close();
+    }
+
+    fn output_schema(&self) -> &BindingTableSchema {
+        &self.schema
+    }
+}
+
+/// Pull-based source serving owned rows in policy-sized batches.
+///
+/// Seeded-subplan pipeline prefixes start here: a materialized table (one
+/// seed row, or one block's rows) re-enters the operator protocol so the
+/// shared prefix builders (`Filter`, `Project`, `Limit`, `Match`, set and
+/// chain operators) run unchanged. Rows keep their table order.
+pub(crate) struct BatchRowSource {
+    schema: BindingTableSchema,
+    rows: Vec<Binding>,
+    cursor: usize,
+    policy: BatchPolicy,
+    state: OperatorState,
+}
+
+impl BatchRowSource {
+    /// Construct a source over `table`'s rows with `policy` sizing.
+    #[must_use]
+    pub(crate) fn new(table: BindingTable, policy: BatchPolicy) -> Self {
+        let (schema, rows) = table.into_parts();
+        Self {
+            schema,
+            rows,
+            cursor: 0,
+            policy,
+            state: OperatorState::Created,
+        }
+    }
+}
+
+impl PhysicalOperator for BatchRowSource {
+    fn init(&mut self, ctx: &mut BatchExecutionContext<'_>) -> Result<(), ExecutorError> {
+        if self.state != OperatorState::Created {
+            return Err(ExecutorError::ImplementationDefined {
+                detail: "batch row source init is legal only once from Created",
+            });
+        }
+        ctx.ensure_generation()?;
+        ctx.check_cancel(crate::SourceSpan::default())?;
+        self.cursor = 0;
+        self.state = OperatorState::Open;
+        Ok(())
+    }
+
+    fn next_batch(
+        &mut self,
+        ctx: &mut BatchExecutionContext<'_>,
+        buffer: &mut BatchBuffer,
+    ) -> Result<Option<BindingBatch>, ExecutorError> {
+        if self.state == OperatorState::Exhausted {
+            return Ok(None);
+        }
+        if self.state != OperatorState::Open {
+            return Err(ExecutorError::ImplementationDefined {
+                detail: "batch row source pull is legal only while Open",
+            });
+        }
+        ctx.ensure_generation()?;
+        let span = crate::SourceSpan::default();
+        ctx.check_cancel(span)?;
+        if self.cursor >= self.rows.len() {
+            self.state = OperatorState::Exhausted;
+            return Ok(None);
+        }
+        let width = self.schema.columns.len();
+        let take = self
+            .policy
+            .rows_per_batch(
+                width
+                    .saturating_mul(std::mem::size_of::<Value>().saturating_add(1))
+                    .max(1),
+            )
+            .min(self.rows.len() - self.cursor);
+        let mut columns: Vec<(Vec<Value>, Vec<bool>)> = Vec::with_capacity(width);
+        for _ in 0..width {
+            let mut values = buffer.take_values();
+            let mut nulls = buffer.take_nulls();
+            values.clear();
+            nulls.clear();
+            columns.push((values, nulls));
+        }
+        for row in &self.rows[self.cursor..self.cursor + take] {
+            for (slot, (column, nulls)) in columns.iter_mut().enumerate() {
+                let value = row.get(slot).cloned().unwrap_or(Value::Null);
+                nulls.push(value == Value::Null);
+                column.push(value);
+            }
+        }
+        self.cursor += take;
+        ctx.finish_batch(take);
+        let batch_columns = columns
+            .into_iter()
+            .map(|(values, nulls)| {
+                BatchColumn::from_parts(values, nulls).map_err(|_| {
+                    ExecutorError::ImplementationDefined {
+                        detail: "batch row source built a malformed batch",
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let batch =
+            BindingBatch::from_batch_columns(self.schema.clone(), batch_columns).map_err(|_| {
+                ExecutorError::ImplementationDefined {
+                    detail: "batch row source built a malformed batch",
+                }
+            })?;
+        ctx.budget_mut()
+            .reserve(batch.estimated_bytes())
+            .map_err(|err| err.into_executor_error(span))?;
+        Ok(Some(batch))
+    }
+
+    fn close(&mut self, ctx: &mut BatchExecutionContext<'_>) {
+        self.rows.clear();
+        self.cursor = 0;
         self.state = OperatorState::Closed;
         ctx.close();
     }

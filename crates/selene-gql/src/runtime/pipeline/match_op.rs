@@ -88,7 +88,14 @@ pub(super) fn execute_optional(
     Ok(BindingTable::new(target_schema, output))
 }
 
-fn target_schema(input: &BindingTableSchema, pattern_plan: &PatternPlan) -> BindingTableSchema {
+/// Target schema for a non-leading match: input columns plus pattern columns.
+///
+/// Shared with the batch match operator so both paths extend schemas
+/// identically.
+pub(crate) fn target_schema(
+    input: &BindingTableSchema,
+    pattern_plan: &PatternPlan,
+) -> BindingTableSchema {
     let mut schema = input.clone();
     for column in pattern::schema_for_pattern(pattern_plan).columns {
         if column_exists(&schema, &column) {
@@ -113,7 +120,10 @@ fn column_exists(schema: &BindingTableSchema, column: &BindingTableColumn) -> bo
     }
 }
 
-fn seed_row(
+/// Map one input row into target-schema coordinates for seeded evaluation.
+///
+/// Shared with the batch match operator so both paths seed identically.
+pub(crate) fn seed_row(
     row: &Binding,
     input_schema: &BindingTableSchema,
     target_schema: &BindingTableSchema,

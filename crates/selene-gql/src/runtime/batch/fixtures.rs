@@ -18,7 +18,7 @@ use selene_graph::{SeleneGraph, SharedGraph, TypedIndexKind};
 
 use crate::{
     EmptyProcedureRegistry, ExecutionPlan, analyze, parse, plan,
-    plan::BindingTableSchema,
+    plan::{BindingTableColumn, BindingTableSchema},
     runtime::{BindingTable, EvalCtx, ExecutorError, TxContext},
 };
 
@@ -30,6 +30,40 @@ use super::{
 
 /// Row target for boundary-cardinality tests.
 pub(super) const TEST_TARGET_ROWS: usize = 4;
+
+/// Kernel-only execution context over a detached snapshot.
+///
+/// Hand-built rows never touch graph data; the retained handle satisfies
+/// the pin requirement. Pair with a bounded [`MemoryBudget`] for
+/// resource-failure tests or `unlimited` for success paths.
+pub(super) fn kernel_ctx(budget: MemoryBudget) -> BatchExecutionContext<'static> {
+    BatchExecutionContext::new(
+        Arc::new(SeleneGraph::new(GraphId::new(43_001))),
+        BatchCancel::disabled(),
+        budget,
+    )
+}
+
+/// One named dynamic column for hand-built kernel tables.
+pub(super) fn kernel_column(name: &str) -> BindingTableColumn {
+    BindingTableColumn {
+        name: Some(db_string(name).unwrap()),
+        hidden: None,
+        ty: crate::AnalyzedType::Dynamic,
+    }
+}
+
+/// Two-column `(k, v)` schema for hand-built join kernel tables.
+pub(super) fn pair_schema() -> BindingTableSchema {
+    BindingTableSchema {
+        columns: vec![kernel_column("k"), kernel_column("v")],
+    }
+}
+
+/// One hand-built `(key, value)` kernel row.
+pub(super) fn pair(key: Value, value: Value) -> crate::runtime::Binding {
+    crate::runtime::Binding::new([key, value])
+}
 
 /// Boundary-cardinality policy: tiny batches so every test crosses pull
 /// boundaries deterministically.

@@ -25,7 +25,7 @@ use selene_core::Value;
 use crate::{
     NodeOrEdgeScan, PatternPlan, ScanAccess, SourceSpan,
     plan::BindingTableSchema,
-    runtime::{EvalCtx, ExecutorError},
+    runtime::{Binding, EvalCtx, ExecutorError},
 };
 
 use super::{
@@ -37,6 +37,7 @@ use super::{
 
 use super::super::scan::{label_matches_scan, predicates_pass, single_label};
 use super::super::scan_bind::{ScanSlots, binding_for_scan};
+use super::super::scan_seed::try_seeded_scan;
 
 /// Pull-based scan producing pattern-schema batches for one scan.
 ///
@@ -46,15 +47,26 @@ use super::super::scan_bind::{ScanSlots, binding_for_scan};
 /// cancellation checkpoints. Output rows are full pattern-schema rows with
 /// the scanned binding materialized and every other column null, exactly as
 /// the row scan builds them.
+///
+/// An optional seed row (correlated execution: `OPTIONAL MATCH` right sides,
+/// non-leading `MATCH`, per-row `NEXT` blocks) threads through the same row
+/// helpers the seeded row scan uses. A seed that already binds the scanned
+/// variable short-circuits to that single entity without resolving or
+/// charging candidates; otherwise candidates resolve once and each entity
+/// unifies against the seed, so correlated bindings can never leak across
+/// input rows.
 pub(crate) struct BatchScan<'a, 'ctx, 'g, 'plan> {
     scan: &'plan NodeOrEdgeScan,
     pattern: &'plan PatternPlan,
     schema: BindingTableSchema,
     eval: EvalCtx<'a, 'ctx, 'g, 'plan>,
     policy: BatchPolicy,
+    seed: Option<Binding>,
     slots: Option<ScanSlots>,
     label_prechecked: bool,
     candidates: Option<ResolvedCandidates>,
+    seeded_rows: Option<Vec<Binding>>,
+    seeded_cursor: usize,
     cursor: usize,
     state: OperatorState,
     batches_produced: u64,
@@ -78,13 +90,29 @@ impl<'a, 'ctx, 'g, 'plan> BatchScan<'a, 'ctx, 'g, 'plan> {
             schema,
             eval,
             policy,
+            seed: None,
             slots: None,
             label_prechecked: false,
             candidates: None,
+            seeded_rows: None,
+            seeded_cursor: 0,
             cursor: 0,
             state: OperatorState::Created,
             batches_produced: 0,
         }
+    }
+
+    /// Attach a correlated seed row evaluated against this scan.
+    ///
+    /// The seed carries outer bindings in this operator's output-schema
+    /// coordinates (shared columns keep their indexes because pattern target
+    /// schemas always append new columns). Each produced row starts from the
+    /// seed with the scanned binding unified, exactly as the row scan's
+    /// seed path builds them.
+    #[must_use]
+    pub(crate) fn with_seed(mut self, seed: Binding) -> Self {
+        self.seed = Some(seed);
+        self
     }
 
     /// Return the number of batches produced so far.
@@ -123,12 +151,33 @@ impl<'a, 'ctx, 'g, 'plan> BatchScan<'a, 'ctx, 'g, 'plan> {
         ctx.ensure_generation()?;
         ctx.check_cancel(SourceSpan::default())?;
         let span = SourceSpan::default();
+        let slots = ScanSlots::resolve(self.scan, self.pattern, &self.schema)?;
+        // Seeded short-circuit first, exactly as the row scan orders it: a
+        // seed that already binds this scan's variable resolves to at most
+        // one row with no candidate resolution and no scan-budget charge.
+        if let Some(seed) = self.seed.as_ref()
+            && let Some(rows) = try_seeded_scan(
+                self.scan,
+                self.pattern,
+                &self.schema,
+                seed,
+                slots,
+                &self.eval,
+            )?
+        {
+            self.slots = Some(slots);
+            self.seeded_rows = Some(rows);
+            self.seeded_cursor = 0;
+            self.cursor = 0;
+            self.state = OperatorState::Open;
+            return Ok(());
+        }
         let resolved = ResolvedCandidates::resolve(self.scan, &self.eval)?;
         // The snapshot binding travels with the candidates: a resolution from
         // any other graph or generation fails here instead of rebinding.
         resolved.binding().validate(ctx.snapshot()?)?;
         self.label_prechecked = label_matched_by_access(self.scan);
-        self.slots = Some(ScanSlots::resolve(self.scan, self.pattern, &self.schema)?);
+        self.slots = Some(slots);
         ctx.note_nodes_scanned(resolved.len(), span)?;
         self.cursor = 0;
         self.candidates = Some(resolved);
@@ -142,6 +191,9 @@ impl<'a, 'ctx, 'g, 'plan> BatchScan<'a, 'ctx, 'g, 'plan> {
         buffer: &mut BatchBuffer,
     ) -> Result<Option<BindingBatch>, ExecutorError> {
         ctx.ensure_generation()?;
+        if self.seeded_rows.is_some() {
+            return self.pull_seeded(ctx, buffer);
+        }
         // Windows cover candidates, not output rows: residual predicates may
         // drop entities, so a window can yield an empty batch that the loop
         // skips. Progress is guaranteed because every window advances the
@@ -170,6 +222,74 @@ impl<'a, 'ctx, 'g, 'plan> BatchScan<'a, 'ctx, 'g, 'plan> {
             ctx.budget_mut().release(batch.estimated_bytes());
             batch.recycle(buffer);
         }
+    }
+
+    /// Serve one policy-sized batch from short-circuited seeded rows.
+    ///
+    /// Fast-path rows are fully formed bindings in output-schema order;
+    /// serving only slices them into batches with the usual budget claim.
+    fn pull_seeded(
+        &mut self,
+        ctx: &mut BatchExecutionContext<'_>,
+        buffer: &mut BatchBuffer,
+    ) -> Result<Option<BindingBatch>, ExecutorError> {
+        let span = SourceSpan::default();
+        ctx.check_cancel(span)?;
+        let rows = self
+            .seeded_rows
+            .as_ref()
+            .expect("seeded rows resolved at init");
+        if self.seeded_cursor >= rows.len() {
+            self.state = OperatorState::Exhausted;
+            return Ok(None);
+        }
+        let width = self.schema.columns.len();
+        let take = self
+            .policy
+            .rows_per_batch(
+                width
+                    .saturating_mul(size_of::<Value>().saturating_add(1))
+                    .max(1),
+            )
+            .min(rows.len() - self.seeded_cursor);
+        let mut columns: Vec<(Vec<Value>, Vec<bool>)> = Vec::with_capacity(width);
+        for _ in 0..width {
+            let mut values = buffer.take_values();
+            let mut nulls = buffer.take_nulls();
+            values.clear();
+            nulls.clear();
+            columns.push((values, nulls));
+        }
+        for row in &rows[self.seeded_cursor..self.seeded_cursor + take] {
+            for (slot, (column, nulls)) in columns.iter_mut().enumerate() {
+                let value = row.get(slot).cloned().unwrap_or(Value::Null);
+                nulls.push(value == Value::Null);
+                column.push(value);
+            }
+        }
+        self.seeded_cursor += take;
+        self.batches_produced += 1;
+        ctx.finish_batch(take);
+        let batch_columns = columns
+            .into_iter()
+            .map(|(values, nulls)| {
+                BatchColumn::from_parts(values, nulls).map_err(|_| {
+                    ExecutorError::ImplementationDefined {
+                        detail: "batch scan built a malformed batch",
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let batch =
+            BindingBatch::from_batch_columns(self.schema.clone(), batch_columns).map_err(|_| {
+                ExecutorError::ImplementationDefined {
+                    detail: "batch scan built a malformed batch",
+                }
+            })?;
+        ctx.budget_mut()
+            .reserve(batch.estimated_bytes())
+            .map_err(|err| err.into_executor_error(span))?;
+        Ok(Some(batch))
     }
 
     fn materialize_window(
@@ -203,7 +323,9 @@ impl<'a, 'ctx, 'g, 'plan> BatchScan<'a, 'ctx, 'g, 'plan> {
                 continue;
             }
             let value = entity_value(entity);
-            let Some(binding) = binding_for_scan(&self.schema, None, value.clone(), slots) else {
+            let Some(binding) =
+                binding_for_scan(&self.schema, self.seed.as_ref(), value.clone(), slots)
+            else {
                 continue;
             };
             if !predicates_pass(
@@ -290,6 +412,9 @@ impl PhysicalOperator for BatchScan<'_, '_, '_, '_> {
 
     fn close(&mut self, ctx: &mut BatchExecutionContext<'_>) {
         self.candidates = None;
+        self.seeded_rows = None;
+        self.seeded_cursor = 0;
+        self.seed = None;
         self.slots = None;
         self.cursor = 0;
         self.state = OperatorState::Closed;

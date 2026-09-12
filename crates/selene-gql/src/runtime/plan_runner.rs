@@ -174,7 +174,11 @@ pub(crate) fn seed_table() -> BindingTable {
     )
 }
 
-fn target_schema(
+/// Extend an input schema with a pattern's new columns for seeded execution.
+///
+/// Shared with the batch seeded-subplan helper so both paths seed into
+/// identical target schemas.
+pub(crate) fn target_schema(
     input: &BindingTableSchema,
     pattern_plan: &crate::PatternPlan,
 ) -> BindingTableSchema {

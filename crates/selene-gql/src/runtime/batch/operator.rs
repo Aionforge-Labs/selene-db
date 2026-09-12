@@ -199,6 +199,46 @@ impl<'a> BatchExecutionContext<'a> {
         &mut self.budget
     }
 
+    /// Return currently reserved estimated bytes.
+    ///
+    /// Test seam for budget-accounting assertions.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn budget_used(&self) -> usize {
+        self.budget.used_bytes()
+    }
+
+    /// Return the high-water mark of reserved estimated bytes.
+    ///
+    /// Test seam for the performance probe.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn budget_peak(&self) -> usize {
+        self.budget.peak_bytes()
+    }
+
+    /// Spawn a nested execution context over the same pinned snapshot.
+    ///
+    /// Correlated operators (outer joins, non-leading matches, per-row `NEXT`
+    /// blocks) evaluate one subtree per input row. Each evaluation runs in a
+    /// nested context so operator `close` releases only the nested snapshot
+    /// claim while the parent execution keeps its pin. Cancellation flows
+    /// from the same token, deadline, and scan budget; memory accounting
+    /// stays with the parent, which reserves every materialized row it keeps
+    /// (nested scratch is transient and balanced before the nested context
+    /// closes).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ImplementationDefined` when the parent context is closed.
+    pub(crate) fn nested(&self) -> Result<BatchExecutionContext<'_>, ExecutorError> {
+        Ok(BatchExecutionContext::borrowed(
+            self.snapshot()?,
+            self.cancel,
+            MemoryBudget::unlimited(),
+        ))
+    }
+
     /// Record one completed batch for execution telemetry.
     pub(crate) fn finish_batch(&mut self, rows: usize) {
         self.completed_batches += 1;
