@@ -392,7 +392,7 @@ fn cancellation_deadline_and_scan_budget_share_batch_statuses() {
 }
 
 #[test]
-fn every_unsupported_execution_boundary_rejects_before_scanning() {
+fn landed_execution_boundaries_accept_and_malformed_ir_still_rejects() {
     let f = Fixture::new(0, &[]);
     for source in [
         "MATCH TRAIL (a)-[r*]->(b) RETURN a",
@@ -403,10 +403,13 @@ fn every_unsupported_execution_boundary_rejects_before_scanning() {
         "MATCH (a WHERE a.x = 1)-[r{1}]->(b) RETURN a",
         "MATCH (a)-[r{1} {x: 1}]->(b) RETURN a",
     ] {
-        let error = run(&f.graph, source, PathExecutionLimits::default()).unwrap_err();
-        assert!(
-            matches!(error, ExecutorError::FeatureNotSupportedYet { .. }),
-            "{source}: {error:?}"
+        assert_eq!(
+            run(&f.graph, source, PathExecutionLimits::default())
+                .unwrap()
+                .table
+                .row_count(),
+            0,
+            "{source}"
         );
     }
     let a = analyzed("MATCH (a)-[r{1,2}]->(b) RETURN a");

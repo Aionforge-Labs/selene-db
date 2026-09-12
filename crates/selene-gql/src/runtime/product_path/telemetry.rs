@@ -20,10 +20,28 @@ pub struct PathExecutionStats {
     pub product_states: u64,
     /// Candidate seed nodes and edge incidences examined, including rejections.
     pub incidences: u64,
+    /// Conservative endpoint-completion certificate work (not distance lookups).
+    pub completion_work: u64,
     /// Visited legal hop states, indexed by path-local length (zero included).
     pub hop_lengths: Vec<u64>,
     /// Complete clause bindings; temporary reduction never deduplicates these.
     pub matched_rows: u64,
+    /// Complete path bindings qualified before endpoint-partitioned selection.
+    pub qualified_paths: u64,
+    /// Typed path values constructed after selection (not endpoint adapters).
+    pub materialized_paths: u64,
+    /// History-frame clones, not shared predecessors or allocator events.
+    pub history_clones: u64,
+    /// Peak estimated live frontier/scratch history bytes sampled at hops.
+    pub peak_history_bytes: usize,
+    /// Peak estimated qualified-candidate retention before selection.
+    pub peak_candidate_bytes: usize,
+    /// Traversal and predicate wall time; excludes the completion certificate.
+    pub discovery_time: std::time::Duration,
+    /// Endpoint partitioning and selective-choice wall time.
+    pub selection_time: std::time::Duration,
+    /// Final typed path construction wall time, excluding table/batch copies.
+    pub materialization_time: std::time::Duration,
     /// Largest estimated search/output/debug reservation sum.
     pub peak_bytes: usize,
     /// Successful estimated reservation events, not allocator calls.
@@ -36,7 +54,7 @@ pub struct PathExecutionStats {
 ///
 /// TEMPORARY debugging only: neither sequence order nor physical choice ordinal
 /// is a public result-order contract. No internal graph row offsets appear here.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct PathObservation {
     /// Automaton position in this clause.
     pub pattern: usize,
@@ -60,4 +78,22 @@ pub struct PathObservation {
     pub locals: Vec<(BindingId, Value)>,
     /// Anonymous captures as (pattern index, temporary slot, value).
     pub temporaries: Vec<(usize, u32, Value)>,
+}
+
+impl std::fmt::Debug for PathObservation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PathObservation")
+            .field("pattern", &self.pattern)
+            .field("transition", &self.transition)
+            .field("mode", &self.mode)
+            .field("choice", &self.choice)
+            .field("from", &self.from)
+            .field("to", &self.to)
+            .field("edge", &self.edge)
+            .field("hops", &self.hops)
+            .field("repetition", &self.repetition)
+            .field("local_count", &self.locals.len())
+            .field("temporary_count", &self.temporaries.len())
+            .finish_non_exhaustive()
+    }
 }

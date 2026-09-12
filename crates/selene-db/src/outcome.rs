@@ -2,6 +2,9 @@
 
 use crate::{DiagnosticBundle, GqlStatus, GqlStatusObject, Type, Value};
 
+#[cfg(test)]
+mod path_tests;
+
 /// One analyzer-inferred result field, with explicit inference uncertainty.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]

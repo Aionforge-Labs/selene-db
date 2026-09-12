@@ -25,7 +25,7 @@ use super::limits::PathLoweringLimits;
 /// source order. Every clause lowers to automata from semantic descriptors,
 /// so path/group-variable metadata (conditional singletons, scopes) survives
 /// lowering without a second path algorithm.
-pub(super) fn collect_match_clauses(analyzed: &AnalyzedStatement) -> Vec<(usize, &MatchClause)> {
+pub(crate) fn collect_match_clauses(analyzed: &AnalyzedStatement) -> Vec<(usize, &MatchClause)> {
     let mut out = Vec::new();
     collect_statement_clauses(analyzed.source(), &mut out);
     // Index in collection order (clause order, then pattern order downstream).

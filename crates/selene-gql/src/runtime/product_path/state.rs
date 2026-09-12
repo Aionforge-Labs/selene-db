@@ -2,7 +2,7 @@
 
 use super::compile::BoundedPathProgram;
 use crate::{BindingExposure, BindingId, EdgeTest, PathMode};
-use selene_core::{EdgeId, NodeId, Value};
+use selene_core::{EdgeDirection, EdgeId, NodeId, Value};
 
 #[derive(Clone)]
 pub(super) struct SearchState {
@@ -15,6 +15,9 @@ pub(super) struct SearchState {
     pub(super) temporaries: Vec<(usize, u32, Value)>,
     pub(super) nodes: Vec<NodeId>,
     pub(super) edges: Vec<EdgeId>,
+    pub(super) directions: Vec<EdgeDirection>,
+    /// Cumulative hops at each element exit, for complete-binding qualification.
+    pub(super) element_ends: Vec<usize>,
     pub(super) clause_edges: Vec<EdgeId>,
     pub(super) choice: Option<(NodeId, EdgeId, usize)>,
 }
@@ -30,6 +33,8 @@ impl SearchState {
             temporaries: Vec::new(),
             nodes: Vec::new(),
             edges: Vec::new(),
+            directions: Vec::new(),
+            element_ends: Vec::new(),
             clause_edges: Vec::new(),
             choice: None,
         }

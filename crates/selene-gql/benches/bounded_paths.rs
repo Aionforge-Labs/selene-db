@@ -16,6 +16,8 @@ use selene_graph::SharedGraph;
 use selene_testing::BenchProfile;
 use std::{hint::black_box, time::Duration};
 
+mod path_selection;
+
 fn fixture(shape: &str, n: usize) -> (SharedGraph, usize) {
     let graph = SharedGraph::new(GraphId::new(50502));
     let mut tx = graph.begin_write();
@@ -127,5 +129,5 @@ fn config() -> Criterion {
         .measurement_time(Duration::from_secs(1))
 }
 
-criterion_group! { name = benches; config = config(); targets = bounded_paths }
+criterion_group! { name = benches; config = config(); targets = bounded_paths, path_selection::selected_paths }
 criterion_main!(benches);

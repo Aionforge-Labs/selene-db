@@ -8,11 +8,18 @@ use super::super::{
 use super::{
     BoundedPathProgram, PathExecutionLimits, PathExecutionStats, PathObservation,
     compile::invalid,
+    conditions::{Phase, Qualifier},
+    materialize, selection,
     state::{SearchState, hidden},
+    termination,
 };
 use crate::{EdgeQuantifierKind, EdgeTest, NodeTest, PathSemanticElement};
 use selene_core::Value;
+use std::collections::VecDeque;
 use std::mem::size_of;
+use std::time::Instant;
+
+mod support;
 
 pub(super) struct SearchResult {
     pub(super) table: BindingTable,
@@ -25,6 +32,7 @@ pub(super) fn execute(
     program: &BoundedPathProgram<'_>,
     limits: PathExecutionLimits,
     ctx: &mut BatchExecutionContext<'_>,
+    qualify: Option<&Qualifier<'_>>,
 ) -> Result<SearchResult, ExecutorError> {
     ctx.ensure_generation()?;
     ctx.check_cancel(program.paths[0].automaton.origin)?;
@@ -36,10 +44,35 @@ pub(super) fn execute(
     // A conservative capacity envelope per state/observation/result, including
     // Vec growth slack and all edge-list payloads. It bounds this executor's
     // retained storage; it is deliberately not an allocator/RSS measurement.
-    let hops = program
+    let path_hops: Vec<_> = program
         .paths
         .iter()
-        .try_fold(0usize, |sum, p| sum.checked_add(p.upper as usize))
+        .map(|p| {
+            if !p.open {
+                return p.upper;
+            }
+            // Natural history bounds, not a graph-distance cache. If a policy cap
+            // is smaller, the first legal continuation beyond it fails the request.
+            let graph = ctx.snapshot().expect("validated pin");
+            let natural =
+                if program.different_edges || p.automaton.mode.mode == crate::PathMode::Trail {
+                    graph.edge_count()
+                } else if matches!(
+                    p.automaton.mode.mode,
+                    crate::PathMode::Simple | crate::PathMode::Acyclic
+                ) {
+                    graph.node_count()
+                } else {
+                    limits.max_hops as usize
+                };
+            limits
+                .max_hops
+                .min(u32::try_from(natural).unwrap_or(u32::MAX))
+        })
+        .collect();
+    let hops = path_hops
+        .iter()
+        .try_fold(0usize, |sum, &hops| sum.checked_add(hops as usize))
         .ok_or_else(|| invalid("product path memory estimate overflow"))?;
     let elements: usize = program
         .paths
@@ -62,8 +95,14 @@ pub(super) fn execute(
         state_bytes,
         stats: PathExecutionStats::default(),
         observations: Vec::new(),
-        stack: Vec::new(),
+        stack: VecDeque::new(),
         rows: Vec::new(),
+        candidates: Vec::new(),
+        path_hops,
+        qualify,
+        breadth: false,
+        cutoff: false,
+        pairs: None,
     };
     let outcome = run.run();
     if outcome.is_err() {
@@ -97,8 +136,14 @@ struct Search<'a, 'p, 'g> {
     state_bytes: usize,
     stats: PathExecutionStats,
     observations: Vec<PathObservation>,
-    stack: Vec<SearchState>,
+    stack: VecDeque<SearchState>,
     rows: Vec<Binding>,
+    candidates: Vec<SearchState>,
+    path_hops: Vec<u32>,
+    qualify: Option<&'a Qualifier<'a>>,
+    breadth: bool,
+    cutoff: bool,
+    pairs: Option<termination::Pairs>,
 }
 
 impl Search<'_, '_, '_> {
@@ -136,6 +181,7 @@ impl Search<'_, '_, '_> {
             .stats
             .product_states
             .saturating_add(self.stats.incidences)
+            .saturating_add(self.stats.completion_work)
             >= self.limits.max_work
         {
             return Err(self.limit("max_path_work"));
@@ -145,7 +191,12 @@ impl Search<'_, '_, '_> {
 
     fn push(&mut self, state: &SearchState) -> Result<(), ExecutorError> {
         self.reserve(self.state_bytes)?;
-        self.stack.push(state.clone());
+        self.stats.history_clones += 1;
+        if self.breadth {
+            self.stack.push_front(state.clone());
+        } else {
+            self.stack.push_back(state.clone());
+        }
         Ok(())
     }
 
@@ -153,16 +204,124 @@ impl Search<'_, '_, '_> {
         // Covers the single live scratch state and length histogram, in addition
         // to charged stack clones. Charge before any execution-sized allocation.
         self.reserve(self.state_bytes)?;
-        let max_hops = self
-            .program
-            .paths
-            .iter()
-            .map(|p| p.upper)
-            .max()
-            .unwrap_or(0) as usize;
+        let max_hops = self.path_hops.iter().copied().max().unwrap_or(0) as usize;
         self.stats.hop_lengths = vec![0; max_hops + 1];
-        self.push(&SearchState::new(self.program.bindings.len()))?;
-        while let Some(mut state) = self.stack.pop() {
+        self.reserve(self.state_bytes)?;
+        let mut pending = vec![SearchState::new(self.program.bindings.len())];
+        while let Some(seed) = pending.pop() {
+            let pattern = seed.pattern;
+            let path = &self.program.paths[pattern];
+            let quota = termination::quota(path.automaton.selector.selector);
+            if quota.is_some_and(|q| q.0 == 0) {
+                self.release(self.state_bytes);
+                continue;
+            }
+            self.breadth = path.open
+                && path.automaton.mode.mode == crate::PathMode::Walk
+                && !self.program.different_edges
+                && quota.is_some();
+            self.cutoff = false;
+            let certificate_bytes = if self.breadth {
+                let n = self.ctx.snapshot()?.node_count();
+                let bytes = n
+                    .checked_mul(n)
+                    .and_then(|n| n.checked_add(1))
+                    .and_then(|n| n.checked_mul(256))
+                    .ok_or_else(|| invalid("path completion memory estimate overflow"))?;
+                self.reserve(bytes)?;
+                self.ctx.note_nodes_scanned(n, self.span())?;
+                let remaining = self
+                    .limits
+                    .max_work
+                    .saturating_sub(self.stats.product_states + self.stats.incidences);
+                self.pairs = Some(termination::possible_pairs(
+                    self.program,
+                    &seed,
+                    self.ctx,
+                    &mut self.stats.completion_work,
+                    remaining,
+                )?);
+                bytes
+            } else {
+                0
+            };
+            // Move the seed reservation into the DFS stack. Each correlated
+            // incoming binding gets its own endpoint partitions, before joins.
+            self.stack.push_back(seed);
+            let started = Instant::now();
+            self.discover()?;
+            self.stats.discovery_time += started.elapsed();
+            self.pairs = None;
+            self.release(certificate_bytes);
+            let count = self.candidates.len();
+            let span = self.span();
+            let started = Instant::now();
+            selection::select(
+                &mut self.candidates,
+                self.program.paths[pattern].automaton.selector.selector,
+                self.ctx,
+                span,
+            )?;
+            self.stats.selection_time += started.elapsed();
+            self.release((count - self.candidates.len()) * self.state_bytes);
+            let mut selected = std::mem::take(&mut self.candidates);
+            // Keep deterministic discovery order for subsequent automata.
+            if pattern + 1 < self.program.paths.len() {
+                selected.reverse();
+            }
+            for mut state in selected {
+                self.ctx.check_cancel(self.span())?;
+                if let Some(id) = self.program.paths[pattern].automaton.semantic.path_binding {
+                    let started = Instant::now();
+                    let value = materialize::path_value(&state, self.ctx.snapshot()?.graph_id());
+                    if !state.bind(self.program, Some(id), None, value) {
+                        self.release(self.state_bytes);
+                        continue;
+                    }
+                    self.stats.materialized_paths += 1;
+                    self.stats.materialization_time += started.elapsed();
+                }
+                if pattern + 1 == self.program.paths.len() {
+                    self.emit(&state)?;
+                    self.release(self.state_bytes);
+                } else {
+                    state.clause_edges.append(&mut state.edges);
+                    state.nodes.clear();
+                    state.directions.clear();
+                    state.element_ends.clear();
+                    state.current = None;
+                    state.element = 0;
+                    state.pattern += 1;
+                    pending.push(state);
+                }
+            }
+        }
+        self.release(self.state_bytes);
+        Ok(())
+    }
+
+    fn discover(&mut self) -> Result<(), ExecutorError> {
+        let mut layer = 0;
+        loop {
+            if self.breadth && self.stack.front().is_none_or(|s| s.edges.len() > layer) {
+                if self.complete() {
+                    let count = self.stack.len();
+                    self.stack.clear();
+                    self.release(count * self.state_bytes);
+                    return Ok(());
+                }
+                if let Some(front) = self.stack.front() {
+                    layer = front.edges.len();
+                }
+            }
+            let state = if self.breadth {
+                self.stack.pop_front()
+            } else {
+                self.stack.pop_back()
+            };
+            let Some(mut state) = state else {
+                break;
+            };
             self.release(self.state_bytes);
             self.work()?;
             self.stats.product_states += 1;
@@ -171,16 +330,19 @@ impl Search<'_, '_, '_> {
                 self.observe(&state, choice)?;
             }
             if state.element == path.automaton.semantic.elements.len() {
-                if state.pattern + 1 == self.program.paths.len() {
-                    self.emit(&state)?;
-                } else {
-                    state.clause_edges.append(&mut state.edges);
-                    state.nodes.clear();
-                    state.current = None;
-                    state.element = 0;
-                    state.pattern += 1;
-                    self.push(&state)?;
+                if !self.qualify_path(&mut state)? {
+                    continue;
                 }
+                if self.candidates.len() >= self.limits.max_rows {
+                    return Err(self.limit("max_path_rows"));
+                }
+                self.reserve(self.state_bytes)?;
+                self.candidates.push(state);
+                self.stats.peak_candidate_bytes = self
+                    .stats
+                    .peak_candidate_bytes
+                    .max(self.candidates.len() * self.state_bytes);
+                self.stats.qualified_paths += 1;
                 continue;
             }
             match &path.automaton.semantic.elements[state.element] {
@@ -188,8 +350,30 @@ impl Search<'_, '_, '_> {
                 PathSemanticElement::Edge(edge) => self.edge(state, edge)?,
             }
         }
-        self.release(self.state_bytes);
+        if self.cutoff {
+            return Err(self.limit("max_path_hops"));
+        }
         Ok(())
+    }
+
+    fn complete(&self) -> bool {
+        let Some(pairs) = &self.pairs else {
+            return false;
+        };
+        let pattern = self
+            .candidates
+            .first()
+            .map(|s| s.pattern)
+            .or_else(|| self.stack.front().map(|s| s.pattern));
+        let Some(pattern) = pattern else {
+            return pairs.is_empty();
+        };
+        termination::complete(
+            pairs,
+            &self.candidates,
+            termination::quota(self.program.paths[pattern].automaton.selector.selector)
+                .expect("selective BFS"),
+        )
     }
 
     fn node(&mut self, mut state: SearchState, test: &NodeTest) -> Result<(), ExecutorError> {
@@ -210,6 +394,7 @@ impl Search<'_, '_, '_> {
                     Value::NodeRef(node),
                 )
             {
+                state.element_ends.push(state.edges.len());
                 state.element += 1;
                 self.push(&state)?;
             }
@@ -253,6 +438,7 @@ impl Search<'_, '_, '_> {
                 continue;
             }
             self.reserve(self.state_bytes)?;
+            self.stats.history_clones += 1;
             let mut next = state.clone();
             if next.bind(
                 self.program,
@@ -262,14 +448,21 @@ impl Search<'_, '_, '_> {
             ) {
                 next.current = Some(node);
                 next.nodes.push(node);
+                next.element_ends.push(0);
                 next.element += 1;
                 self.stats.hop_lengths[0] += 1;
-                self.stack.push(next);
+                if self.breadth {
+                    self.stack.push_front(next);
+                } else {
+                    self.stack.push_back(next);
+                }
             } else {
                 self.release(self.state_bytes);
             }
         }
-        self.stack[start..].reverse();
+        if !self.breadth {
+            self.stack.make_contiguous()[start..].reverse();
+        }
         self.release(candidate_bytes);
         Ok(())
     }
@@ -279,9 +472,7 @@ impl Search<'_, '_, '_> {
             EdgeQuantifierKind::Single => (1, 1),
             EdgeQuantifierKind::Questioned => (0, 1),
             EdgeQuantifierKind::Bounded { min, max } => (min, max),
-            EdgeQuantifierKind::Unbounded { .. } => {
-                return Err(invalid("unvalidated open path bound"));
-            }
+            EdgeQuantifierKind::Unbounded { min } => (min, u32::MAX),
         };
         if state.depth < max {
             let current = state
@@ -306,16 +497,32 @@ impl Search<'_, '_, '_> {
                 ) {
                     continue;
                 }
+                if state.edges.len() >= self.path_hops[state.pattern] as usize {
+                    if self.breadth {
+                        self.cutoff = true;
+                        continue;
+                    }
+                    return Err(self.limit("max_path_hops"));
+                }
                 self.reserve(self.state_bytes)?;
+                self.stats.history_clones += 1;
                 let mut next = state.clone();
                 next.current = Some(adjacent.neighbor);
                 next.edges.push(adjacent.edge_id);
+                next.directions.push(materialize::direction(
+                    graph,
+                    adjacent.edge_id,
+                    current,
+                    test.orientation.declared,
+                ));
                 next.nodes.push(adjacent.neighbor);
                 next.depth += 1;
                 next.choice = Some((current, adjacent.edge_id, choice));
-                self.stack.push(next);
+                self.stack.push_back(next);
             }
-            self.stack[start..].reverse();
+            if !self.breadth {
+                self.stack.make_contiguous()[start..].reverse();
+            }
         }
         // Exit first, then DFS successors in incidence order. Binding a group
         // happens at transition exit: a reused group compares the WHOLE list,
@@ -328,61 +535,12 @@ impl Search<'_, '_, '_> {
                 hidden(test.exposure),
                 value,
             ) {
+                state.element_ends.push(state.edges.len());
                 state.depth = 0;
                 state.element += 1;
                 self.push(&state)?;
             }
         }
-        Ok(())
-    }
-
-    fn observe(
-        &mut self,
-        state: &SearchState,
-        (from, edge, choice): (selene_core::NodeId, selene_core::EdgeId, usize),
-    ) -> Result<(), ExecutorError> {
-        self.stats.hop_lengths[state.edges.len()] += 1;
-        if !self.limits.observe {
-            return Ok(());
-        }
-        if self.observations.len() >= self.limits.max_observations {
-            return Err(self.limit("max_path_observations"));
-        }
-        self.reserve(self.state_bytes)?;
-        let path = &self.program.paths[state.pattern];
-        let PathSemanticElement::Edge(test) = &path.automaton.semantic.elements[state.element]
-        else {
-            unreachable!("hop targets edge transition")
-        };
-        let mut locals: Vec<_> = self
-            .program
-            .bindings
-            .iter()
-            .copied()
-            .zip(&state.locals)
-            .filter_map(|(id, value)| value.clone().map(|v| (id, v)))
-            .collect();
-        let value = state.edge_value(test);
-        let mut temporaries = state.temporaries.clone();
-        if let Some(id) = test.exposure.named() {
-            locals.retain(|(bound, _)| *bound != id);
-            locals.push((id, value));
-        } else if let Some(slot) = hidden(test.exposure) {
-            temporaries.push((state.pattern, slot, value));
-        }
-        self.observations.push(PathObservation {
-            pattern: state.pattern,
-            transition: path.transitions[state.element],
-            mode: path.automaton.mode,
-            choice,
-            from,
-            to: state.current.expect("hop target"),
-            edge,
-            hops: state.edges.len(),
-            repetition: state.depth,
-            locals,
-            temporaries,
-        });
         Ok(())
     }
 
