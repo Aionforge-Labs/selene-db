@@ -69,7 +69,11 @@ pub(super) fn trim_carriers(projected_width: usize, table: BindingTable) -> Bind
     BindingTable::new(schema, rows)
 }
 
-pub(super) fn evaluate_key_tuple(
+/// Evaluate one row's sort-key tuple in key order.
+///
+/// Shared with the batch sort operator so both engines sort the same key
+/// values with the same evaluation errors.
+pub(crate) fn evaluate_key_tuple(
     keys: &[OrderKey],
     row: &Binding,
     schema: &crate::BindingTableSchema,
@@ -80,7 +84,15 @@ pub(super) fn evaluate_key_tuple(
         .collect()
 }
 
-pub(super) fn compare_key_tuples(lhs: &[Value], rhs: &[Value], keys: &[OrderKey]) -> Ordering {
+/// Compare two sort-key tuples key by key with per-key direction and null
+/// ordering.
+///
+/// Shared with the batch sort operator so ties, null placement, and the
+/// selected (binary) string collation agree exactly. The comparison is
+/// stable by construction: equal tuples compare `Equal`, and both engines
+/// use stable sorts, so ties keep input order and no implicit total order
+/// is invented.
+pub(crate) fn compare_key_tuples(lhs: &[Value], rhs: &[Value], keys: &[OrderKey]) -> Ordering {
     lhs.iter()
         .zip(rhs.iter())
         .zip(keys.iter())

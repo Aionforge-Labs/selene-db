@@ -31,16 +31,21 @@
 //!   `OPTIONAL MATCH`, and `NEXT` (`Chain`/`CorrelatedChain`) blocks.
 //! - [`filter`] — predicate filtering over child batches.
 //! - [`project`] — projection over child batches.
+//! - [`aggregate`] — grouping and aggregation over materialized child rows.
+//! - [`sort`] — ordering, bounded top-K, and order-carrier trimming.
+//! - [`distinct`] — first-occurrence deduplication over materialized rows.
 //! - [`page`] — offset/limit across batch boundaries.
 //! - [`unit`] — single-row seed sources.
 //! - [`tracer`] — operator-to-result materialization for tests and drivers.
 //! - [`query`] — batch query driver: plan acceptance and operator assembly.
 //! - [`reference`] — row-reference comparison helpers (test seam only).
 
+pub(crate) mod aggregate;
 pub(crate) mod binding_batch;
 pub(crate) mod budget;
 pub(crate) mod candidates;
 pub(crate) mod chain;
+pub(crate) mod distinct;
 pub(crate) mod expand;
 pub(crate) mod filter;
 pub(crate) mod join;
@@ -56,14 +61,21 @@ pub(crate) mod reference;
 pub(crate) mod relation_model;
 pub(crate) mod scan;
 pub(crate) mod set;
+pub(crate) mod sort;
 pub(crate) mod tracer;
 pub(crate) mod tree;
 pub(crate) mod unit;
 
 #[cfg(test)]
+mod aggregate_differentials;
+#[cfg(test)]
+mod aggregate_tests;
+#[cfg(test)]
 mod chain_tests;
 #[cfg(test)]
 mod differentials;
+#[cfg(test)]
+mod distinct_tests;
 #[cfg(test)]
 mod fixtures;
 #[cfg(test)]
@@ -74,6 +86,8 @@ mod join_tests;
 mod scan_tests;
 #[cfg(test)]
 mod set_tests;
+#[cfg(test)]
+mod sort_tests;
 #[cfg(test)]
 mod tests;
 

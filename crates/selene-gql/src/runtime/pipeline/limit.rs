@@ -119,7 +119,11 @@ fn numeric_out_of_range(span: SourceSpan) -> ExecutorError {
     )
 }
 
-pub(super) fn u64_to_bounded_usize(value: u64, upper_bound: usize) -> usize {
+/// Bound a `u64` amount to a live row count for skip/take slicing.
+///
+/// Shared with the batch sort operator so bounded top-K windows agree with
+/// the row path exactly.
+pub(crate) fn u64_to_bounded_usize(value: u64, upper_bound: usize) -> usize {
     usize::try_from(value)
         .unwrap_or(usize::MAX)
         .min(upper_bound)

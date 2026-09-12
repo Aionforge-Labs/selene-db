@@ -1,20 +1,20 @@
 //! Binding-table pipeline executor.
 
-mod aggregate;
+pub(crate) mod aggregate;
 mod call;
 mod call_subquery;
 mod catalog;
 pub(crate) mod catalog_index;
 mod chain;
-mod distinct;
+pub(crate) mod distinct;
 mod explain;
 mod filter;
-mod group_by;
+pub(crate) mod group_by;
 mod let_op;
 mod limit;
 mod match_op;
 mod mutation;
-mod order_by;
+pub(crate) mod order_by;
 mod project;
 pub(crate) mod session;
 mod top_k;
@@ -36,7 +36,7 @@ pub(super) fn row_key(row: &Binding) -> RuntimeEqKey {
 }
 
 /// Shared limit/offset resolution for the row and batch page operators.
-pub(crate) use limit::resolve_amount;
+pub(crate) use limit::{resolve_amount, u64_to_bounded_usize};
 /// Shared non-leading-match schema and seed helpers for the row and batch
 /// match operators.
 pub(crate) use match_op::{seed_row, target_schema};

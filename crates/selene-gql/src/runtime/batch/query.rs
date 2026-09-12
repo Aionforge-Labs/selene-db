@@ -1,14 +1,20 @@
 //! Batch query driver: plan acceptance and operator assembly (F04-PR02,
-//! joins/sets F04-PR03).
+//! joins/sets F04-PR03, grouping/sorting F04-PR04).
 //!
 //! [`try_execute_prefix`] runs the batchable head of an [`ExecutionPlan`] as
 //! a pull-based operator tree and returns the materialized prefix table plus
 //! the pipeline index where row execution resumes. The plan runner executes
 //! any remaining (suffix) pipeline operators through the row dispatcher on
-//! that prefix table, so aggregation, sorting, procedures, path operators,
-//! and every other not-yet-batched family keep their exact row behavior
-//! while already receiving batch-produced input through the stable
-//! [`BindingTable`] interface.
+//! that prefix table, so procedures, path operators, mutations, and every
+//! other not-yet-batched family keep their exact row behavior while already
+//! receiving batch-produced input through the stable [`BindingTable`]
+//! interface.
+//!
+//! Grouping, ordering, and deduplication run natively in batches:
+//! production unseeded executions no longer route covered `GroupBy`,
+//! `OrderBy`, `TopK`, `Distinct`, or `TrimOrderCarriers` ops through the
+//! row adapters (those stay compiled for seeded row fallbacks and
+//! remaining suffix shapes; final deletion is F04-PR09).
 //!
 //! What the driver accepts:
 //!
@@ -22,6 +28,7 @@
 //!   for the same reason; correlation *inside* an unseeded execution runs
 //!   through nested batch contexts (see [`tree`](super::tree)).
 //! - Pipeline prefix: the leading run of `Filter`, `Project`, `Limit`,
+//!   `GroupBy`, `OrderBy`, fused `TopK`, `Distinct`, `TrimOrderCarriers`,
 //!   non-leading `Match`/`OptionalMatch` (over batchable inner patterns),
 //!   set-composition `Union` (all set/multiset variants plus `OTHERWISE`,
 //!   with read-only arms), and `NEXT` blocks (`Chain` over a read-only
@@ -66,20 +73,24 @@
 //! take over the whole plan.
 
 use crate::{
-    ExecutionPlan, FilterPredicate, PatternPlan, PipelineOp, ProjectExpr, SetOp,
+    Aggregate, ExecutionPlan, FilterPredicate, OrderKey, PatternPlan, PipelineOp, ProjectExpr,
+    SetOp,
     plan::{BindingTableSchema, LogicalEffect, classify_plan},
     runtime::{BindingTable, EvalCtx, ExecutorError, TxContext},
 };
 
 use super::super::{pattern, pipeline, plan_runner};
+use super::aggregate::BatchGroupBy;
 use super::budget::MemoryBudget;
 use super::chain::{BatchChain, BatchCorrelatedChain, BatchMatch};
+use super::distinct::BatchDistinct;
 use super::filter::BatchFilter;
 use super::operator::{BatchExecutionContext, PhysicalOperator};
 use super::page::BatchPage;
 use super::policy::BatchPolicy;
 use super::project::BatchProject;
 use super::set::BatchSet;
+use super::sort::{BatchSort, BatchTopK, BatchTrimCarriers, resolve_top_k_window};
 use super::tracer::trace_operator_to_table;
 use super::tree::{build_join_tree, tree_is_batchable};
 use super::unit::{BatchRowSource, BatchSeedRow};
@@ -317,9 +328,28 @@ enum BatchPrefixOp<'p> {
     Filter(&'p FilterPredicate),
     Project(&'p [ProjectExpr], BindingTableSchema),
     Limit(u64, u64),
+    GroupBy {
+        keys: &'p [ProjectExpr],
+        aggregates: &'p [Aggregate],
+    },
+    OrderBy {
+        keys: &'p [OrderKey],
+    },
+    TopK {
+        keys: &'p [OrderKey],
+        offset: u64,
+        count: u64,
+    },
+    Distinct,
+    TrimCarriers {
+        projected_width: usize,
+    },
     Match(&'p PatternPlan),
     OptionalMatch(&'p PatternPlan),
-    Union { op: SetOp, rhs: &'p ExecutionPlan },
+    Union {
+        op: SetOp,
+        rhs: &'p ExecutionPlan,
+    },
     Chain(&'p ExecutionPlan),
     CorrelatedChain(&'p ExecutionPlan),
 }
@@ -332,6 +362,8 @@ enum BatchPrefixOp<'p> {
 /// limit at its pipeline position): a plan that is simultaneously
 /// pattern-erroneous and limit erroneous reports the limit error first.
 /// Both paths still fail the plan; row-identical outcomes are unaffected.
+/// The same rule covers fused `TopK` windows, which resolve through the
+/// identical resolver.
 ///
 /// `Match` arms join only when their inner pattern is batch-buildable;
 /// set/chain arms join only when the right block classifies
@@ -354,6 +386,28 @@ fn split_prefix<'p>(
                 let offset = pipeline::resolve_amount(offset, ctx)?;
                 let count = pipeline::resolve_amount(count, ctx)?;
                 prefix.push(BatchPrefixOp::Limit(offset, count));
+            }
+            PipelineOp::GroupBy { keys, aggregates } => {
+                prefix.push(BatchPrefixOp::GroupBy { keys, aggregates });
+            }
+            PipelineOp::OrderBy(keys) => prefix.push(BatchPrefixOp::OrderBy { keys }),
+            PipelineOp::TopK {
+                keys,
+                offset,
+                count,
+            } => {
+                let (offset, count) = resolve_top_k_window(offset, count, ctx)?;
+                prefix.push(BatchPrefixOp::TopK {
+                    keys,
+                    offset,
+                    count,
+                });
+            }
+            PipelineOp::Distinct => prefix.push(BatchPrefixOp::Distinct),
+            PipelineOp::TrimOrderCarriers { projected_width } => {
+                prefix.push(BatchPrefixOp::TrimCarriers {
+                    projected_width: *projected_width,
+                });
             }
             PipelineOp::Match(pattern) => {
                 if !tree_is_batchable(&pattern.join_tree) {
@@ -433,6 +487,25 @@ where
             }
             BatchPrefixOp::Limit(offset, count) => {
                 root = Box::new(BatchPage::new(root, *offset, *count));
+            }
+            BatchPrefixOp::GroupBy { keys, aggregates } => {
+                root = Box::new(BatchGroupBy::new(root, keys, aggregates, eval, policy));
+            }
+            BatchPrefixOp::OrderBy { keys } => {
+                root = Box::new(BatchSort::new(root, keys, eval, policy));
+            }
+            BatchPrefixOp::TopK {
+                keys,
+                offset,
+                count,
+            } => {
+                root = Box::new(BatchTopK::new(root, keys, *offset, *count, eval, policy));
+            }
+            BatchPrefixOp::Distinct => {
+                root = Box::new(BatchDistinct::new(root, policy));
+            }
+            BatchPrefixOp::TrimCarriers { projected_width } => {
+                root = Box::new(BatchTrimCarriers::new(root, *projected_width));
             }
             BatchPrefixOp::Match(pattern) | BatchPrefixOp::OptionalMatch(pattern) => {
                 let optional = matches!(op, BatchPrefixOp::OptionalMatch(_));
