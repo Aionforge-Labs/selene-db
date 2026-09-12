@@ -681,3 +681,60 @@ fn facade_session_type_has_no_lifetime_parameter() {
         1
     );
 }
+
+#[test]
+fn facade_scan_results_keep_declared_types_and_preferred_order() {
+    // F04-PR01 facade fixture: a scan's declared descriptor (column names,
+    // inferred types, preferred order) is identical for empty and non-empty
+    // results. The batch substrate must preserve this contract when later
+    // slices serve scans from batches.
+    let (database, path) = fixture();
+    let session = database.session(&path).unwrap();
+
+    let empty = session
+        .execute("MATCH (n:Person) RETURN n.name AS name, n AS node")
+        .expect("scan succeeds");
+    let ExecutionOutcome::Rows {
+        result: empty_result,
+        ..
+    } = &empty
+    else {
+        panic!("expected rows, got {empty:?}");
+    };
+    assert_eq!(empty_result.row_count(), 0);
+
+    session
+        .execute("INSERT (:Person { name: 'Ada' })")
+        .expect("insert succeeds");
+    session
+        .execute("INSERT (:Person { name: 'Bob' })")
+        .expect("insert succeeds");
+
+    let filled = session
+        .execute("MATCH (n:Person) RETURN n.name AS name, n AS node")
+        .expect("scan succeeds");
+    let ExecutionOutcome::Rows {
+        result: filled_result,
+        ..
+    } = &filled
+    else {
+        panic!("expected rows, got {filled:?}");
+    };
+    assert_eq!(filled_result.row_count(), 2);
+
+    // Declared types and preferred order survive the empty-to-filled
+    // transition unchanged, in projection order.
+    assert_eq!(filled_result.descriptor(), empty_result.descriptor());
+    let fields = filled_result.descriptor().fields();
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name().unwrap_or("<unnamed>").to_owned())
+            .collect::<Vec<_>>(),
+        vec!["name".to_owned(), "node".to_owned()]
+    );
+    assert_eq!(filled_result.descriptor().preferred_columns(), &[0, 1]);
+    for row in filled_result.rows() {
+        assert_eq!(row.values().len(), 2);
+    }
+}
