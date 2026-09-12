@@ -105,6 +105,8 @@ mod sort_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod text_json_tests;
+#[cfg(test)]
 mod vector_tests;
 
 // Convenience re-exports for the transition differential tests. Production

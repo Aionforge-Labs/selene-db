@@ -109,7 +109,7 @@ pub struct NativeProcedure {
     pub effect: NativeEffect,
 }
 
-/// Declarative graph-derived candidate set configuration for future facade attachment.
+/// Declarative graph-derived candidate set configuration for first-party attachment.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeCandidateState {
@@ -142,7 +142,7 @@ pub struct NativeProjection {
 pub enum NativeBinding {
     /// Static known-code procedure.
     Procedure(NativeProcedure),
-    /// Inactive provider declaration; F04-PR08 owns facade attachment.
+    /// Graph-owned, rebuildable maintained candidate state.
     CandidateState(NativeCandidateState),
     /// Inactive projection declaration; F04-PR06 owns catalog-backed activation.
     Projection(NativeProjection),
@@ -222,7 +222,26 @@ impl NativeDeclaration {
                     }
                 }
             }
-            NativeBinding::CandidateState(_) | NativeBinding::Projection(_) => {
+            NativeBinding::CandidateState(state)
+                if self.metadata.state == DeclarationState::Ready =>
+            {
+                for label in state.required_label.iter().chain(
+                    state
+                        .require_outgoing
+                        .iter()
+                        .chain(&state.require_incoming)
+                        .chain(&state.exclude_outgoing)
+                        .chain(&state.exclude_incoming),
+                ) {
+                    if label.is_empty() || selene_core::db_string(label).is_err() {
+                        return Err(CatalogError::InvalidDeclaration {
+                            reason: "invalid_candidate_state_label",
+                        });
+                    }
+                }
+            }
+            NativeBinding::CandidateState(_) => {}
+            NativeBinding::Projection(_) => {
                 if self.metadata.state == DeclarationState::Ready {
                     return Err(CatalogError::InvalidDeclaration {
                         reason: "unsupported_native_activation",

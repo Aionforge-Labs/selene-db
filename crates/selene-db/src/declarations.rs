@@ -1,4 +1,4 @@
-//! Facade declaration inspection and inactive-registration administration.
+//! Facade declaration inspection and graph-owned registration administration.
 
 use selene_catalog::{
     CatalogDescriptor, CatalogObjectId, CatalogObjectKind, CatalogParent, CatalogPayload,
@@ -74,6 +74,16 @@ impl DeclarationDefinition {
             Self::Native(value) => CatalogPayload::Procedure(value),
         }
     }
+}
+
+fn candidate_state(payload: &CatalogPayload) -> bool {
+    matches!(
+        payload,
+        CatalogPayload::Procedure(NativeDeclaration {
+            binding: NativeBinding::CandidateState(_),
+            ..
+        })
+    )
 }
 
 /// Immutable logical declaration summary. Ready is durable admission state, not
@@ -208,11 +218,13 @@ impl CatalogReadSnapshot {
 }
 
 impl Catalog {
-    /// Declare an inactive/building/failed registration without claiming execution.
+    /// Declare a registration, rebuilding graph-owned candidate states atomically.
     ///
     /// Existing supported index CALLs build and admit ready declarations through
-    /// the graph mutation funnel. This API cannot assert runtime validation or
-    /// replace an active constraint with metadata that disables its enforcement.
+    /// the graph mutation funnel. Ready candidate-state declarations are rebuilt
+    /// from authoritative values before publication, including replacement. Other
+    /// ready declarations cannot be asserted by callers. This API cannot replace
+    /// an active constraint with metadata that disables its enforcement.
     pub fn declare(
         &self,
         owner: &ObjectPath,
@@ -224,6 +236,7 @@ impl Catalog {
         if payload
             .declaration_metadata()
             .is_some_and(|metadata| metadata.state == DeclarationState::Ready)
+            && !candidate_state(&payload)
         {
             return Err(declaration_error("caller_asserted_activation"));
         }
@@ -232,6 +245,14 @@ impl Catalog {
             let owner_descriptor = find_object(&base, owner)?
                 .ok_or_else(|| Error::not_found(owner, "declaration owner"))?;
             let parent = owner_parent(owner_descriptor, owner)?;
+            if candidate_state(&payload)
+                && payload
+                    .declaration_metadata()
+                    .is_some_and(|m| m.state == DeclarationState::Ready)
+                && !matches!(parent, CatalogParent::Graph(_))
+            {
+                return Err(declaration_error("candidate_state_requires_graph_owner"));
+            }
             let mut draft = DatabaseDraft::new(&base, &reservation);
             let existing = base.catalog.declaration(owner_descriptor.id(), &name.0);
             if let Some(existing) = existing {
@@ -251,6 +272,7 @@ impl Catalog {
                     .payload()
                     .declaration_metadata()
                     .is_some_and(|metadata| metadata.state == DeclarationState::Ready)
+                    && !candidate_state(existing.payload())
                 {
                     return Err(declaration_error(
                         "active_declaration_requires_runtime_mutation",
@@ -309,7 +331,7 @@ impl Catalog {
         })
     }
 
-    /// Remove an inactive declaration with shared-dependency RESTRICT semantics.
+    /// Remove an inactive declaration or candidate state with dependency RESTRICT.
     /// Active index removal remains in the supported mutation CALLs; active
     /// uniqueness cannot be disabled by dropping descriptive metadata.
     pub fn drop_declaration(
@@ -330,6 +352,7 @@ impl Catalog {
                 .payload()
                 .declaration_metadata()
                 .is_some_and(|metadata| metadata.state == DeclarationState::Ready)
+                && !candidate_state(existing.payload())
             {
                 return Err(declaration_error(
                     "active_declaration_requires_runtime_mutation",

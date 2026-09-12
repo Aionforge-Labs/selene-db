@@ -10,7 +10,8 @@
 //! values.
 
 use selene_core::{DbString, Value};
-use selene_graph::{GraphError, TextSearchError};
+mod support;
+use support::{query_arg, query_list_arg, score_nodes, state_candidates, text_search_error};
 
 use super::meta::{StaticOutputColumn, StaticParameter};
 use super::retrieval_filter::{
@@ -219,9 +220,7 @@ pub(super) fn execute(
         Some(index) => {
             if let Some(candidates) = &filter_candidates {
                 let nodes: Vec<_> = candidates.iter().collect();
-                index
-                    .search_candidates_checked(query, &nodes, k, ctx.cancellation_checker())
-                    .map_err(text_search_error)?
+                score_nodes(ctx, &index, query, &nodes, k)?
             } else {
                 index
                     .search_checked(query, k, ctx.cancellation_checker())
@@ -285,9 +284,7 @@ pub(super) fn execute_score(
             property.as_str()
         )));
     };
-    let hits = index
-        .search_candidates_checked(query, &nodes, k, ctx.cancellation_checker())
-        .map_err(text_search_error)?;
+    let hits = score_nodes(ctx, &index, query, &nodes, k)?;
 
     Ok(ProcedureResult {
         rows: hits
@@ -332,9 +329,7 @@ pub(super) fn execute_score_batch(
     for (query_index, (query, nodes)) in queries.iter().zip(node_sets.iter()).enumerate() {
         let query_index = u64::try_from(query_index)
             .map_err(|err| query_index_too_large(SCORE_BATCH_PROC_NAME, err))?;
-        let hits = index
-            .search_candidates_checked(query.as_str(), nodes, k, ctx.cancellation_checker())
-            .map_err(text_search_error)?;
+        let hits = score_nodes(ctx, &index, query.as_str(), nodes, k)?;
         rows.reserve(hits.len());
         for hit in hits {
             rows.push(vec![
@@ -363,8 +358,7 @@ pub(super) fn execute_score_state(
     let state_name = string_arg(SCORE_STATE_PROC_NAME, &args[3], "state_name")?;
     let k = cardinality_arg(SCORE_STATE_PROC_NAME, &args[4], "k")?;
 
-    let candidates = ctx
-        .vector_candidate_set(&state_name)
+    let candidates = state_candidates(ctx, &state_name)
         .map_err(|error| candidate_state_error(SCORE_STATE_PROC_NAME, error))?
         .ok_or_else(|| {
             invalid_arg(format!(
@@ -372,9 +366,8 @@ pub(super) fn execute_score_state(
                 state_name.as_str()
             ))
         })?;
-    let hits = text_index_for_score(ctx, SCORE_STATE_PROC_NAME, &label, &property)?
-        .search_candidates_checked(query, candidates.as_nodes(), k, ctx.cancellation_checker())
-        .map_err(text_search_error)?;
+    let index = text_index_for_score(ctx, SCORE_STATE_PROC_NAME, &label, &property)?;
+    let hits = score_nodes(ctx, &index, query, candidates.as_nodes(), k)?;
 
     Ok(ProcedureResult {
         rows: hits
@@ -411,8 +404,7 @@ pub(super) fn execute_score_state_nodes(
         .transpose()?
         .unwrap_or(CandidateStateOperation::Intersection);
 
-    let state = ctx
-        .vector_candidate_set(&state_name)
+    let state = state_candidates(ctx, &state_name)
         .map_err(|error| candidate_state_error(SCORE_STATE_NODES_PROC_NAME, error))?
         .ok_or_else(|| {
             invalid_arg(format!(
@@ -421,9 +413,8 @@ pub(super) fn execute_score_state_nodes(
             ))
         })?;
     let candidates = operation.compose(&state, &nodes);
-    let hits = text_index_for_score(ctx, SCORE_STATE_NODES_PROC_NAME, &label, &property)?
-        .search_candidates_checked(query, candidates.as_nodes(), k, ctx.cancellation_checker())
-        .map_err(text_search_error)?;
+    let index = text_index_for_score(ctx, SCORE_STATE_NODES_PROC_NAME, &label, &property)?;
+    let hits = score_nodes(ctx, &index, query, candidates.as_nodes(), k)?;
 
     Ok(ProcedureResult {
         rows: hits
@@ -471,8 +462,7 @@ pub(super) fn execute_score_state_expanded_batch(
         .transpose()?
         .unwrap_or(selene_graph::VectorNeighborDirection::Outgoing);
 
-    let state = ctx
-        .vector_candidate_set(&state_name)
+    let state = state_candidates(ctx, &state_name)
         .map_err(|error| candidate_state_error(SCORE_STATE_EXPANDED_BATCH_PROC_NAME, error))?
         .ok_or_else(|| {
             invalid_arg(format!(
@@ -514,14 +504,7 @@ pub(super) fn execute_score_state_expanded_batch(
         let query_index = u64::try_from(query_index)
             .map_err(|err| query_index_too_large(SCORE_STATE_EXPANDED_BATCH_PROC_NAME, err))?;
         let candidates = operation.compose(&state, expanded);
-        let hits = index
-            .search_candidates_checked(
-                query.as_str(),
-                candidates.as_nodes(),
-                k,
-                ctx.cancellation_checker(),
-            )
-            .map_err(text_search_error)?;
+        let hits = score_nodes(ctx, &index, query.as_str(), candidates.as_nodes(), k)?;
         rows.reserve(hits.len());
         for hit in hits {
             rows.push(vec![
@@ -549,45 +532,4 @@ fn text_index_for_score(
                 property.as_str()
             ))
         })
-}
-
-fn query_arg<'a>(proc_name: &'static str, value: &'a Value) -> Result<&'a str, ProcedureError> {
-    let Value::String(value) = value else {
-        return Err(invalid_arg(format!("{proc_name} query must be a STRING")));
-    };
-    Ok(value.as_str())
-}
-
-fn query_list_arg(proc_name: &'static str, value: &Value) -> Result<Vec<DbString>, ProcedureError> {
-    let Value::List(values) = value else {
-        return Err(invalid_arg(format!(
-            "{proc_name} queries must be a LIST<STRING>"
-        )));
-    };
-    let mut queries = Vec::with_capacity(values.len());
-    for (index, value) in values.iter().enumerate() {
-        let Value::String(query) = value else {
-            return Err(invalid_arg(format!(
-                "{proc_name} queries[{index}] must be a STRING"
-            )));
-        };
-        queries.push(query.clone());
-    }
-    Ok(queries)
-}
-
-fn text_search_error(error: TextSearchError) -> ProcedureError {
-    match error {
-        TextSearchError::Cancelled => ProcedureError::Cancelled,
-        TextSearchError::Timeout { elapsed } => ProcedureError::Timeout { elapsed },
-        TextSearchError::NodeScanBudgetExceeded { limit, scanned } => {
-            ProcedureError::NodeScanBudgetExceeded { limit, scanned }
-        }
-        TextSearchError::Graph(GraphError::Inconsistent { reason }) => ProcedureError::Internal {
-            detail: format!("graph inconsistency during text search: {reason}"),
-        },
-        TextSearchError::Graph(other) => ProcedureError::Internal {
-            detail: format!("unexpected graph error during text search: {other}"),
-        },
-    }
 }

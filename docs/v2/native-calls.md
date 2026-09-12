@@ -38,8 +38,8 @@ correlated seeds, and mutation insertion-site state. It shares registration,
 argument and result validation with the batch path, not a separate native registry.
 F04-PR09 owns final row-dispatch deletion. [Vector retrieval](native-vectors.md)
 uses this same typed physical CALL boundary (F04-PR07), rather than introducing a
-second vector dispatcher. Text/JSON reintegration remains F04-PR08 work. There is
-no plugin installation API.
+second vector dispatcher. [Text/JSON and maintained candidates](native-text-json.md)
+use the same boundary (F04-PR08). There is no plugin installation API.
 
 ## Projection identity and lifetime
 

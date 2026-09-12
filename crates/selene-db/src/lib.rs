@@ -123,6 +123,8 @@ mod durable;
 mod error;
 mod graph_type;
 mod handle;
+#[cfg(test)]
+mod native_provider_tests;
 mod outcome;
 mod params;
 mod path;

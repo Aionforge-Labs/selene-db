@@ -18,7 +18,6 @@ use selene_core::{CancellationChecker, DbString, NodeId};
 
 use crate::error::{GraphError, GraphResult};
 use crate::graph::SeleneGraph;
-use crate::shared::SharedGraph;
 use crate::text_search::{
     DocumentStats, TextSearchError, TextSearchHit, TextTopK, bm25_score, tokenize_borrowed,
     unique_query_terms,
@@ -28,10 +27,14 @@ use crate::text_search::{
 mod builder;
 #[path = "text_index/candidate.rs"]
 mod candidate;
+mod contract;
 #[path = "text_index/maintenance.rs"]
 mod maintenance;
+#[cfg(test)]
+mod native_tests;
 #[path = "text_index/postings.rs"]
 mod postings;
+mod snapshot;
 pub(crate) use builder::TextIndexBuilder;
 use postings::{remove_posting, upsert_posting};
 
@@ -49,6 +52,7 @@ pub(crate) use maintenance::{
 /// In-memory BM25 postings index for one node `(label, property)` pair.
 #[derive(Clone, Debug)]
 pub struct TextIndex {
+    contract_version: u32,
     label: DbString,
     property: DbString,
     rows: RoaringBitmap,
@@ -99,6 +103,7 @@ impl TextIndex {
     #[must_use]
     pub fn empty(label: DbString, property: DbString) -> Self {
         Self {
+            contract_version: contract::VERSION,
             label,
             property,
             rows: RoaringBitmap::new(),
@@ -232,6 +237,7 @@ impl TextIndex {
         k: usize,
         checker: CancellationChecker<'_>,
     ) -> Result<Vec<TextSearchHit>, TextSearchError> {
+        self.validate_contract()?;
         checker.check()?;
         if k == 0 || self.document_lengths.is_empty() {
             return Ok(Vec::new());
@@ -478,79 +484,6 @@ pub struct TextIndexMemoryUsage {
     pub posting_bytes: usize,
     /// Estimated bytes reachable from the index object.
     pub estimated_index_bytes: usize,
-}
-
-impl SeleneGraph {
-    /// Build a reusable BM25 postings index for `label.property`.
-    ///
-    /// The returned index is tied to this graph snapshot. Mutations committed
-    /// after the snapshot is read require rebuilding or durable registration in a
-    /// later maintained-index layer.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GraphError::Inconsistent`] if graph label/property columns are
-    /// internally inconsistent while the snapshot is scanned.
-    pub fn build_text_index(
-        &self,
-        label: &DbString,
-        property: &DbString,
-    ) -> GraphResult<TextIndex> {
-        TextIndex::build(self, label.clone(), property.clone())
-    }
-
-    /// Rank string-valued node properties through a transient postings index.
-    ///
-    /// This is primarily useful for tests and benchmark comparisons. Repeated
-    /// production queries should build a [`TextIndex`] once and call
-    /// [`TextIndex::search`] directly.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GraphError::Inconsistent`] if index construction observes corrupt
-    /// graph columns.
-    pub fn indexed_text_search_nodes(
-        &self,
-        label: &DbString,
-        property: &DbString,
-        query: &str,
-        k: usize,
-    ) -> GraphResult<Vec<TextSearchHit>> {
-        Ok(self.build_text_index(label, property)?.search(query, k))
-    }
-}
-
-impl SharedGraph {
-    /// Build a reusable BM25 postings index from the current shared snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GraphError::Inconsistent`] if index construction observes corrupt
-    /// graph columns.
-    pub fn build_text_index(
-        &self,
-        label: &DbString,
-        property: &DbString,
-    ) -> GraphResult<TextIndex> {
-        self.read().build_text_index(label, property)
-    }
-
-    /// Rank string-valued node properties through a transient postings index.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GraphError::Inconsistent`] if index construction observes corrupt
-    /// graph columns.
-    pub fn indexed_text_search_nodes(
-        &self,
-        label: &DbString,
-        property: &DbString,
-        query: &str,
-        k: usize,
-    ) -> GraphResult<Vec<TextSearchHit>> {
-        self.read()
-            .indexed_text_search_nodes(label, property, query, k)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

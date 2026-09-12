@@ -63,6 +63,7 @@ repository or issue evidence.
 ## Policy and evidence documents
 
 - [Catalog-resolved native calls and algorithm batches](native-calls.md)
+- [Native text/JSON and maintained candidate lifecycle](native-text-json.md)
 
 - [Coherent checkpoint and facade reopen](checkpoint-reopen.md)
 - [Full read-only recovery verification and diagnostics](recovery-verification.md)

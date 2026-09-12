@@ -17,6 +17,7 @@ use std::sync::{
 mod allocation;
 pub use allocation::GraphAllocationAuthority;
 mod builder;
+mod candidates;
 mod index_ddl;
 mod rebuild;
 pub use builder::SharedGraphBuilder;
@@ -66,10 +67,11 @@ impl SharedGraph {
         Self::from_graph_with_providers(graph, Vec::new())
     }
 
-    /// Construct with a fixed observer list, validating data and unique provider tags.
+    /// Construct with fixed observers and private first-party catalog candidate state.
+    /// Validates data and unique tags; caller observers cannot override catalog rules.
     pub fn from_graph_with_providers(
         mut graph: SeleneGraph,
-        providers: Vec<Arc<dyn IndexProvider>>,
+        mut providers: Vec<Arc<dyn IndexProvider>>,
     ) -> GraphResult<Self> {
         for properties in graph
             .node_store
@@ -80,7 +82,6 @@ impl SharedGraph {
             properties.validate_stored_values()?;
         }
         validate_unique_provider_tags(&providers)?;
-        let providers: Arc<[Arc<dyn IndexProvider>]> = providers.into();
         graph.remint_layout();
         rebuild_derived_state(&mut graph)?;
         crate::property_index::rebuild_property_indexes(&mut graph)?;
@@ -88,6 +89,11 @@ impl SharedGraph {
         crate::composite_property_index::rebuild_composite_property_indexes(&mut graph)?;
         crate::vector_index::rebuild_vector_indexes(&mut graph)?;
         crate::text_index::rebuild_text_indexes(&mut graph)?;
+        if let Some(provider) = candidates::prepare(&graph)? {
+            providers.push(provider);
+            validate_unique_provider_tags(&providers)?;
+        }
+        let providers: Arc<[Arc<dyn IndexProvider>]> = providers.into();
         if let Some(type_def) = graph.meta.bound_type.as_deref() {
             type_def.validate_ref()?;
             crate::type_validator::validate_entity_state(&graph, type_def)?;

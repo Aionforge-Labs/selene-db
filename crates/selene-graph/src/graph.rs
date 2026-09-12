@@ -390,6 +390,7 @@ impl SeleneGraph {
         }
         self.text_index
             .get(&(label.clone(), property.clone()))
+            .filter(|entry| entry.index.has_current_contract())
             .map(|entry| Arc::clone(&entry.index))
     }
 

@@ -15,6 +15,50 @@ iai-callgrind instruction-count layer — it needs valgrind, which never runs on
 the macOS dev machine, so it was dropped rather than left as a perpetually-TBD
 placeholder.
 
+## Native text/JSON boundary — text_search_bm25
+
+F04-PR08 working tree over `9cb338ba7116e25d958776b3e3892ea0503c87f2`,
+2026-09-12, Apple M5 / 16 GiB / macOS 27.0 (26A5425a), Rust 1.97.1,
+optimized Cargo bench profile, mimalloc. Added rows to the existing registered
+`text_search_bm25` target; **no new benchmark target**. Commands ran serially:
+
+```bash
+scripts/run-benches.sh --bench text_search_bm25 --compile-only
+scripts/run-benches.sh --profile quick --bench text_search_bm25 --filter graph_text_json_boundary
+```
+
+Deterministic 1,000-document corpus: two-token text, 10% current documents, JSON
+`current` boolean, k=1,000. Candidate filters are the first 10/100/1,000 stable IDs
+(1%/10%/100%); matches are 1/10/100. Text candidates retain global BM25 statistics.
+Fixture creation/filter binding and oracle assertions are outside timing; result
+allocation/drop and each API's validation are included. Text build/rebuild uses
+the same fresh full-postings build over authoritative values. Provider rebuild is
+one label-only maintained rule, not facade commit/open latency or edge-heavy work.
+
+10 Criterion samples, 100 ms warm-up, 500 ms collection. Central estimates and
+reported intervals (microseconds):
+
+| Operation | Estimate µs | Interval µs |
+|---|---:|---:|
+| Text full build/rebuild | 103.97 | 102.29–106.81 |
+| Candidate-provider rebuild | 78.030 | 76.730–80.570 |
+| Text full primary scan | 55.029 | 54.090–56.767 |
+| JSON full primary scan | 37.611 | 36.935–38.878 |
+| Text typed candidates, 1% | 0.13039 | 0.12772–0.13317 |
+| Text typed candidates, 10% | 0.70881 | 0.68687–0.73739 |
+| Text typed candidates, 100% | 4.2379 | 4.1584–4.3841 |
+| JSON candidate scan, 1% | 0.46079 | 0.45334–0.47401 |
+| JSON candidate scan, 10% | 4.2161 | 4.1455–4.3416 |
+| JSON candidate scan, 100% | 45.874 | 44.880–47.135 |
+
+Estimated reachable text-index bytes: **142,860** (`TextIndex::memory_usage`).
+JSON derived-index bytes: **0** (no JSON index exists); primary JSON values,
+temporary query buffers and provider maps still consume memory. These are not
+allocator/RSS or total database retained-memory measurements. Artifacts are under
+`target/criterion/graph_text_json_boundary/`. Small quick-run absolute costs are
+not before/after speedup claims. JSON still scans its entire selected population;
+unindexed filtered BM25 still scans all label documents for corpus statistics.
+
 ## Native vector retrieval — vector_native
 
 F04-PR07 working tree over `0f389ccaff3de8653c7d88d638d3a3ed3e90f9ca`,

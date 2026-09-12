@@ -1,8 +1,7 @@
 //! Candidate-scoped BM25 scoring for maintained text indexes.
 //!
-//! This stable-ID compatibility scorer has no pinned graph context. Part 3 owns
-//! migrating its downstream GQL caller before a snapshot-bound typed API can
-//! replace it; this module does not claim that its inputs are graph-bound.
+//! The standalone index accepts stable IDs from its own corpus. Graph callers
+//! use `SeleneGraph::score_text_candidates_checked` to validate snapshot identity.
 
 use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
@@ -48,6 +47,7 @@ impl TextIndex {
         k: usize,
         checker: CancellationChecker<'_>,
     ) -> Result<Vec<TextSearchHit>, TextSearchError> {
+        self.validate_contract()?;
         checker.check()?;
         if k == 0 || candidates.is_empty() || self.document_lengths.is_empty() {
             return Ok(Vec::new());
