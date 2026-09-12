@@ -133,10 +133,6 @@ name = "graph_delete_reclamation"
 harness = false
 
 [[bench]]
-name = "graph_snapshot_roundtrip"
-harness = false
-
-[[bench]]
 name = "graph_read_under_write"
 harness = false
 

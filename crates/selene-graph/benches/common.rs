@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use criterion::Criterion;
 use selene_core::Change;
-use selene_graph::{IndexProvider, ProviderError, ProviderTag, SubTag};
+use selene_graph::{IndexProvider, ProviderError, ProviderTag};
 use selene_testing::{BenchFixture, BenchProfile};
 
 pub(crate) fn criterion_config() -> Criterion {
@@ -52,14 +52,6 @@ impl IndexProvider for BenchProvider {
         self.tag
     }
 
-    fn read_section(&self, _sub_tag: SubTag, _bytes: &[u8]) -> Result<(), ProviderError> {
-        Ok(())
-    }
-
-    fn write_section(&self, _sub_tag: SubTag) -> Result<Vec<u8>, ProviderError> {
-        Ok(Vec::new())
-    }
-
     fn on_change(&self, _change: &Change) -> Result<(), ProviderError> {
         match self.behavior {
             ProviderBehavior::Noop => Ok(()),
@@ -68,10 +60,6 @@ impl IndexProvider for BenchProvider {
             }),
             ProviderBehavior::Panic => panic!("synthetic provider fanout panic"),
         }
-    }
-
-    fn declared_sub_tags(&self) -> &[SubTag] {
-        &[]
     }
 }
 

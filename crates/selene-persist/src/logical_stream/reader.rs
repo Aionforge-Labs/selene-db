@@ -39,6 +39,7 @@ impl LogicalReader {
         expected: &CompatibilityIdentity,
         limit: usize,
     ) -> Result<Self, StreamError> {
+        crate::legacy_probe::reject(dir)?;
         if limit > logical_frame::MAX_PAYLOAD {
             return Err(logical_frame::FrameError::Limit.into());
         }

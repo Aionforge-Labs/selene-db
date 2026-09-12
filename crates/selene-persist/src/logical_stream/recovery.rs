@@ -66,6 +66,7 @@ impl RecoveryReader {
     }
 
     pub(super) fn check_initialized(dir: &StoreDirectory) -> Result<(), StreamError> {
+        crate::legacy_probe::reject(dir)?;
         if !dir
             .contains(CURRENT_FILE_NAME)
             .map_err(|e| StreamError::from(e).at(CURRENT_FILE_NAME, None, None))?

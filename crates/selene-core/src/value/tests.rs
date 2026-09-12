@@ -98,8 +98,8 @@ fn value_float_signed_zero_eq_preserved() {
 fn value_property_map_round_trip_nan() {
     let original = PropertyMap::from_pairs([(db_string("x").unwrap(), Value::Float(f64::NAN))])
         .expect("property map builds");
-    let bytes = postcard::to_allocvec(&original).expect("property map serializes");
-    let decoded: PropertyMap = postcard::from_bytes(&bytes).expect("property map deserializes");
+    let bytes = crate::serde_tests::encode_map(&original).expect("format2 properties encode");
+    let decoded = crate::serde_tests::decode_map(&bytes).expect("format2 properties decode");
 
     assert_eq!(original, decoded);
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use proptest::prelude::*;
 use smallvec::smallvec;
 
-use super::{dbs, rt};
+use super::{dbs, decode_map, encode_map, rt, rt_value};
 use crate::*;
 
 fn all_values() -> Vec<Value> {
@@ -67,27 +67,47 @@ fn all_values() -> Vec<Value> {
 }
 
 #[test]
-fn value_postcard_round_trip() {
+fn stored_value_format2_round_trip_and_query_rejection() {
     for value in all_values() {
-        rt(&value);
+        if matches!(
+            value,
+            Value::RecordTyped(_)
+                | Value::Path(_)
+                | Value::NodeRef(_)
+                | Value::EdgeRef(_)
+                | Value::GraphRef(_)
+                | Value::TableRef(_)
+                | Value::Extended { .. }
+        ) {
+            assert!(StoredValue::try_from(value).is_err());
+        } else {
+            rt_value(&value);
+        }
     }
 }
 
 #[test]
-fn property_map_postcard_round_trip() {
+fn property_map_format2_round_trip_omits_compact_layout() {
     let standard = PropertyMap::from_pairs([
         (dbs("serde.pm.a"), Value::Int(1)),
         (dbs("serde.pm.b"), Value::Null),
     ])
     .unwrap();
-    rt(&standard);
+    assert_eq!(
+        decode_map(&encode_map(&standard).unwrap()).unwrap(),
+        standard
+    );
 
     let compact = PropertyMap::compact(
         [dbs("serde.pm.a"), dbs("serde.pm.b")],
         [Some(Value::Int(1)), None],
     )
     .unwrap();
-    rt(&compact);
+    let round = decode_map(&encode_map(&compact).unwrap()).unwrap();
+    assert_eq!(
+        round.iter().collect::<Vec<_>>(),
+        compact.iter().collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -114,12 +134,12 @@ fn db_string_deserialize_from_str_preserves_content() {
 }
 
 #[test]
-fn extended_value_payload_postcard_round_trip() {
+fn extended_value_payload_is_not_storable() {
     let value = Value::Extended {
         type_id: ExtensionTypeId(0x100),
         payload: Arc::from([1_u8, 2, 3, 4]),
     };
-    rt(&value);
+    assert!(StoredValue::try_from(value).is_err());
 }
 
 #[test]
@@ -135,8 +155,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
     #[test]
-    fn simple_values_postcard_round_trip(value in simple_value_strategy()) {
-        rt(&value);
+    fn simple_values_format2_round_trip(value in simple_value_strategy()) {
+        rt_value(&value);
     }
 }
 

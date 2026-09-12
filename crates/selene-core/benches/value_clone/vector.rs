@@ -65,15 +65,19 @@ pub(crate) fn bench_vector_value(c: &mut Criterion) {
 
         let value = Value::Vector(vector);
         group.bench_with_input(
-            BenchmarkId::new("postcard_roundtrip", dim),
+            BenchmarkId::new("logical_roundtrip", dim),
             &value,
             |b, value| {
                 b.iter_batched(
                     || value.clone(),
                     |value| {
-                        let bytes = postcard::to_allocvec(&value).expect("vector serializes");
-                        let decoded: Value =
-                            postcard::from_bytes(&bytes).expect("vector deserializes");
+                        let stored =
+                            selene_core::StoredValue::try_from(value).expect("vector is storable");
+                        let bytes = selene_core::logical::encode_value(&stored, Default::default())
+                            .expect("vector encodes");
+                        let decoded =
+                            selene_core::logical::decode_value(&bytes, Default::default())
+                                .expect("vector decodes");
                         black_box(decoded)
                     },
                     BatchSize::SmallInput,

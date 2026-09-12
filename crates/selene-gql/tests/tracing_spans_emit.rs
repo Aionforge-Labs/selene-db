@@ -5,17 +5,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use selene_core::{
-    Change, GraphId, HlcTimestamp, LabelSet, NodeId, Origin, PropertyMap, db_string,
-};
+use selene_core::GraphId;
 use selene_gql::{
     BuiltinProcedureRegistry, OptimizeContext, Session, analyze, optimize, parse, plan,
 };
 use selene_graph::SharedGraph;
-use selene_persist::{
-    DEFAULT_WAL_FILE_NAME, ProviderRegistry, SectionCompression, SnapshotBuilder, SnapshotConfig,
-    SyncPolicy, WalConfig, WalWriter, recover,
-};
 use tracing::{Id, Subscriber};
 use tracing_subscriber::{
     Layer, Registry,
@@ -31,10 +25,6 @@ const EXPECTED_SPANS: &[&str] = &[
     "selene.graph.begin_write",
     "selene.graph.commit",
     "selene.graph.notify_providers",
-    "selene.persist.recover",
-    "selene.persist.wal.append",
-    "selene.persist.wal.fsync",
-    "selene.persist.snapshot.finalize",
     "selene.procedure.dispatch",
 ];
 
@@ -74,36 +64,6 @@ fn tracing_spans_emit_for_write_and_call() {
         let analyzed = analyze(stmt, &registry, None).expect("statement analyzes");
         let planned = plan(&analyzed, &registry).expect("statement plans");
         let _optimized = optimize(planned, &OptimizeContext::default());
-
-        let dir = tempfile::tempdir().expect("tempdir is created");
-        recover(dir.path(), &ProviderRegistry::new()).expect("empty recovery succeeds");
-        let wal_path = dir.path().join(DEFAULT_WAL_FILE_NAME);
-        let mut writer = WalWriter::open(
-            &wal_path,
-            WalConfig {
-                sync_policy: SyncPolicy::OnFlushOnly,
-                snapshot_seq: 0,
-            },
-        )
-        .expect("wal opens");
-        let changes = [Change::NodeCreated {
-            id: NodeId::new(1),
-            labels: LabelSet::single(db_string("trace.node").expect("label fits DB string cap")),
-            properties: PropertyMap::new(),
-        }];
-        writer
-            .append(HlcTimestamp::new(1, 0), Origin::Local, None, &changes)
-            .expect("wal append succeeds");
-        writer.flush().expect("wal flush succeeds");
-        SnapshotBuilder::new(SnapshotConfig {
-            dir: dir.path().to_path_buf(),
-            sequence: 1,
-            compression: SectionCompression::None,
-            fsync: false,
-        })
-        .expect("snapshot directory opens")
-        .finalize_with_authority(writer.authority())
-        .expect("snapshot finalizes");
     }
 
     // Drop the graph so its committer thread is joined; its spans have already

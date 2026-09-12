@@ -1,14 +1,11 @@
 #![allow(missing_docs)]
 //! Criterion benches for write-path GQL and direct durable mutation flows.
 //!
-//! Two families. The in-memory CPU family (`gql_*` arms) runs on a no-WAL
-//! `SharedGraph` (`gql_write_state_in_memory`) so it isolates parse, plan,
-//! execute, and in-memory commit CPU — the deltas GQLRT-05 / CORE-06 move. The
-//! durable family (`*_with_flush`, `direct_*`) keeps a real WAL. Note that a
-//! WAL-backed `SharedGraph` ALWAYS commits in `OnFlushOnly` with
-//! `CommitBatching::Off` (the committer owns fsync since v1.2), so any caller
-//! `SyncPolicy` is inert — which is exactly why the CPU arms must not be
-//! WAL-backed (one fsync per commit would swamp the CPU sample).
+//! All arms run on a no-WAL in-memory `SharedGraph`
+//! (`gql_write_state_in_memory`) so they isolate parse, plan, execute, and
+//! in-memory commit CPU — the deltas GQLRT-05 / CORE-06 move. Durable commit
+//! baselines belong to the `selene-db` facade benches (`durable_commit`,
+//! `durable_checkpoint`), never to these CPU arms.
 
 #[cfg(not(selene_bench_system_alloc))]
 #[global_allocator]
@@ -22,7 +19,6 @@ use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, 
 use selene_core::{DbString, JsonValue, LabelDiff, PropertyDiff, Value, db_string};
 use selene_gql::{EmptyProcedureRegistry, Session, SharedPlanCache, StatementOutput};
 use selene_graph::{SharedGraph, TypedIndexKind};
-use selene_persist::SyncPolicy;
 use selene_testing::{BenchProfile, WriteCorpus};
 
 const READS_PER_MIXED_CYCLE: usize = 60;
@@ -47,12 +43,6 @@ fn bench_write_e2e(c: &mut Criterion) {
         bench_gql_insert_single_node_cached(&mut group, scale);
         bench_gql_insert_single_node_shared_cache(&mut group, scale);
         bench_gql_insert_single_node_cached_with_schema_churn(&mut group, scale);
-        bench_gql_fresh_preplanned_with_flush(
-            &mut group,
-            "gql_insert_single_node_preplanned_with_flush",
-            scale,
-            WriteCorpus::insert_single_node(),
-        );
         bench_gql_fresh_preplanned(
             &mut group,
             "gql_insert_node_with_edge_preplanned",
@@ -76,8 +66,6 @@ fn bench_write_e2e(c: &mut Criterion) {
         bench_gql_multi_statement(&mut group, scale);
         bench_explicit_txn_3_inserts_rust_api(&mut group, scale);
         bench_explicit_txn_3_inserts_rollback(&mut group, scale);
-        bench_direct_flush(&mut group, scale);
-        bench_direct_flush_every10(&mut group, scale);
     }
     group.finish();
 }
@@ -476,29 +464,6 @@ fn bench_gql_fresh_preplanned(
     });
 }
 
-fn bench_gql_fresh_preplanned_with_flush(
-    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
-    name: &'static str,
-    scale: usize,
-    source: &str,
-) {
-    group.throughput(Throughput::Elements(1));
-    let plan = common::plan_write(source);
-    group.bench_function(BenchmarkId::new(name, scale), |b| {
-        b.iter_batched(
-            || common::gql_write_state(scale, SyncPolicy::OnFlushOnly),
-            |state| {
-                let mut session = Session::new(&state.graph);
-                let rows = common::execute_preplanned(&plan, &mut session);
-                let durable_at = session.flush().expect("flush succeeds");
-                drop(session);
-                std::hint::black_box((state, rows, durable_at))
-            },
-            BatchSize::LargeInput,
-        );
-    });
-}
-
 fn bench_gql_multi_statement(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     scale: usize,
@@ -583,49 +548,6 @@ fn bench_explicit_txn_3_inserts_rollback(
                     let outcome = session.rollback_transaction().expect("rollback succeeds");
                     drop(session);
                     std::hint::black_box((state, rows + outcome.discarded_changes))
-                },
-                BatchSize::LargeInput,
-            );
-        },
-    );
-}
-
-fn bench_direct_flush(
-    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
-    scale: usize,
-) {
-    group.throughput(Throughput::Elements(1));
-    group.bench_function(
-        BenchmarkId::new("direct_insert_single_node_with_wal_flush", scale),
-        |b| {
-            b.iter_batched(
-                || common::direct_write_state(scale, SyncPolicy::OnFlushOnly),
-                |mut state| {
-                    let changes = common::execute_direct_insert(&mut state, true);
-                    std::hint::black_box((state, changes))
-                },
-                BatchSize::LargeInput,
-            );
-        },
-    );
-}
-
-fn bench_direct_flush_every10(
-    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
-    scale: usize,
-) {
-    group.throughput(Throughput::Elements(10));
-    group.bench_function(
-        BenchmarkId::new("direct_insert_single_node_with_wal_flush_every10", scale),
-        |b| {
-            b.iter_batched(
-                || common::direct_write_state(scale, SyncPolicy::OnFlushOnly),
-                |mut state| {
-                    let mut changes = 0;
-                    for idx in 0..10 {
-                        changes += common::execute_direct_insert(&mut state, idx == 9);
-                    }
-                    std::hint::black_box((state, changes))
                 },
                 BatchSize::LargeInput,
             );

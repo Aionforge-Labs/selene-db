@@ -34,9 +34,6 @@ pub(super) fn entries(_: &File, _: usize) -> PersistResult<Vec<OsString>> {
 pub(super) fn rename(_: &File, _: &Path, _: &Path) -> PersistResult<()> {
     unsupported()
 }
-pub(super) fn hard_link(_: &File, _: &Path, _: &Path) -> PersistResult<()> {
-    unsupported()
-}
 pub(super) fn remove(_: &File, _: &Path) -> PersistResult<()> {
     unsupported()
 }

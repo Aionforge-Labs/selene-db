@@ -26,9 +26,7 @@ pub use diff::{LabelDiff, PropertyDiff};
 
 /// A graph or schema change carried by the WAL.
 #[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-// Invariant: serde+postcard tag stability - append new variants, never insert.
-// Reordering corrupts WAL files written under prior tag layouts.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Change {
     /// Node creation.
     NodeCreated {
@@ -163,7 +161,7 @@ pub enum Change {
 
 /// Schema change payload.
 #[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SchemaChange {
     /// Graph creation.
     GraphCreated {

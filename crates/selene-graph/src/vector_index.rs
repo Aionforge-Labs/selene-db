@@ -44,7 +44,6 @@ pub(crate) use build::{
     build_vector_index_lenient_with_configs, build_vector_index_with_configs,
     maintain_vector_indexes_strict, rebuild_vector_indexes, rebuild_vector_indexes_strict,
 };
-pub(crate) use config::MAX_IVF_TARGET_CENTROIDS;
 use config::{hnsw_config_for_kind, ivf_config_for_kind};
 pub(crate) use hnsw::HnswSearchScratch;
 use hnsw::HnswVectorIndex;

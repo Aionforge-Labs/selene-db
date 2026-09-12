@@ -4,40 +4,35 @@
 //! builds a fresh graph whose rows are dense (every dead or otherwise
 //! unoccupied hole row dropped), preserving external `NodeId` / `EdgeId` and
 //! the monotonic allocator high-water marks, then rebuilds all derived state
-//! from the compacted columns via the existing recovery-path rebuilders. It
+//! from the compacted columns via the shared derived-state rebuilders. It
 //! performs no publication and no snapshot I/O. Live embedders normally call
 //! [`crate::SharedGraph::compact`], which serializes the transform with writers
 //! and atomically republishes the dense graph in the same total publication
 //! order as commits. Snapshot I/O remains a separate, caller-driven maintenance
-//! step. Database strings are plain owned values, so compaction has no
-//! string-pool reclamation work to perform. A coordinated checkpoint appends a
-//! typed physical WAL watermark, so the newly dense layout can be published at
-//! a fresh snapshot sequence without requiring a dummy user mutation.
+//! step owned by the database facade's checkpoint authority, so the newly
+//! dense layout can be published at a fresh snapshot sequence without
+//! requiring a dummy user mutation.
 //!
 //! Because 4a left edges + adjacency keyed by stable external `NodeId`, a row
 //! renumber does not touch edge endpoints or adjacency — only the row-keyed
 //! columns, the alive bitmaps, the row-indexed label/property indexes, and the
 //! id↔row maps move, and all of those are rebuilt from the compacted columns.
 //!
-//! **Cross-epoch WAL replay (BRIEF-Item-4e — RESOLVED, no new mechanism).**
-//! Compaction drops dead rows, so a *deleted* external id that gets compacted
-//! away resolves `NotFound` afterwards (was `NotAlive` under 4a's Option B). The
-//! concern was that a `Change::NodeDeleted` / `EdgeDeleted` written *before* a
-//! compaction, replayed *after* loading the compacted snapshot, would route
-//! through `require_live_*` (`recovery_state`) and hard-error on the reclaimed
-//! id. This cannot happen in the normal flow: a snapshot is published via
-//! `WalWriter::rotate_with_manifest`, which both advances the MANIFEST
-//! `live_snapshot_seq` WAL floor AND physically truncates the WAL (`set_len(0)`
-//! then a fresh header). Pre-compaction entries are therefore *gone* AND below
-//! the recovery floor (`recovery.rs` replays only `header.sequence > floor`) —
-//! they can never be replayed against a compacted snapshot. The only cross-epoch
+//! **Cross-epoch replay.** Compaction drops dead rows, so a *deleted* external
+//! id that gets compacted away resolves `NotFound` afterwards. A
+//! `Change::NodeDeleted` / `EdgeDeleted` written *before* a compaction must
+//! never replay *after* the compacted snapshot loads: it would route through
+//! the mutation funnel's `require_live_*` guards and hard-error on the
+//! reclaimed id. This cannot happen in the normal flow: snapshot publication
+//! is the facade-owned checkpoint authority, which advances the snapshot and
+//! its recovery floor together — pre-compaction entries stay below the floor
+//! and can never replay against a compacted snapshot. The only cross-epoch
 //! replay is of *post*-snapshot entries, which resolve against the dense rows:
-//! a post-compaction `NodeCreated` appends (BRIEF-Item-4c), and a post-compaction
-//! `NodeDeleted` of a survivor finds it in the compacted snapshot (proven by
-//! `recover_tests::nodeid_split_recovery`). The `require_live_*` hard-error is
-//! deliberately *retained* as genuine-corruption detection — a "no-op the
-//! reclaimed-id delete" alternative was rejected because it would mask a truly
-//! inconsistent WAL. The MANIFEST `compaction_epoch` field stays reserved (`0`).
+//! a post-compaction `NodeCreated` appends, and a post-compaction
+//! `NodeDeleted` of a survivor finds it in the compacted snapshot. The
+//! `require_live_*` hard-error is deliberately *retained* as
+//! genuine-corruption detection — a "no-op the reclaimed-id delete"
+//! alternative was rejected because it would mask a truly inconsistent log.
 
 use rustc_hash::FxHashSet;
 use selene_core::NodeId;
@@ -363,7 +358,7 @@ pub fn compact_core(graph: &SeleneGraph) -> GraphResult<CompactedCore> {
     }
 
     // Rebuild every derived structure from the dense columns — the same chain
-    // SharedGraph::from_graph_parts_and_snapshot uses on the recovery path.
+    // the logical snapshot-apply path uses when materializing a graph.
     crate::shared::rebuild_derived_state(&mut dense)?;
     crate::property_index::rebuild_property_indexes(&mut dense)?;
     crate::property_index::rebuild_edge_property_indexes(&mut dense)?;

@@ -1,8 +1,8 @@
-use super::{dbs, graph_type, rt};
+use super::{dbs, decode_changes, encode_changes};
 use crate::*;
 
 #[test]
-fn change_postcard_round_trip() {
+fn data_change_format2_round_trip() {
     let label = dbs("serde.change.label");
     let property = dbs("serde.change.property");
     let changes = vec![
@@ -44,12 +44,6 @@ fn change_postcard_round_trip() {
             id: EdgeId::new(1),
             property,
         },
-        Change::SchemaChanged {
-            graph: GraphId::new(1),
-            change: SchemaChange::GraphTypeCreated {
-                graph_type: graph_type(),
-            },
-        },
         Change::NodesOfTypeTruncated {
             label: label.clone(),
         },
@@ -57,39 +51,32 @@ fn change_postcard_round_trip() {
         Change::GraphReset {},
     ];
     for change in changes {
-        rt(&change);
+        assert_eq!(
+            decode_changes(&encode_changes(vec![change.clone()]).unwrap()).unwrap(),
+            vec![change]
+        );
     }
 }
 
 #[test]
-fn graph_reset_postcard_round_trip() {
-    // BRIEF-152: GraphReset is the empty (carries-nothing) factory-reset change.
-    // It is the last appended variant, so its postcard tag is 12 (the removal of
-    // the former IndexExtensionEvent variant at tag 7 re-tagged every later
-    // variant down by one - a greenfield postcard break with no production WAL).
-    // A unit-style variant encodes to its single tag byte with no payload.
+fn graph_reset_format2_tag_and_round_trip() {
     let change = Change::GraphReset {};
-    let bytes = postcard::to_allocvec(&change).unwrap();
+    let mut encoder = logical::Encoder::new(Default::default()).unwrap();
+    encoder.graph_change(&change).unwrap();
+    let bytes = encoder.finish();
     assert_eq!(
         bytes,
         [12_u8],
         "GraphReset encodes to its bare tag byte (12)"
     );
-    let decoded: Change = postcard::from_bytes(&bytes).unwrap();
-    assert_eq!(decoded, Change::GraphReset {});
+    assert_eq!(
+        decode_changes(&encode_changes(vec![change]).unwrap()).unwrap(),
+        vec![Change::GraphReset {}]
+    );
 }
 
 #[test]
-fn pre_147_node_updated_wire_blob_still_decodes() {
+fn retired_postcard_node_update_is_not_a_format2_graph() {
     let bytes = [1_u8, 1, 0, 0, 0, 0];
-    let decoded: Change = postcard::from_bytes(&bytes).unwrap();
-
-    assert_eq!(
-        decoded,
-        Change::NodeUpdated {
-            id: NodeId::new(1),
-            labels_diff: LabelDiff::new([], []).unwrap(),
-            properties_diff: PropertyDiff::new([], []).unwrap(),
-        }
-    );
+    assert!(decode_changes(&bytes).is_err());
 }

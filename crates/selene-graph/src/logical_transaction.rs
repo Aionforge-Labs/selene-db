@@ -309,12 +309,8 @@ impl ReplayState {
                 .map(schema::materialize)
                 .transpose()?
                 .map(Arc::new);
-            let graph = crate::core_provider::logical_graph(
-                original.map(AsRef::as_ref),
-                delta,
-                bound,
-                budget,
-            )?;
+            let graph =
+                graph_apply::logical_graph(original.map(AsRef::as_ref), delta, bound, budget)?;
             graph
                 .validate_logical_catalog(&snapshot, &delta.backing_indexes)
                 .map_err(|_| E::Semantic)?;
@@ -380,6 +376,8 @@ impl ReplayState {
         Ok(())
     }
 }
+
+pub(crate) mod graph_apply;
 
 #[cfg(test)]
 mod tests;

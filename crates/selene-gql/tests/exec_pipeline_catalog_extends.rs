@@ -2,13 +2,9 @@
 
 mod exec_common;
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
-};
-
-use selene_core::{Change, GraphId, HlcTimestamp, Origin, PropertyValueType, SchemaChange};
+#[path = "../../selene-graph/tests/format2_support/mod.rs"]
+mod format2_support;
+use selene_core::{Change, GraphId, PropertyValueType, SchemaChange};
 use selene_gql::{
     Binding, BindingTable, BindingTableSchema, EmptyProcedureRegistry, ExecutionPlan,
     ExecutorError, TxContext, analyze, execute_pipeline, feature_walk, parse, plan,
@@ -16,7 +12,6 @@ use selene_gql::{
 use selene_graph::{
     CommitOutcome, EdgeEndpointDef, GraphTypeDef, PropertyDefaultValue, SharedGraph,
 };
-use selene_persist::{DEFAULT_WAL_FILE_NAME, SyncPolicy, WalConfig, WalWriter};
 use selene_profile::{CapabilityStatus, FeatureId, capability};
 
 use exec_common::db_string;
@@ -122,35 +117,6 @@ fn graph_type_violation(source: &str, prefixes: &[&str]) -> String {
         panic!("expected GraphTypeViolation");
     };
     message
-}
-
-fn temp_dir(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "selene-gql-extends-{name}-{}-{nanos}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir(&dir).unwrap();
-    dir
-}
-
-fn append_wal(dir: &Path, changes: &[Change]) {
-    let mut writer = WalWriter::open(
-        &dir.join(DEFAULT_WAL_FILE_NAME),
-        WalConfig {
-            sync_policy: SyncPolicy::EveryN(1),
-            snapshot_seq: 0,
-        },
-    )
-    .unwrap();
-    writer
-        .append(HlcTimestamp::zero(), Origin::Local, None, changes)
-        .unwrap();
-    writer.flush().unwrap();
 }
 
 #[test]
@@ -346,8 +312,7 @@ fn mnemosyne_memory_base_case_composes_universal_block() {
 }
 
 #[test]
-fn composed_node_type_survives_wal_recovery() {
-    let dir = temp_dir("wal");
+fn composed_node_type_survives_format2_snapshot() {
     let graph_id = GraphId::new(13_908);
     let base = empty_graph_type();
     let graph = SharedGraph::builder(graph_id)
@@ -360,12 +325,9 @@ fn composed_node_type_survives_wal_recovery() {
         &["CREATE NODE TYPE :Parent (a :: INT)"],
     );
 
-    let (_table, outcome) = run_write(&graph, &plan).expect("catalog executes");
-    append_wal(&dir, &outcome.changes);
-
-    let recovered = SharedGraph::recover_closed(&dir, graph_id, base).unwrap();
+    run_write(&graph, &plan).expect("catalog executes");
+    let recovered = format2_support::snapshot(&graph.read()).unwrap();
     assert_eq!(node_property_names(&recovered, "Child"), ["a", "c"]);
-    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]

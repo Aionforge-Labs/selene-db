@@ -158,76 +158,6 @@ impl PropertyDiff {
     }
 }
 
-#[derive(Deserialize, Serialize)]
-struct PropertyDiffWire {
-    set: SmallVec<[(DbString, Value); 4]>,
-    removed: SmallVec<[DbString; 2]>,
-}
-
-#[derive(Serialize)]
-struct PropertyDiffWireRef<'a> {
-    set: &'a [(DbString, Value)],
-    removed: &'a [DbString],
-}
-
-impl Serialize for PropertyDiff {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.validate_stored_values()
-            .map_err(serde::ser::Error::custom)?;
-        // Canonicalize on serialize. `PropertyDiff::new` already sorts, so this
-        // is a no-op (byte-identical) for constructed diffs. The fields are
-        // public, so direct construction still emits canonical wire.
-        if property_set_is_canonical(&self.set) && db_strings_are_canonical(&self.removed) {
-            return PropertyDiffWireRef {
-                set: self.set.as_slice(),
-                removed: self.removed.as_slice(),
-            }
-            .serialize(serializer);
-        }
-
-        let mut set = self.set.clone();
-        let mut removed = self.removed.clone();
-        set.sort_by(|(lhs, _), (rhs, _)| lhs.as_str().cmp(rhs.as_str()));
-        removed.sort_by(|lhs, rhs| lhs.as_str().cmp(rhs.as_str()));
-        PropertyDiffWire { set, removed }.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for PropertyDiff {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        // Validate the canonical invariant (strictly-ascending set keys,
-        // strictly-ascending removed, disjoint) rather than re-sorting; a
-        // non-canonical payload is rejected as malformed.
-        let wire = PropertyDiffWire::deserialize(deserializer)?;
-        for (_, value) in &wire.set {
-            crate::StoredValue::validate(value).map_err(serde::de::Error::custom)?;
-        }
-        for window in wire.set.windows(2) {
-            if window[0].0 >= window[1].0 {
-                return Err(serde::de::Error::custom(
-                    "PropertyDiff.set entries must be sorted by DbString order with no duplicate keys",
-                ));
-            }
-        }
-        validate_sorted_unique(&wire.removed, "PropertyDiff.removed")?;
-        if let Some(key) = first_property_overlap(&wire.set, &wire.removed) {
-            return Err(serde::de::Error::custom(format!(
-                "PropertyDiff: key {key} appears in both set and removed",
-            )));
-        }
-        Ok(Self {
-            set: wire.set,
-            removed: wire.removed,
-        })
-    }
-}
-
 fn sorted_deduped(values: impl IntoIterator<Item = DbString>) -> SmallVec<[DbString; 2]> {
     let mut values: SmallVec<[DbString; 2]> = values.into_iter().collect();
     if values.len() > 1 && !db_strings_are_canonical(&values) {
@@ -239,10 +169,6 @@ fn sorted_deduped(values: impl IntoIterator<Item = DbString>) -> SmallVec<[DbStr
 
 fn db_strings_are_canonical(values: &[DbString]) -> bool {
     values.windows(2).all(|pair| pair[0] < pair[1])
-}
-
-fn property_set_is_canonical(set: &[(DbString, Value)]) -> bool {
-    set.windows(2).all(|pair| pair[0].0 < pair[1].0)
 }
 
 fn ensure_disjoint(

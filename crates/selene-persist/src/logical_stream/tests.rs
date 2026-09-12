@@ -323,7 +323,7 @@ fn selected_control_is_independent_of_frame_bytes_and_unselected_ancestors() {
     assert!(StoreWriter::acquire(&dir).is_err());
     drop(wal);
     assert!(EmptyStoreControl::open(&dir, &identity()).is_err());
-    assert!(dir.require_legacy().is_err());
+    assert!(!dir.contains("wal.log").unwrap());
     let owner = StoreWriter::acquire(&dir).unwrap();
     dir.remove(std::path::Path::new(
         "MANIFEST-00000000000000000001.control",
@@ -524,6 +524,6 @@ fn failed_log_bootstrap_never_selects_incomplete_control_or_guesses_empty_state(
             assert!(reader.is_err());
         }
         assert!(EmptyStoreControl::open(&dir, &identity()).is_err());
-        assert!(dir.require_legacy().is_err());
+        assert!(!dir.contains("wal.log").unwrap());
     }
 }

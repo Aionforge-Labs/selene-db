@@ -1,8 +1,7 @@
 //! In-memory GQL value representation per spec 02 section 3.
 //!
-//! [`Value`] is a runtime carrier. Its isolated legacy serde adapter preserves
-//! established enum tags until deletion by F02-PR08; that compatibility adapter
-//! is not the format-2 stored-value encoding. New WAL framing belongs to F02-PR03.
+//! [`Value`] is a runtime carrier, deliberately without generic serde encoding.
+//! Format-2 persistence uses the explicit logical value codec.
 //! Durable admission uses [`crate::StoredValue`], which excludes query references
 //! and process-local identities recursively.
 
@@ -132,9 +131,6 @@ pub enum Value {
 /// regrows the enum; box the offending payload or lift the ceiling
 /// deliberately.
 const _: () = assert!(core::mem::size_of::<Value>() <= 32);
-
-#[path = "value/legacy_serde.rs"]
-mod legacy_serde;
 
 impl Value {
     /// Factory table with one sample value for each [`Value`] variant.
@@ -426,7 +422,7 @@ impl<'de> Deserialize<'de> for VectorValue {
 }
 
 /// Open record value.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum Record {
     /// Open `RECORD` literal in expressions.
@@ -434,7 +430,7 @@ pub enum Record {
 }
 
 /// Closed record value tied to a graph-type-defined record type.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RecordTyped {
     /// Identifier pointing to a `RecordTypeDef` in the graph type catalog.
     pub type_id: RecordTypeId,
@@ -443,7 +439,7 @@ pub struct RecordTyped {
 }
 
 /// Path value.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Path {
     /// Graph the path lives within.
     pub graph: GraphId,
@@ -454,7 +450,7 @@ pub struct Path {
 }
 
 /// One traversal step in a [`Path`].
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PathSegment {
     /// Edge traversed in this step.
     pub edge: EdgeId,
@@ -473,66 +469,6 @@ pub enum EdgeDirection {
     Incoming,
     /// Undirected edge.
     Undirected,
-}
-
-mod serde_i128_le {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub(super) fn serialize<S>(value: &i128, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        value.to_le_bytes().serialize(serializer)
-    }
-
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<i128, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        <[u8; 16]>::deserialize(deserializer).map(i128::from_le_bytes)
-    }
-}
-
-mod serde_u128_le {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub(super) fn serialize<S>(value: &u128, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        value.to_le_bytes().serialize(serializer)
-    }
-
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<u128, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        <[u8; 16]>::deserialize(deserializer).map(u128::from_le_bytes)
-    }
-}
-
-mod serde_decimal_str {
-    use std::str::FromStr;
-
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub(super) fn serialize<S>(
-        value: &rust_decimal::Decimal,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&value.to_string())
-    }
-
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<rust_decimal::Decimal, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        rust_decimal::Decimal::from_str(&value).map_err(serde::de::Error::custom)
-    }
 }
 
 #[cfg(test)]

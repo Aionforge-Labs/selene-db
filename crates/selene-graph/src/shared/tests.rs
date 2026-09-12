@@ -1,12 +1,9 @@
 use super::*;
 use parking_lot::Mutex;
-use selene_core::{
-    Change, HlcTimestamp, LabelSet, PropertyMap, PropertyValueType, SchemaChange, db_string,
-};
+use selene_core::{Change, LabelSet, PropertyMap, PropertyValueType, SchemaChange, db_string};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::CORE_PROVIDER_TAG;
 use crate::index_provider::ProviderError;
 use crate::typed_index::TypedIndexKind;
 
@@ -29,40 +26,9 @@ impl IndexProvider for TestProvider {
         self.tag
     }
 
-    fn read_section(&self, _sub_tag: crate::SubTag, _bytes: &[u8]) -> Result<(), ProviderError> {
-        Ok(())
-    }
-
-    fn write_section(&self, _sub_tag: crate::SubTag) -> Result<Vec<u8>, ProviderError> {
-        Ok(Vec::new())
-    }
-
     fn on_change(&self, change: &Change) -> Result<(), ProviderError> {
         self.seen.lock().push(change.clone());
         Ok(())
-    }
-
-    fn declared_sub_tags(&self) -> &[crate::SubTag] {
-        &[]
-    }
-}
-
-struct FailingDurableProvider;
-
-impl DurableProvider for FailingDurableProvider {
-    fn provider_tag(&self) -> ProviderTag {
-        ProviderTag(*b"FAIL")
-    }
-
-    fn write_commit(
-        &self,
-        _principal: Option<&Arc<[u8]>>,
-        _changes: &[Change],
-        _timestamp: HlcTimestamp,
-    ) -> Result<u64, ProviderError> {
-        Err(ProviderError::Inconsistent {
-            reason: "synthetic durable failure".to_owned(),
-        })
     }
 }
 

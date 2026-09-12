@@ -9,7 +9,6 @@ use std::fmt;
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
 mod stored;
-mod stored_default;
 
 use crate::{
     ByteStringType, CharacterStringType, CoreError, CoreResult, DbString, DecimalType,
@@ -59,7 +58,7 @@ impl fmt::Display for GraphTypeId {
 }
 
 /// Closed-graph schema definition.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GraphType {
     /// Stable graph type ID.
     pub id: GraphTypeId,
@@ -95,7 +94,7 @@ impl GraphType {
 }
 
 /// Node type definition.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NodeTypeDef {
     /// Label set required by this node type.
     pub labels: LabelSet,
@@ -104,7 +103,6 @@ pub struct NodeTypeDef {
     /// Optional property-name key.
     pub key: Option<NodeKey>,
     /// Closed-graph validation mode for this node type.
-    #[serde(default)]
     pub validation_mode: ValidationMode,
 }
 
@@ -127,7 +125,7 @@ impl NodeTypeDef {
 /// [`SchemaChange::NodeTypeAddedV2`](crate::SchemaChange::NodeTypeAddedV2)
 /// with [`NodeTypeDef`]; recovery upgrades this shape with
 /// [`ValidationMode::Strict`] plus non-immutable, non-unique properties.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NodeTypeDefV1 {
     /// Label set required by this node type.
     pub labels: LabelSet,
@@ -214,7 +212,7 @@ impl EdgeEndpointDef {
 }
 
 /// Edge type definition.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EdgeTypeDef {
     /// Single edge label.
     pub label: DbString,
@@ -225,7 +223,6 @@ pub struct EdgeTypeDef {
     /// Property definitions in schema order.
     pub properties: SmallVec<[PropertyDef; 4]>,
     /// Closed-graph validation mode for this edge type.
-    #[serde(default)]
     pub validation_mode: ValidationMode,
 }
 
@@ -263,7 +260,7 @@ impl EdgeTypeDef {
 /// [`SchemaChange::EdgeTypeAddedV2`](crate::SchemaChange::EdgeTypeAddedV2)
 /// with [`EdgeTypeDef`]; recovery upgrades this shape with
 /// [`ValidationMode::Strict`] plus non-immutable, non-unique properties.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EdgeTypeDefV1 {
     /// Single edge label.
     pub label: DbString,
@@ -384,7 +381,7 @@ pub enum RecordFieldStructureType {
 }
 
 /// Property schema definition.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PropertyDef {
     /// Property name.
     pub name: DbString,
@@ -393,13 +390,10 @@ pub struct PropertyDef {
     /// Whether `Value::Null` is allowed.
     pub nullable: bool,
     /// Optional default value.
-    #[serde(with = "stored_default")]
     pub default: Option<Value>,
     /// Whether updates to this property are forbidden after creation.
-    #[serde(default)]
     pub immutable: bool,
     /// Whether non-null property values must be unique within the declaring type.
-    #[serde(default)]
     pub unique: bool,
     /// Inline RECORD field structure when [`PropertyDef::value_type`] resolves to a
     /// `RecordTyped` property. `None` for every non-record property; `Some(Open)` for an
@@ -410,12 +404,11 @@ pub struct PropertyDef {
     /// would degrade an open record to `Null`. Carried for WAL durability, symmetric to
     /// the rkyv snapshot-side
     /// `selene_graph::graph_types::PropertyTypeDef::record_field_types`.
-    #[serde(default)]
     pub record_fields: Option<Box<RecordFieldStructure>>,
 }
 
 /// Legacy WAL property definition carried by v1 catalog-DDL schema changes.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PropertyDefV1 {
     /// Property name.
     pub name: DbString,
@@ -424,7 +417,6 @@ pub struct PropertyDefV1 {
     /// Whether `Value::Null` is allowed.
     pub nullable: bool,
     /// Optional default value.
-    #[serde(with = "stored_default")]
     pub default: Option<Value>,
 }
 
@@ -598,7 +590,7 @@ pub enum ValueTypeCardinality {
 }
 
 /// Closed record type definition.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RecordTypeDef {
     /// Stable record type ID.
     pub id: RecordTypeId,

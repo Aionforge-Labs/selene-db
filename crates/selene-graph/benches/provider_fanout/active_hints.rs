@@ -2,14 +2,12 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
 use criterion::{BatchSize, BenchmarkId, Throughput};
 use selene_core::{Change, DbString, EdgeId, NodeId, PropertyMap, db_string};
-use selene_graph::{IndexProvider, ProviderError, ProviderTag, SharedGraph, SubTag};
-use selene_persist::{DEFAULT_WAL_FILE_NAME, WalConfig};
+use selene_graph::{IndexProvider, ProviderError, ProviderTag, SharedGraph};
 use selene_testing::BenchFixture;
 
 const ACTIVE_HINT_BATCH: usize = 40;
@@ -23,8 +21,6 @@ pub(super) fn bench_active_hint_edges(
     for mode in [ActiveHintMode::Recent, ActiveHintMode::Dependency] {
         bench_active_hint_edge_create(group, fixture, mode, &recent, &dependency);
         bench_active_hint_edge_delete(group, fixture, mode, &recent, &dependency);
-        bench_active_hint_wal_edge_create(group, fixture, mode, &recent, &dependency);
-        bench_active_hint_wal_edge_delete(group, fixture, mode, &recent, &dependency);
     }
 }
 
@@ -80,66 +76,6 @@ fn bench_active_hint_edge_delete(
     );
 }
 
-fn bench_active_hint_wal_edge_create(
-    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
-    fixture: &BenchFixture,
-    mode: ActiveHintMode,
-    recent: &DbString,
-    dependency: &DbString,
-) {
-    group.throughput(Throughput::Elements(ACTIVE_HINT_BATCH as u64));
-    group.bench_function(
-        BenchmarkId::from_parameter(mode.name("active_hint_wal", "edge_create_k40")),
-        |b| {
-            b.iter_batched(
-                || active_hint_wal_graph(fixture, recent, dependency),
-                |wal| {
-                    let changes =
-                        commit_active_hint_edges(&wal.shared, fixture, mode, recent, dependency).0;
-                    std::hint::black_box((
-                        wal.shared.read().edge_count(),
-                        changes,
-                        wal.total_links(),
-                    ))
-                },
-                BatchSize::LargeInput,
-            );
-        },
-    );
-}
-
-fn bench_active_hint_wal_edge_delete(
-    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
-    fixture: &BenchFixture,
-    mode: ActiveHintMode,
-    recent: &DbString,
-    dependency: &DbString,
-) {
-    group.throughput(Throughput::Elements(ACTIVE_HINT_BATCH as u64));
-    group.bench_function(
-        BenchmarkId::from_parameter(mode.name("active_hint_wal", "edge_delete_k40")),
-        |b| {
-            b.iter_batched(
-                || {
-                    let wal = active_hint_wal_graph(fixture, recent, dependency);
-                    let seeded =
-                        commit_active_hint_edges(&wal.shared, fixture, mode, recent, dependency).1;
-                    (wal, seeded)
-                },
-                |(wal, seeded)| {
-                    let changes = delete_edges(&wal.shared, seeded);
-                    std::hint::black_box((
-                        wal.shared.read().edge_count(),
-                        changes,
-                        wal.total_links(),
-                    ))
-                },
-                BatchSize::LargeInput,
-            );
-        },
-    );
-}
-
 fn active_hint_shared(
     fixture: &BenchFixture,
     recent: &DbString,
@@ -152,27 +88,6 @@ fn active_hint_shared(
     )
     .expect("active-hint provider fixture builds");
     (shared, provider)
-}
-
-fn active_hint_wal_graph(
-    fixture: &BenchFixture,
-    recent: &DbString,
-    dependency: &DbString,
-) -> ActiveHintWalGraph {
-    let dir = super::fresh_active_set_wal_dir();
-    let provider = Arc::new(ActiveHintProvider::new(recent.clone(), dependency.clone()));
-    let shared = SharedGraph::builder(fixture.graph().meta.graph_id)
-        .with_provider(provider.clone() as Arc<dyn IndexProvider>)
-        .with_wal(dir.join(DEFAULT_WAL_FILE_NAME), WalConfig::default())
-        .expect("active-hint WAL opens")
-        .build()
-        .expect("active-hint WAL graph builds");
-    super::seed_nodes(&shared, fixture.scale());
-    ActiveHintWalGraph {
-        shared,
-        provider,
-        dir,
-    }
 }
 
 fn commit_active_hint_edges(
@@ -263,24 +178,6 @@ impl ActiveHintMode {
     }
 }
 
-struct ActiveHintWalGraph {
-    shared: SharedGraph,
-    provider: Arc<ActiveHintProvider>,
-    dir: PathBuf,
-}
-
-impl ActiveHintWalGraph {
-    fn total_links(&self) -> usize {
-        self.provider.total_links()
-    }
-}
-
-impl Drop for ActiveHintWalGraph {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
 struct ActiveHintProvider {
     recent_label: DbString,
     dependency_label: DbString,
@@ -326,14 +223,6 @@ impl ActiveHintProvider {
 impl IndexProvider for ActiveHintProvider {
     fn provider_tag(&self) -> ProviderTag {
         ProviderTag(*b"AHNT")
-    }
-
-    fn read_section(&self, _sub_tag: SubTag, _bytes: &[u8]) -> Result<(), ProviderError> {
-        Ok(())
-    }
-
-    fn write_section(&self, _sub_tag: SubTag) -> Result<Vec<u8>, ProviderError> {
-        Ok(Vec::new())
     }
 
     fn on_change(&self, change: &Change) -> Result<(), ProviderError> {
@@ -401,9 +290,5 @@ impl IndexProvider for ActiveHintProvider {
             _ => {}
         }
         Ok(())
-    }
-
-    fn declared_sub_tags(&self) -> &[SubTag] {
-        &[]
     }
 }

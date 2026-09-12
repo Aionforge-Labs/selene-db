@@ -130,8 +130,6 @@ fn abort_leaves_no_undirected_incidence_and_does_not_reuse_identity() {
 #[test]
 fn logical_changes_and_compaction_preserve_independent_edge_records() {
     use selene_core::{Change, EdgeRecordV1, NodeId, PropertyDiff, Value};
-    use selene_graph::CoreProvider;
-    use selene_persist::RecoveryProvider;
 
     let shared = SharedGraph::new(GraphId::new(2));
     let mut txn = shared.begin_write();
@@ -172,13 +170,7 @@ fn logical_changes_and_compaction_preserve_independent_edge_records() {
     assert!(outcome.changes.iter().any(|change| matches!(change,
         Change::EdgeCreated { id, source, target, directionality: Undirected, .. }
         if *id == edge && *source == a && *target == b)));
-    let provider = CoreProvider::new_for_recovery();
-    for change in &outcome.changes {
-        RecoveryProvider::on_change(provider.as_ref(), change).unwrap();
-    }
-    let replayed =
-        SharedGraph::try_from_graph(provider.finish_recovery(GraphId::new(2), None).unwrap())
-            .unwrap();
+    let replayed = format2_support::replay(GraphId::new(2), outcome.changes).unwrap();
     assert_eq!(replayed.read().edge_record(edge), Some(expected.clone()));
     assert_eq!(replayed.read().undirected_edges(b).unwrap().len(), 1);
     assert!(!replayed.read().is_edge_alive(dead));
@@ -186,26 +178,22 @@ fn logical_changes_and_compaction_preserve_independent_edge_records() {
     assert_eq!(shared.read().edge_record(edge), Some(expected.clone()));
 
     // Independently authored semantic inputs, not a serializer round trip.
-    let independent = CoreProvider::new_for_recovery();
-    for id in [a, b] {
-        RecoveryProvider::on_change(
-            independent.as_ref(),
-            &Change::NodeCreated {
-                id,
-                labels: LabelSet::new(),
-                properties: PropertyMap::new(),
-            },
-        )
-        .unwrap();
-    }
-    RecoveryProvider::on_change(independent.as_ref(), &Change::from(expected.clone())).unwrap();
+    let mut independent: Vec<_> = [a, b]
+        .into_iter()
+        .map(|id| Change::NodeCreated {
+            id,
+            labels: LabelSet::new(),
+            properties: PropertyMap::new(),
+        })
+        .collect();
+    independent.push(Change::from(expected.clone()));
     let mut invalid = expected.clone();
     invalid.id = selene_core::EdgeId::new(123);
     invalid.first = NodeId::new(999);
-    assert!(RecoveryProvider::on_change(independent.as_ref(), &Change::from(invalid)).is_err());
-    let rebuilt =
-        SharedGraph::try_from_graph(independent.finish_recovery(GraphId::new(2), None).unwrap())
-            .unwrap();
+    let mut bad = independent.clone();
+    bad.push(Change::from(invalid));
+    assert!(format2_support::replay(GraphId::new(2), bad).is_err());
+    let rebuilt = format2_support::replay(GraphId::new(2), independent).unwrap();
     assert_eq!(rebuilt.read().edge_record(edge), Some(expected));
 }
 
@@ -315,16 +303,6 @@ fn closed_unordered_endpoints_revalidate_labels_and_reject_without_incidence() {
 
 #[test]
 fn snapshot_reconstruction_preserves_both_loop_kinds_and_parallel_edges() {
-    use selene_persist::{SectionCompression, SnapshotConfig};
-    let dir = std::env::temp_dir().join(format!(
-        "selene-mixed-snapshot-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&dir).unwrap();
     let shared = SharedGraph::new(GraphId::new(4));
     let mut txn = shared.begin_write();
     let (a, b, ids) = {
@@ -352,15 +330,7 @@ fn snapshot_reconstruction_preserves_both_loop_kinds_and_parallel_edges() {
         (a, b, ids)
     };
     txn.commit().unwrap();
-    shared
-        .write_snapshot(SnapshotConfig {
-            dir: dir.clone(),
-            sequence: 0,
-            compression: SectionCompression::None,
-            fsync: false,
-        })
-        .unwrap();
-    let recovered = SharedGraph::recover(&dir, GraphId::new(4)).unwrap();
+    let recovered = format2_support::snapshot(&shared.read()).unwrap();
     for id in ids {
         assert_eq!(
             recovered.read().edge_record(id),
@@ -371,8 +341,9 @@ fn snapshot_reconstruction_preserves_both_loop_kinds_and_parallel_edges() {
     assert_eq!(recovered.read().undirected_edges(b).unwrap().len(), 2);
     drop(recovered);
     drop(shared);
-    std::fs::remove_dir_all(dir).unwrap();
 }
+
+mod format2_support;
 
 #[test]
 fn property_index_updates_removal_and_abort_preserve_undirected_identity() {

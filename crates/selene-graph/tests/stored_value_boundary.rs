@@ -4,26 +4,12 @@ use selene_core::{
     GraphId, LabelDiff, LabelSet, NodeId, PropertyDiff, PropertyMap, Value, db_string,
 };
 use selene_graph::SharedGraph;
+mod format2_support;
 
 #[test]
-fn forged_schema_defaults_fail_before_wal_or_publication() {
+fn forged_schema_defaults_fail_before_memory_publication() {
     use selene_core::{NodeTypeDef, PredefinedValueType, PropertyDef, SchemaChange, ValueType};
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "selene-stored-boundary-{}-{stamp}",
-        std::process::id()
-    ));
-    std::fs::create_dir(&dir).unwrap();
-    let wal = dir.join("wal.log");
-    let graph = SharedGraph::builder(GraphId::new(1))
-        .with_wal(&wal, selene_persist::WalConfig::default())
-        .unwrap()
-        .build()
-        .unwrap();
-    let length = std::fs::metadata(&wal).unwrap().len();
+    let graph = SharedGraph::new(GraphId::new(1));
     let before = graph.read();
     let mut tx = graph.begin_write();
     tx.mutator()
@@ -48,25 +34,23 @@ fn forged_schema_defaults_fail_before_wal_or_publication() {
     assert_eq!(error.gqlstatus(), "22G03");
     assert_eq!(graph.read().node_count(), 0);
     assert_eq!(graph.read().meta.generation, before.meta.generation);
-    assert_eq!(std::fs::metadata(&wal).unwrap().len(), length);
-    drop(graph);
-    std::fs::remove_dir_all(dir).unwrap();
+    assert!(
+        format2_support::snapshot(&graph.read())
+            .unwrap()
+            .read()
+            .node_count()
+            == 0
+    );
 }
 
 #[test]
 fn direct_recovery_rejects_invalid_change_before_any_field_is_applied() {
     use selene_core::Change;
-    use selene_graph::{CoreProvider, IndexProvider};
-    let provider = CoreProvider::new_for_recovery();
-    IndexProvider::on_change(
-        provider.as_ref(),
-        &Change::NodeCreated {
-            id: NodeId::new(1),
-            labels: LabelSet::new(),
-            properties: PropertyMap::new(),
-        },
-    )
-    .unwrap();
+    let initial = Change::NodeCreated {
+        id: NodeId::new(1),
+        labels: LabelSet::new(),
+        properties: PropertyMap::new(),
+    };
     let change = Change::NodeUpdated {
         id: NodeId::new(1),
         labels_diff: LabelDiff::new([db_string("bad_label").unwrap()], []).unwrap(),
@@ -80,19 +64,23 @@ fn direct_recovery_rejects_invalid_change_before_any_field_is_applied() {
             removed: Default::default(),
         },
     };
-    assert!(IndexProvider::on_change(provider.as_ref(), &change).is_err());
+    assert!(format2_support::replay(GraphId::new(1), vec![initial.clone(), change]).is_err());
     assert!(
-        IndexProvider::on_change(
-            provider.as_ref(),
-            &Change::NodeCreated {
-                id: NodeId::new(2),
-                labels: LabelSet::new(),
-                properties: forged_map(),
-            }
+        format2_support::replay(
+            GraphId::new(1),
+            vec![
+                initial.clone(),
+                Change::NodeCreated {
+                    id: NodeId::new(2),
+                    labels: LabelSet::new(),
+                    properties: forged_map(),
+                }
+            ]
         )
         .is_err()
     );
-    let graph = provider.finish_recovery(GraphId::new(1), None).unwrap();
+    let runtime = format2_support::replay(GraphId::new(1), vec![initial]).unwrap();
+    let graph = runtime.read();
     assert_eq!(graph.node_count(), 1);
     assert!(graph.node_labels(NodeId::new(1)).unwrap().is_empty());
     assert!(graph.node_properties(NodeId::new(1)).unwrap().is_empty());

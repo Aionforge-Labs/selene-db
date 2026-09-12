@@ -9,7 +9,7 @@ use selene_gql::{
 };
 use selene_graph::{
     CANDIDATE_STATE_PROVIDER_TAG, CandidateStateSpec, IndexProvider,
-    MaintainedCandidateStateProvider, ProviderError, ProviderTag, SharedGraph, SubTag,
+    MaintainedCandidateStateProvider, ProviderError, ProviderTag, SharedGraph,
     VectorCandidateStateInfo,
 };
 
@@ -287,14 +287,6 @@ impl IndexProvider for StaleCandidateProvider {
         ProviderTag(CANDIDATE_STATE_PROVIDER_TAG)
     }
 
-    fn read_section(&self, _sub_tag: SubTag, _bytes: &[u8]) -> Result<(), ProviderError> {
-        Ok(())
-    }
-
-    fn write_section(&self, _sub_tag: SubTag) -> Result<Vec<u8>, ProviderError> {
-        Ok(Vec::new())
-    }
-
     fn on_change(&self, _change: &Change) -> Result<(), ProviderError> {
         Ok(())
     }
@@ -316,9 +308,5 @@ impl IndexProvider for StaleCandidateProvider {
         Err(ProviderError::Inconsistent {
             reason: "stale candidate state".to_owned(),
         })
-    }
-
-    fn declared_sub_tags(&self) -> &[SubTag] {
-        &[]
     }
 }

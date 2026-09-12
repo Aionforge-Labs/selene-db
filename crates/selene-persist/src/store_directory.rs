@@ -4,7 +4,6 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use crate::{DirectoryError, PersistError, PersistResult};
 
@@ -51,7 +50,6 @@ pub(crate) struct EntryMetadata {
     pub regular: bool,
     pub single_link: bool,
     pub len: u64,
-    pub modified: Option<SystemTime>,
 }
 
 impl StoreDirectory {
@@ -193,13 +191,6 @@ impl StoreDirectory {
         native::rename(&self.file, from, to)
     }
 
-    pub(crate) fn hard_link(&self, from: &Path, to: &Path) -> PersistResult<()> {
-        validate_mutable_name(from)?;
-        validate_mutable_name(to)?;
-        self.regular_metadata(from)?;
-        native::hard_link(&self.file, from, to)
-    }
-
     pub(crate) fn publish_new(&self, from: &Path, to: &Path) -> PersistResult<()> {
         validate_mutable_name(from)?;
         validate_mutable_name(to)?;
@@ -239,26 +230,6 @@ impl StoreDirectory {
     pub(crate) fn locate(&self, name: &Path) -> PathBuf {
         self.locator.join(name)
     }
-
-    pub(crate) fn require_legacy(&self) -> PersistResult<()> {
-        for name in self.entries()? {
-            let text = name.to_string_lossy();
-            if name == "CURRENT" || text.starts_with("MANIFEST-") || text.starts_with(".control.") {
-                return Err(DirectoryError::ControlDirectory.into());
-            }
-        }
-        Ok(())
-    }
-
-    /// Anchor the parent of a file path and validate its final managed name.
-    pub(crate) fn for_file(path: &Path) -> PersistResult<(Self, PathBuf)> {
-        let name = path
-            .file_name()
-            .ok_or_else(|| DirectoryError::InvalidName(path.into()))?;
-        validate_name(Path::new(name))?;
-        let dir = Self::open(path.parent().unwrap_or_else(|| Path::new(".")))?;
-        Ok((dir, PathBuf::from(name)))
-    }
 }
 
 /// Owned single-writer authority shared only by explicitly composed components.
@@ -276,6 +247,7 @@ impl StoreWriter {
     /// Acquire an existing permanent writer entry without creating any artifact.
     /// Used by non-destructive format-2 open; a missing lock is an error, not repair.
     pub fn acquire_existing(directory: &StoreDirectory) -> PersistResult<Self> {
+        crate::legacy_probe::reject(directory)?;
         Self::lock_file(
             directory,
             directory.open_write(Path::new(STORE_LOCK_FILE_NAME))?,
@@ -286,6 +258,7 @@ impl StoreWriter {
     /// # Errors
     /// Returns [`PersistError::WriterLockHeld`] on contention, or native errors.
     pub fn acquire(directory: &StoreDirectory) -> PersistResult<Self> {
+        crate::legacy_probe::reject(directory)?;
         let file = directory.open_or_create(Path::new(STORE_LOCK_FILE_NAME))?;
         Self::lock_file(directory, file)
     }
@@ -316,19 +289,6 @@ pub(crate) fn validate_name(name: &Path) -> PersistResult<()> {
         || bytes == b".."
         || bytes.iter().any(|b| matches!(b, b'/' | b'\\' | b':' | 0))
         || name.file_name() != Some(name.as_os_str())
-    {
-        return Err(DirectoryError::InvalidName(name.into()).into());
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_data_name(name: &Path) -> PersistResult<()> {
-    validate_mutable_name(name)?;
-    let text = name.as_os_str().to_string_lossy();
-    if text == "CURRENT"
-        || text == crate::MANIFEST_FILE_NAME
-        || text.starts_with("MANIFEST-")
-        || text.starts_with(".control.")
     {
         return Err(DirectoryError::InvalidName(name.into()).into());
     }

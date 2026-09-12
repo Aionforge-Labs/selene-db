@@ -42,7 +42,7 @@ impl EdgeDirectionality {
 /// This is a semantic input to storage, not a commitment to an archive or WAL
 /// byte layout. F02 owns the persistence encoding. Undirected endpoints are
 /// canonically ordered by ID; neither is a semantic source or destination.
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EdgeRecordV1 {
     /// Stable identity, shared by every incidence of this edge.
     pub id: EdgeId,
