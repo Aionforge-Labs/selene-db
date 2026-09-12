@@ -9,14 +9,16 @@
 //! propagation, and statement output shaping. See Spec 08 §5-§8 and Spec 14
 //! §3-§8.
 
-/// Pull-based batch execution substrate (F04-PR01, transition-only).
+/// Pull-based batch execution substrate (F04-PR01, production since F04-PR02).
 ///
-/// Test-gated like the earliest transition seams: the old row executor stays
-/// the production path until F04-PR09, so nothing outside tests can consume
-/// this yet without violating the bridge boundary. F04-PR02 owns production
-/// wiring and widens this gate (to `test-harness`, then ungated) when the
-/// first batch operator serves live queries.
-#[cfg(test)]
+/// The old row executor remains the production path for operators without a
+/// batch family yet; primitive families (scan seed, one-hop expansion,
+/// filter, project, page) execute through these operators when the batch
+/// query driver accepts the plan (see [`batch::query`]). Nothing here is
+/// re-exported from the crate root, batch positions are crate-private
+/// offsets, and results re-enter the stable [`BindingTable`] API through
+/// batch materialization before any public surface observes them. The final
+/// row executor retires at F04-PR09.
 pub(crate) mod batch;
 mod binding_table;
 mod binding_table_registry;

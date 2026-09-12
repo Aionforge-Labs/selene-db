@@ -30,6 +30,10 @@ pub(crate) struct MemoryBudget {
 
 impl MemoryBudget {
     /// Build a budget capped at `limit_bytes` estimated bytes.
+    ///
+    /// Test seam: production executions currently run uncapped while budget
+    /// wiring from statement limits is follow-up work.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn new(limit_bytes: usize) -> Self {
         Self {
@@ -84,18 +88,27 @@ impl MemoryBudget {
     }
 
     /// Return currently reserved estimated bytes.
+    ///
+    /// Test seam for budget-accounting assertions.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn used_bytes(self) -> usize {
         self.used_bytes
     }
 
     /// Return the high-water mark of reserved estimated bytes.
+    ///
+    /// Test seam for the performance probe.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn peak_bytes(self) -> usize {
         self.peak_bytes
     }
 
     /// Return the number of successful reservations so far.
+    ///
+    /// Test seam for the performance probe.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn reserve_events(self) -> u64 {
         self.reserve_events
@@ -162,6 +175,7 @@ impl<'a> BatchCancel<'a> {
 
     /// Build a checkpoint that never cancels. Tests use this for the
     /// cancellation-free path; production callers pass real limits.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn disabled() -> Self {
         Self {

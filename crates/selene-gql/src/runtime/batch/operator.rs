@@ -14,6 +14,7 @@
 //! cancellation and error, releasing the pinned snapshot and buffer claims.
 //! [`OperatorState`] makes the lifecycle observable to tests.
 
+#[cfg(test)]
 use std::sync::Arc;
 
 use selene_graph::SeleneGraph;
@@ -47,9 +48,16 @@ pub(crate) enum OperatorState {
 /// three. The snapshot is `Option` only to model release: `close` takes it to
 /// `None`, and any later access fails loudly instead of observing a replaced
 /// graph.
+///
+/// Snapshots pin in two ways: [`Self::new`] retains an `Arc` (the F04-PR01
+/// transition form, used by unit tests), while [`Self::borrowed`] pins the
+/// statement snapshot by reference. Production drivers use the borrowed form
+/// so batch operators observe the same working graph the row executor would
+/// (including uncommitted writes in an explicit transaction); both forms
+/// revalidate the pinned generation on every pull.
 #[derive(Debug)]
 pub(crate) struct BatchExecutionContext<'a> {
-    snapshot: Option<Arc<SeleneGraph>>,
+    snapshot: Option<SnapshotPin<'a>>,
     generation: u64,
     cancel: BatchCancel<'a>,
     budget: MemoryBudget,
@@ -57,8 +65,33 @@ pub(crate) struct BatchExecutionContext<'a> {
     completed_rows: usize,
 }
 
+/// How one batch execution pins its graph snapshot.
+#[derive(Debug)]
+enum SnapshotPin<'a> {
+    /// Retained snapshot handle (test form since F04-PR02 production pins
+    /// the statement snapshot by reference).
+    #[cfg(test)]
+    Owned(Arc<SeleneGraph>),
+    /// Statement snapshot borrowed for the execution (production form).
+    Borrowed(&'a SeleneGraph),
+}
+
+impl SnapshotPin<'_> {
+    fn as_graph(&self) -> &SeleneGraph {
+        match self {
+            #[cfg(test)]
+            Self::Owned(snapshot) => snapshot,
+            Self::Borrowed(snapshot) => snapshot,
+        }
+    }
+}
+
 impl<'a> BatchExecutionContext<'a> {
     /// Pin `snapshot` for the whole execution and record its generation.
+    ///
+    /// Test form: production pins the statement snapshot by reference
+    /// through [`Self::borrowed`].
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn new(
         snapshot: Arc<SeleneGraph>,
@@ -67,7 +100,29 @@ impl<'a> BatchExecutionContext<'a> {
     ) -> Self {
         let generation = snapshot.meta.generation;
         Self {
-            snapshot: Some(snapshot),
+            snapshot: Some(SnapshotPin::Owned(snapshot)),
+            generation,
+            cancel,
+            budget,
+            completed_batches: 0,
+            completed_rows: 0,
+        }
+    }
+
+    /// Pin `snapshot` by reference for one batch execution.
+    ///
+    /// The caller guarantees the borrow covers the whole execution (the
+    /// statement context outlives its batch driver call). Generation
+    /// revalidation and release behave exactly as in the owned form.
+    #[must_use]
+    pub(crate) fn borrowed(
+        snapshot: &'a SeleneGraph,
+        cancel: BatchCancel<'a>,
+        budget: MemoryBudget,
+    ) -> Self {
+        let generation = snapshot.meta.generation;
+        Self {
+            snapshot: Some(SnapshotPin::Borrowed(snapshot)),
             generation,
             cancel,
             budget,
@@ -82,14 +137,17 @@ impl<'a> BatchExecutionContext<'a> {
     ///
     /// Returns `ImplementationDefined` when the context is already closed.
     pub(crate) fn snapshot(&self) -> Result<&SeleneGraph, ExecutorError> {
-        self.snapshot
-            .as_deref()
-            .ok_or(ExecutorError::ImplementationDefined {
+        self.snapshot.as_ref().map(SnapshotPin::as_graph).ok_or(
+            ExecutorError::ImplementationDefined {
                 detail: "batch execution context is closed",
-            })
+            },
+        )
     }
 
     /// Return the generation pinned at construction.
+    ///
+    /// Test seam for pin assertions.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn generation(&self) -> u64 {
         self.generation
@@ -141,12 +199,6 @@ impl<'a> BatchExecutionContext<'a> {
         &mut self.budget
     }
 
-    /// Borrow the memory budget.
-    #[must_use]
-    pub(crate) const fn budget(&self) -> &MemoryBudget {
-        &self.budget
-    }
-
     /// Record one completed batch for execution telemetry.
     pub(crate) fn finish_batch(&mut self, rows: usize) {
         self.completed_batches += 1;
@@ -154,6 +206,9 @@ impl<'a> BatchExecutionContext<'a> {
     }
 
     /// Return completed batch and row counts.
+    ///
+    /// Test seam for completion assertions.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn completed(&self) -> (u64, usize) {
         (self.completed_batches, self.completed_rows)
@@ -165,6 +220,9 @@ impl<'a> BatchExecutionContext<'a> {
     }
 
     /// Return true after `close` released the snapshot.
+    ///
+    /// Test seam for release assertions.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn is_closed(&self) -> bool {
         self.snapshot.is_none()
@@ -208,14 +266,33 @@ pub(crate) trait PhysicalOperator {
     /// more than once.
     fn close(&mut self, ctx: &mut BatchExecutionContext<'_>);
 
-    /// Return the operator's lifecycle state.
-    fn state(&self) -> OperatorState;
-
     /// Borrow the declared output schema.
     ///
     /// The tracer clones this up front so empty results keep full column
     /// types and order.
     fn output_schema(&self) -> &BindingTableSchema;
+}
+
+impl<P: PhysicalOperator + ?Sized> PhysicalOperator for Box<P> {
+    fn init(&mut self, ctx: &mut BatchExecutionContext<'_>) -> Result<(), ExecutorError> {
+        (**self).init(ctx)
+    }
+
+    fn next_batch(
+        &mut self,
+        ctx: &mut BatchExecutionContext<'_>,
+        buffer: &mut BatchBuffer,
+    ) -> Result<Option<BindingBatch>, ExecutorError> {
+        (**self).next_batch(ctx, buffer)
+    }
+
+    fn close(&mut self, ctx: &mut BatchExecutionContext<'_>) {
+        (**self).close(ctx);
+    }
+
+    fn output_schema(&self) -> &BindingTableSchema {
+        (**self).output_schema()
+    }
 }
 
 #[cfg(test)]

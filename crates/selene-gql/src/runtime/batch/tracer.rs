@@ -1,4 +1,4 @@
-//! Scan-to-result tracer: execute one batch operator end to end.
+//! Operator-to-result tracer: execute one batch operator end to end.
 //!
 //! The tracer pulls an operator to completion and materializes the batches
 //! into a [`BindingTable`], which re-enters the existing stable result API
@@ -9,9 +9,9 @@
 //! Materialize-then-recycle keeps at most one batch live: each consumed batch
 //! returns its storage to the buffer before the next pull. On cancellation or
 //! error the tracer closes the operator and returns `Err` without exposing
-//! the partial table — the half-built rows stay local and are dropped. The
-//! scan operator is read-only over an immutable snapshot, so a failed run
-//! cannot leave a partial mutation behind either.
+//! the partial table — the half-built rows stay local and are dropped. Batch
+//! operators are read-only over the pinned snapshot, so a failed run cannot
+//! leave a partial mutation behind either.
 
 use crate::{
     plan::BindingTableSchema,
@@ -26,7 +26,7 @@ use super::{
 /// Pull `operator` to completion and materialize its batches as row storage.
 ///
 /// The returned table carries the operator's declared schema, so an empty
-/// scan still yields full column types and order. The operator is closed on
+/// result still yields full column types and order. The operator is closed on
 /// every exit path, releasing its snapshot claim.
 ///
 /// # Errors
@@ -34,7 +34,7 @@ use super::{
 /// Returns `init`/`next_batch` failures (cancellation, budget, generation,
 /// or invariant errors) after closing the operator. No partial table is
 /// returned on failure.
-pub(crate) fn trace_scan_to_table<S: PhysicalOperator>(
+pub(crate) fn trace_operator_to_table<S: PhysicalOperator + ?Sized>(
     operator: &mut S,
     ctx: &mut BatchExecutionContext<'_>,
 ) -> Result<BindingTable, ExecutorError> {
@@ -53,7 +53,19 @@ pub(crate) fn trace_scan_to_table<S: PhysicalOperator>(
     Ok(BindingTable::new(schema, rows))
 }
 
-fn pull_all<S: PhysicalOperator>(
+/// Pull `operator` to completion and materialize its batches as row storage.
+///
+/// Scan-named historical entry over [`trace_operator_to_table`]; retained
+/// for transition tests naming the scan path explicitly.
+#[cfg(test)]
+pub(crate) fn trace_scan_to_table<S: PhysicalOperator + ?Sized>(
+    operator: &mut S,
+    ctx: &mut BatchExecutionContext<'_>,
+) -> Result<BindingTable, ExecutorError> {
+    trace_operator_to_table(operator, ctx)
+}
+
+fn pull_all<S: PhysicalOperator + ?Sized>(
     operator: &mut S,
     ctx: &mut BatchExecutionContext<'_>,
     buffer: &mut BatchBuffer,

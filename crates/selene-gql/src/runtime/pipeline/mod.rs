@@ -35,6 +35,11 @@ pub(super) fn row_key(row: &Binding) -> RuntimeEqKey {
     RuntimeEqKey::from_row(row.values().to_vec())
 }
 
+/// Shared limit/offset resolution for the row and batch page operators.
+pub(crate) use limit::resolve_amount;
+/// Shared projection schema derivation for the row and batch projectors.
+pub(crate) use project::schema_for_items;
+
 /// Execute a sequence of pipeline operations against a binding table.
 pub fn execute_pipeline(
     pipeline: &[PipelineOp],
