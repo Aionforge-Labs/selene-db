@@ -18,6 +18,7 @@ pub mod effect;
 pub mod explain;
 pub mod lowering;
 pub mod operator;
+pub mod path;
 
 pub use effect::{
     EffectSummary, LogicalEffect, check_gp18, classify_analyzed, classify_plan, verify_plan_effects,
@@ -27,4 +28,12 @@ pub use lowering::{lower_logical, measure_lowering_cost};
 pub use operator::{
     LogicalCallDescriptor, LogicalMultiplicity, LogicalMutationDescriptor, LogicalOp,
     LogicalOrdering, LogicalPageAmount, LogicalPlan, LogicalScanDescriptor,
+};
+pub use path::{
+    AutomatonStats, BindingExposure, EdgeQuantifierKind, EdgeTest, LoweredPathSet, NodeTest,
+    OrientationAcceptance, PATH_AUTOMATA_CONTRACT_VERSION, PathAutomaton, PathFeatureInventory,
+    PathLoweringLimits, PathModeScope, PathSemanticElement, PathSemanticPattern, PathState,
+    PathStateId, PathTransition, PathTransitionId, SelectorScope, TemporaryBinding, TransitionKind,
+    acceptance_for, explain_automaton, explain_set, is_selective_selector, lower_path_automata,
+    lower_path_automata_with_defaults, measure_path_lowering, supported_path_inventory,
 };

@@ -28,10 +28,16 @@ pub use ir::{
     SubqueryBody, SubqueryKind, SubqueryRegistry, TailBinding, TxOp, TypedIndexBounds, YieldKind,
 };
 pub use logical::{
-    EffectSummary, LogicalCallDescriptor, LogicalEffect, LogicalMultiplicity,
-    LogicalMutationDescriptor, LogicalOp, LogicalOrdering, LogicalPageAmount, LogicalPlan,
-    LogicalScanDescriptor, check_gp18, classify_analyzed, classify_plan,
-    explain as explain_logical, lower_logical, measure_lowering_cost, verify_plan_effects,
+    AutomatonStats, BindingExposure, EdgeQuantifierKind, EdgeTest, EffectSummary,
+    LogicalCallDescriptor, LogicalEffect, LogicalMultiplicity, LogicalMutationDescriptor,
+    LogicalOp, LogicalOrdering, LogicalPageAmount, LogicalPlan, LogicalScanDescriptor,
+    LoweredPathSet, NodeTest, OrientationAcceptance, PATH_AUTOMATA_CONTRACT_VERSION, PathAutomaton,
+    PathFeatureInventory, PathLoweringLimits, PathModeScope, PathSemanticElement,
+    PathSemanticPattern, PathState, PathStateId, PathTransition, PathTransitionId, SelectorScope,
+    TemporaryBinding, TransitionKind, acceptance_for, check_gp18, classify_analyzed, classify_plan,
+    explain as explain_logical, explain_automaton, explain_set, is_selective_selector,
+    lower_logical, lower_path_automata, lower_path_automata_with_defaults, measure_lowering_cost,
+    measure_path_lowering, supported_path_inventory, verify_plan_effects,
 };
 pub use lowering::{plan, plan_with_caps};
 pub use optimize::{
