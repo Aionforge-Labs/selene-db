@@ -15,6 +15,12 @@ use super::{
 impl SeleneGraph {
     /// Approximately rank vector-valued node properties while admitting only
     /// candidates in `candidates`.
+    ///
+    /// HNSW filters its bounded global search beam before final top-k, not
+    /// before traversal. IVF admits allowed rows from only the probed lists.
+    /// This can return fewer than `k` hits even with more eligible live vectors.
+    /// No exact refill is performed. Candidate identity is validated against
+    /// this pinned graph even for an empty allowlist or `k == 0`.
     pub fn approximate_vector_search_nodes_in_candidates_checked(
         &self,
         label: &DbString,
@@ -25,14 +31,14 @@ impl SeleneGraph {
         checker: CancellationChecker<'_>,
     ) -> Result<Vec<VectorNodeSearchHit>, VectorSearchError> {
         checker.check()?;
-        if options.k == 0 || candidates.is_empty() {
-            return Ok(Vec::new());
-        }
         let validated = self.validate_node_candidates(candidates).map_err(|error| {
             VectorSearchError::Graph(GraphError::Inconsistent {
                 reason: format!("allowed candidate set failed validation: {error}"),
             })
         })?;
+        if options.k == 0 || candidates.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut allowed_rows = RoaringBitmap::new();
         for node in validated.as_slice() {
             allowed_rows.insert(node.row().get());

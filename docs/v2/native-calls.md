@@ -36,9 +36,10 @@ and rollback rules; there is no native publication coordinator.
 The remaining row suffix adapter is necessary for unsupported pattern families,
 correlated seeds, and mutation insertion-site state. It shares registration,
 argument and result validation with the batch path, not a separate native registry.
-F04-PR09 owns final row-dispatch deletion. Vector/text/JSON-specific physical
-operators remain F04-PR07/08 work; this change only supplies their common call
-boundary. There is no plugin installation API.
+F04-PR09 owns final row-dispatch deletion. [Vector retrieval](native-vectors.md)
+uses this same typed physical CALL boundary (F04-PR07), rather than introducing a
+second vector dispatcher. Text/JSON reintegration remains F04-PR08 work. There is
+no plugin installation API.
 
 ## Projection identity and lifetime
 

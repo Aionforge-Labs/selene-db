@@ -365,7 +365,8 @@ impl SeleneGraph {
         self.composite_property_index.get(&(label.clone(), key))
     }
 
-    /// Return a clone of the registered vector index.
+    /// Return a clone of the registered vector index, declining incomplete
+    /// accelerators left by a lenient rebuild. Exact search does not need one.
     #[must_use]
     pub fn vector_index_for(
         &self,
@@ -377,6 +378,7 @@ impl SeleneGraph {
         }
         self.vector_index
             .get(&(label.clone(), property.clone()))
+            .filter(|entry| entry.index.is_complete())
             .map(|entry| Arc::clone(&entry.index))
     }
 

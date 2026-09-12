@@ -47,7 +47,9 @@ impl SeleneGraph {
     /// `property` is absent or not a vector, and returns the exact best `k`
     /// matches. Graph structural inconsistencies are reported as
     /// [`GraphError::Inconsistent`]; vector metric errors such as dimension
-    /// mismatch propagate through [`GraphError::Core`].
+    /// mismatch propagate through [`GraphError::Core`]. Derived vector-index
+    /// membership never restricts this scan, even after a failed rebuild. Results
+    /// sort by ascending distance, then stable node ID; `k == 0` returns no hits.
     pub fn exact_vector_search_nodes(
         &self,
         label: &DbString,
@@ -73,7 +75,7 @@ impl SeleneGraph {
     /// [`Self::exact_vector_search_nodes`] while checking `checker` before the
     /// scan and every 1024 candidate rows thereafter. It is the preferred path
     /// for GQL procedure execution because a large exact scan should remain
-    /// cooperatively cancellable until ANN indexes take over this surface.
+    /// cooperatively cancellable. ANN selection is a separate, explicit API.
     pub fn exact_vector_search_nodes_checked(
         &self,
         label: &DbString,
@@ -91,22 +93,8 @@ impl SeleneGraph {
         if label_candidates.is_empty() {
             return Ok(Vec::new());
         }
-        let query_dimension = u32::try_from(query.dimension()).ok();
-        let vector_index = query_dimension.and_then(|dimension| {
-            self.vector_index_for(label, property)
-                .filter(|index| index.dimension() == dimension)
-        });
-        let candidates = if let Some(index) = vector_index.as_ref() {
-            let indexed = self.node_candidates_from_rows(index.rows(), "vector index")?;
-            self.intersect_candidates(&label_candidates, &indexed)
-                .map_err(|error| GraphError::Inconsistent {
-                    reason: format!("fresh vector candidates failed validation: {error}"),
-                })?
-        } else {
-            label_candidates
-        };
         let validated = self
-            .validate_node_candidates(&candidates)
+            .validate_node_candidates(&label_candidates)
             .map_err(|error| GraphError::Inconsistent {
                 reason: format!("fresh vector candidates failed validation: {error}"),
             })?;
@@ -529,6 +517,9 @@ mod ann_expansion_tests;
 #[cfg(test)]
 #[path = "vector_search/batch_tests.rs"]
 mod batch_tests;
+#[cfg(test)]
+#[path = "vector_search/native_boundary_tests.rs"]
+mod native_boundary_tests;
 #[cfg(test)]
 #[path = "vector_search/recall_tests.rs"]
 mod recall_tests;

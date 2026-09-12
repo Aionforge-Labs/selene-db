@@ -5,8 +5,9 @@
 //! `(label, property)` value is a vector with the declared dimension; ANN kinds
 //! also maintain a derived search accelerator. Registration and live
 //! maintenance are strict so search cannot hide dimensionality or metric drift;
-//! recovery rebuild remains lenient for corrupted/legacy state and is checked by
-//! the debug consistency net.
+//! lower-layer recovery rebuild remains lenient for corrupted/legacy state, but
+//! any skipped value makes the accelerator unavailable for query use. Facade
+//! recovery is strict. Exact search always reads primary graph values.
 
 use std::mem::size_of;
 
@@ -184,6 +185,7 @@ impl VectorIndexKind {
 pub struct VectorIndex {
     kind: VectorIndexKind,
     dimension: u32,
+    complete: bool,
     hnsw_config: Option<HnswIndexConfig>,
     ivf_config: Option<IvfIndexConfig>,
     rows: RoaringBitmap,
@@ -249,6 +251,7 @@ impl VectorIndex {
         Ok(Self {
             kind,
             dimension,
+            complete: true,
             hnsw_config,
             ivf_config,
             rows: RoaringBitmap::new(),
@@ -268,6 +271,10 @@ impl VectorIndex {
     #[must_use]
     pub const fn dimension(&self) -> u32 {
         self.dimension
+    }
+
+    pub(crate) const fn is_complete(&self) -> bool {
+        self.complete
     }
 
     /// Return the HNSW construction config, if this is an HNSW index.
