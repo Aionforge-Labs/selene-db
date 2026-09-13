@@ -58,11 +58,9 @@ fn vector_calls_preserve_typed_results_across_input_and_output_windows() {
         for size in [1, 2, 3, 7, 1024] {
             let prefix =
                 execute_with_test_policy(&plan, &ctx, BatchPolicy::new(size, 1 << 20).unwrap())
-                    .unwrap()
                     .expect("vector call must be physically routed");
-            assert_eq!(prefix.suffix_from, plan.pipeline.len());
-            assert_eq!(prefix.table.rows().len(), 9);
-            for chunk in prefix.table.rows().chunks_exact(3) {
+            assert_eq!(prefix.rows().len(), 9);
+            for chunk in prefix.rows().chunks_exact(3) {
                 for (row, distance) in chunk.iter().zip([0.0, 1.0, 1.0]) {
                     assert!(
                         matches!(row.values(), [Value::NodeRef(_), Value::Float(d)] if *d == distance)

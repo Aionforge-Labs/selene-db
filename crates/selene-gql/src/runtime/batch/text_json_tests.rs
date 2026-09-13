@@ -58,11 +58,9 @@ fn text_json_calls_have_no_row_suffix_and_preserve_result_schemas() {
         for size in [1, 2, 3, 7, 1024] {
             let prefix =
                 execute_with_test_policy(&plan, &ctx, BatchPolicy::new(size, 1 << 20).unwrap())
-                    .unwrap()
                     .expect("physical CALL");
-            assert_eq!(prefix.suffix_from, plan.pipeline.len());
-            assert_eq!(prefix.table.rows().len(), expected);
-            for row in prefix.table.rows() {
+            assert_eq!(prefix.rows().len(), expected);
+            for row in prefix.rows() {
                 match row.values() {
                     [Value::NodeRef(_), Value::Json(_)] if json => {}
                     [Value::NodeRef(_), Value::Float(v)]

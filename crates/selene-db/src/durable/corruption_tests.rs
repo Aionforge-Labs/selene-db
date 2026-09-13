@@ -200,7 +200,14 @@ fn public_wal_integrity_lineage_sequence_and_tail_matrix() {
             let (dir, report) = fixture(rotated);
             let mut content = std::fs::read(dir.path().join(&report.wal)).unwrap();
             let first_len = u64::from_le_bytes(content[16..24].try_into().unwrap()) as usize + 200;
-            content[offset] = value;
+            // Store/segment identities and the predecessor digest are random.
+            // Assigning 99 can leave the valid fixture unchanged (1/256); a
+            // bit flip guarantees the intended lineage mismatch instead.
+            if matches!(offset, 40 | 64 | 96) {
+                content[offset] ^= 1;
+            } else {
+                content[offset] = value;
+            }
             repair_fixture_integrity(&mut content[..first_len], 160);
             std::fs::write(dir.path().join(&report.wal), content).unwrap();
             check(dir.path(), StoragePhase::Replay, kind, &report.wal, Some(0));

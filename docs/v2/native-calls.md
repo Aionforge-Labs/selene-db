@@ -33,10 +33,11 @@ existing effect checks and transaction dispatch; the facade still rejects select
 maintenance requests. Procedure failure follows the existing failed-statement
 and rollback rules; there is no native publication coordinator.
 
-The remaining row suffix adapter is necessary for unsupported pattern families,
-correlated seeds, and mutation insertion-site state. It shares registration,
-argument and result validation with the batch path, not a separate native registry.
-F04-PR09 owns final row-dispatch deletion. [Vector retrieval](native-vectors.md)
+F04-PR09 removed row dispatch and prefix/suffix fallback. Correlated seeds use
+physical batches; private per-binding insertion sites survive preserving calls
+between eager mutation barriers. Registration, argument and result validation
+remain one authority. See [batch-only execution](batch-execution.md).
+[Vector retrieval](native-vectors.md)
 uses this same typed physical CALL boundary (F04-PR07), rather than introducing a
 second vector dispatcher. [Text/JSON and maintained candidates](native-text-json.md)
 use the same boundary (F04-PR08). There is no plugin installation API.

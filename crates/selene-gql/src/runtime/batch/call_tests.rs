@@ -94,11 +94,7 @@ fn execute(
         registry,
         graph.index_providers(),
     );
-    execute_with_test_policy(plan, &ctx, BatchPolicy::new(rows, 1 << 20).unwrap()).map(|prefix| {
-        let prefix = prefix.expect("call must be batch routed");
-        assert_eq!(prefix.suffix_from, plan.pipeline.len());
-        prefix.table
-    })
+    execute_with_test_policy(plan, &ctx, BatchPolicy::new(rows, 1 << 20).unwrap())
 }
 
 #[test]
@@ -232,10 +228,8 @@ fn native_batch_ids_after_delete_and_compaction_match_direct_reference_projectio
         &registry,
         graph.index_providers(),
     );
-    let prefix = execute_with_test_policy(&plan, &ctx, BatchPolicy::new(2, 1 << 20).unwrap())
-        .unwrap()
-        .unwrap();
-    assert_eq!(prefix.suffix_from, plan.pipeline.len());
+    let prefix =
+        execute_with_test_policy(&plan, &ctx, BatchPolicy::new(2, 1 << 20).unwrap()).unwrap();
     let projection = selene_algorithms::GraphProjection::build(
         ctx.snapshot(),
         &selene_algorithms::ProjectionConfig {
@@ -254,7 +248,6 @@ fn native_batch_ids_after_delete_and_compaction_match_direct_reference_projectio
         .collect();
     assert_eq!(
         prefix
-            .table
             .rows()
             .iter()
             .map(|r| r.values().to_vec())
@@ -262,7 +255,6 @@ fn native_batch_ids_after_delete_and_compaction_match_direct_reference_projectio
         expected
     );
     let ids: Vec<_> = prefix
-        .table
         .rows()
         .iter()
         .map(|r| match r.values()[0] {

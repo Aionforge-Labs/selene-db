@@ -26,8 +26,7 @@ use super::fixtures::{
     batch_prefix_with_policy, oddball_graph, person_graph, plan_source, production_table, row_table,
 };
 use super::outer::BatchOuterJoin;
-use super::query::PrefixOutcome;
-use super::tree::{build_join_tree, tree_is_batchable};
+use super::tree::build_join_tree;
 use super::unit::BatchRowSource;
 use super::{
     BatchBuffer, BatchExecutionContext, BatchPolicy, MemoryBudget, OperatorState, PhysicalOperator,
@@ -52,7 +51,7 @@ fn policies() -> Vec<BatchPolicy> {
     fixed
 }
 
-/// Execute an already-planned query through the row oracle only.
+/// Execute an already-planned query with the single-row batch policy.
 fn row_execute(graph: &SharedGraph, plan: &ExecutionPlan) -> Result<BindingTable, ExecutorError> {
     let mut ctx = TxContext::read_only(
         graph.read(),
@@ -60,7 +59,7 @@ fn row_execute(graph: &SharedGraph, plan: &ExecutionPlan) -> Result<BindingTable
         &crate::EmptyProcedureRegistry,
         graph.index_providers(),
     );
-    super::fixtures::execute_row_only(plan, &mut ctx)
+    super::fixtures::execute_single_row_batches(plan, &mut ctx)
 }
 
 /// Assert a fully-batch plan agrees with the row oracle under `policy`.
@@ -68,13 +67,7 @@ fn check_full_agree(graph: &SharedGraph, plan: &ExecutionPlan, policy: BatchPoli
     let row = row_execute(graph, plan);
     let batch = batch_prefix_with_policy(graph, plan, policy);
     match (row, batch) {
-        (Ok(expected), Ok(Some(prefix))) => {
-            let PrefixOutcome { table, suffix_from } = prefix;
-            assert_eq!(
-                suffix_from,
-                plan.pipeline.len(),
-                "{what}: driver left a row suffix"
-            );
+        (Ok(expected), Ok(table)) => {
             assert_tables_equivalent(&expected, &table, what);
         }
         (Err(expected), Err(actual)) => assert_eq!(
@@ -83,9 +76,9 @@ fn check_full_agree(graph: &SharedGraph, plan: &ExecutionPlan, policy: BatchPoli
             "{what}: error status diverged (row {expected:?} vs batch {actual:?})"
         ),
         (Ok(_), Err(err)) => panic!("{what}: batch failed where row succeeded: {err:?}"),
-        (Ok(_), Ok(None)) => panic!("{what}: driver declined a covered shape"),
-        (Err(_), Ok(None)) => panic!("{what}: driver declined a failing shape"),
-        (Err(err), Ok(Some(_))) => panic!("{what}: row failed where batch succeeded: {err:?}"),
+        (Err(err), Ok(_)) => {
+            panic!("{what}: single-row policy failed where another policy succeeded: {err:?}")
+        }
     }
 }
 
@@ -260,14 +253,8 @@ fn variable_length_inner_patterns_run_without_a_row_suffix() {
     let graph = person_graph();
     let source = "MATCH (a:Person) FILTER a.age > 20 MATCH (a)-[:KNOWS*1..2]->(b) RETURN a, b";
     let plan = plan_source(source);
-    let prefix = batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
-        .expect("driver probes")
-        .expect("project prefix still runs");
-    assert_eq!(
-        prefix.suffix_from,
-        plan.pipeline.len(),
-        "path match must use batches"
-    );
+    batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
+        .expect("complete physical path match");
     let expected = row_table(&graph, source);
     let actual = production_table(&graph, source);
     assert_tables_equivalent(&expected, &actual, "batch path match composition");
@@ -289,7 +276,6 @@ fn outer_operator_matches_row_tree_directly() {
     else {
         panic!("expected a top-level outer join");
     };
-    assert!(tree_is_batchable(right), "right side is batchable");
     let schema = crate::runtime::pattern::schema_for_pattern(pattern);
     let tx = TxContext::read_only(
         graph.read(),
@@ -303,9 +289,8 @@ fn outer_operator_matches_row_tree_directly() {
         subqueries: &plan.subqueries,
     };
     let policy = BatchPolicy::new(1, 1 << 20).unwrap();
-    let left_op = build_join_tree(left, pattern, schema.clone(), eval, policy, None)
-        .expect("left builds")
-        .expect("left is batchable");
+    let left_op =
+        build_join_tree(left, pattern, schema.clone(), eval, policy, None).expect("left builds");
     let mut outer = BatchOuterJoin::new(
         left_op,
         right,

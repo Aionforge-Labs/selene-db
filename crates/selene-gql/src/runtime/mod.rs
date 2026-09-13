@@ -1,7 +1,7 @@
 //! GQL execution runtime.
 //!
 //! The runtime consumes an optimized `ExecutionPlan` and a transaction context,
-//! walks pattern join trees into binding tables, applies pipeline operators,
+//! assembles physical batch trees and eager transaction barriers,
 //! dispatches procedure calls through tier-checked contexts, and coordinates
 //! statement-level transaction control. It relies on parser, analyzer, and
 //! planner invariants for binding and type structure; this layer owns runtime
@@ -9,16 +9,12 @@
 //! propagation, and statement output shaping. See Spec 08 §5-§8 and Spec 14
 //! §3-§8.
 
-/// Pull-based batch execution substrate (F04-PR01, production since F04-PR02).
+/// The sole production executor: physical batches and eager effect barriers.
 ///
-/// The old row executor remains the production path for operators without a
-/// batch family yet; primitive families (scan seed, one-hop expansion,
-/// filter, project, page) execute through these operators when the batch
-/// query driver accepts the plan (see [`batch::query`]). Nothing here is
-/// re-exported from the crate root, batch positions are crate-private
-/// offsets, and results re-enter the stable [`BindingTable`] API through
-/// batch materialization before any public surface observes them. The final
-/// row executor retires at F04-PR09.
+/// Batch positions are private offsets, never graph identities. Materialized
+/// binding tables remain the result and transaction-barrier representation;
+/// they do not select an alternate execution engine. Scalar expressions remain
+/// in [`evaluator`]. No statement family can decline to a row dispatcher.
 pub(crate) mod batch;
 mod binding_table;
 mod binding_table_registry;
@@ -32,11 +28,9 @@ mod edge_access;
 mod error;
 pub(crate) mod evaluator;
 mod execution_context;
-mod hash_join;
 mod join_domain;
 mod native_algorithms;
 mod outcome;
-mod outer;
 mod parameter_type;
 mod pattern;
 mod pipeline;
@@ -59,11 +53,9 @@ mod session;
 mod snapshot_summary;
 mod statement;
 mod statement_exec;
-mod subplan;
 mod value_compare;
 mod value_key;
 mod value_type_match;
-mod wco;
 
 pub use binding_table::{Binding, BindingTable};
 pub use binding_table_registry::{

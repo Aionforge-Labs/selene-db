@@ -1,4 +1,4 @@
-//! F04-PR03 join differentials: batch families versus the row oracle.
+//! Join policy differentials, hand-derived results and independent relation models.
 //!
 //! Each facade query runs through logical planning and the stable result
 //! boundary on both paths; agreement must hold across the fixed and
@@ -19,8 +19,6 @@ use super::fixtures::{
     production_table, row_table, seed_nodes,
 };
 use super::join::{hash_join_rows, nested_loop_join_rows};
-use super::query::PrefixOutcome;
-use super::tree::tree_is_batchable;
 use super::{BatchPolicy, MemoryBudget, assert_tables_equivalent};
 
 /// Batch sizes for the boundary matrix: single-row pulls, awkward windows,
@@ -47,7 +45,7 @@ fn randomized_policies() -> Vec<BatchPolicy> {
         .collect()
 }
 
-/// Execute an already-planned query through the row oracle only.
+/// Execute an already-planned query with the single-row batch policy.
 fn row_execute(graph: &SharedGraph, plan: &ExecutionPlan) -> Result<BindingTable, ExecutorError> {
     let mut ctx = TxContext::read_only(
         graph.read(),
@@ -55,7 +53,7 @@ fn row_execute(graph: &SharedGraph, plan: &ExecutionPlan) -> Result<BindingTable
         &crate::EmptyProcedureRegistry,
         graph.index_providers(),
     );
-    super::fixtures::execute_row_only(plan, &mut ctx)
+    super::fixtures::execute_single_row_batches(plan, &mut ctx)
 }
 
 /// Assert a fully-batch plan agrees with the row oracle under `policy`.
@@ -67,13 +65,7 @@ fn check_full_agree(graph: &SharedGraph, plan: &ExecutionPlan, policy: BatchPoli
     let row = row_execute(graph, plan);
     let batch = batch_prefix_with_policy(graph, plan, policy);
     match (row, batch) {
-        (Ok(expected), Ok(Some(prefix))) => {
-            let PrefixOutcome { table, suffix_from } = prefix;
-            assert_eq!(
-                suffix_from,
-                plan.pipeline.len(),
-                "{what}: driver left a row suffix"
-            );
+        (Ok(expected), Ok(table)) => {
             assert_tables_equivalent(&expected, &table, what);
         }
         (Err(expected), Err(actual)) => assert_eq!(
@@ -82,9 +74,9 @@ fn check_full_agree(graph: &SharedGraph, plan: &ExecutionPlan, policy: BatchPoli
             "{what}: error status diverged (row {expected:?} vs batch {actual:?})"
         ),
         (Ok(_), Err(err)) => panic!("{what}: batch failed where row succeeded: {err:?}"),
-        (Ok(_), Ok(None)) => panic!("{what}: driver declined a covered shape"),
-        (Err(_), Ok(None)) => panic!("{what}: driver declined a failing shape"),
-        (Err(err), Ok(Some(_))) => panic!("{what}: row failed where batch succeeded: {err:?}"),
+        (Err(err), Ok(_)) => {
+            panic!("{what}: single-row policy failed where another policy succeeded: {err:?}")
+        }
     }
 }
 
@@ -244,7 +236,7 @@ fn many_to_many_fanout_matches_row_counts_at_facade() {
 }
 
 #[test]
-fn driver_accepts_join_shapes_and_declines_the_rest() {
+fn joins_paths_and_disjunction_execute_completely() {
     let graph = person_graph();
     for source in [
         "MATCH (a:Person) MATCH (a)-[:KNOWS]->(b) RETURN a, b",
@@ -253,26 +245,14 @@ fn driver_accepts_join_shapes_and_declines_the_rest() {
         "MATCH (a:Person) FILTER a.age > 20 MATCH (a)-[:KNOWS]->(b) RETURN a, b",
     ] {
         let plan = plan_source(source);
-        let prefix = batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
-            .expect("driver executes")
-            .unwrap_or_else(|| panic!("driver declined join shape: {source}"));
-        assert_eq!(
-            prefix.suffix_from,
-            plan.pipeline.len(),
-            "join shape left a row suffix: {source}"
-        );
+        batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
+            .expect("complete physical join");
     }
     // F05-PR04 routes variable-length paths through the same batch tree.
     let plan = plan_source("MATCH (a)-[:KNOWS*1..2]->(b) RETURN a, b");
-    assert!(
-        batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
-            .expect("driver probes")
-            .is_some(),
-        "variable-length expansion must use batches"
-    );
-    // An optimizer-emitted disjunctive scan declines as well: the union
-    // point stays row-covered in this slice. The tree is built by hand so
-    // the test never depends on optimizer rule-firing shapes.
+    batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy()).expect("physical path");
+    // Repeated disjunctive branches must deduplicate their common anchor,
+    // rather than falling back or multiplying downstream aggregates.
     let mut disjunctive = plan_source("MATCH (n) RETURN n");
     let pattern = disjunctive.pattern_plan.as_mut().expect("pattern");
     let crate::JoinTree::Scan(scan) = pattern.join_tree.clone() else {
@@ -282,27 +262,17 @@ fn driver_accepts_join_shapes_and_declines_the_rest() {
         branches: vec![scan.clone(), scan.clone()],
         scan_anchor: scan,
     };
-    assert!(
-        !tree_is_batchable(&pattern.join_tree),
-        "disjunctive scans are not batchable"
-    );
-    assert!(
-        batch_prefix_with_policy(&graph, &disjunctive, BatchPolicy::default_policy())
-            .expect("driver probes")
-            .is_none(),
-        "disjunctive scans must decline"
-    );
-    // The accepted family reports batchable on real plans.
+    let disjunctive = batch_prefix_with_policy(&graph, &disjunctive, BatchPolicy::default_policy())
+        .expect("physical disjunction");
+    assert_eq!(disjunctive.row_count(), 10);
     for source in [
         "MATCH (n) RETURN n",
         "MATCH (a:Person) MATCH (a)-[:KNOWS]->(b) RETURN a, b",
         "MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b) RETURN a, b",
     ] {
         let plan = plan_source(source);
-        assert!(
-            tree_is_batchable(&plan.pattern_plan.as_ref().expect("pattern").join_tree),
-            "selected shape must be batchable: {source}"
-        );
+        batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
+            .expect("physical pattern");
     }
 }
 

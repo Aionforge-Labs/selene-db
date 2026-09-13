@@ -1,9 +1,9 @@
-//! Row-reference comparison seam for transition differential tests.
+//! Result comparison helpers; these do not implement reference semantics.
 //!
-//! This module is intentionally not a second production semantics: it only
-//! restates batch/tracer output in row terms so tests can assert equivalence
-//! with the existing row executor. All behavioral meaning stays with the row
-//! path until F04-PR09; any divergence is a batch-substrate bug by definition.
+//! The transition comparisons ran before F04-PR09 deleted the row executor.
+//! Batch-shape comparisons now prove partition invariance, not independent
+//! correctness. Independent relation/path/type models and clause-derived
+//! expectations remain able to disagree with the engine.
 
 use selene_core::Value;
 
@@ -56,7 +56,7 @@ pub(crate) fn assert_same_rows(expected: &[Vec<Value>], actual: &[Vec<Value>], w
     }
 }
 
-/// Assert a batch-produced table matches the row-executor table exactly:
+/// Assert two materialized tables match exactly:
 /// declared schema plus every row in order.
 ///
 /// # Panics

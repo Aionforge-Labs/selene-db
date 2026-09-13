@@ -2,14 +2,13 @@
 //!
 //! Split from `tests.rs` to keep both files under the repository file-size
 //! cap. Everything here serves the differential strategy: seed a real graph,
-//! run the row executor as the oracle, and pull batch operators manually with
+//! compare physical batch shapes, and pull batch operators manually with
 //! full physical-shape and budget telemetry.
 //!
-//! The row oracle ([`row_table`]/[`execute_row_only`]) replicates the plan
-//! runner's row logic directly instead of calling it, because the plan runner
-//! is the batch production seam since F04-PR02: routing the oracle through it
-//! would compare the batch path against itself. [`production_table`] goes
-//! through the plan runner on purpose, proving what live queries execute.
+//! The pre-cutover row differentials ran before deletion. Their replacement
+//! here compares single-row batch policy with other physical shapes; that is
+//! partition-invariance evidence, NOT an independent semantic oracle. Independent
+//! expectations live in relation_model and the path/type fixtures.
 
 use std::sync::Arc;
 
@@ -338,10 +337,7 @@ pub(super) fn indexed_person_graph() -> SharedGraph {
     graph
 }
 
-/// Run the row executor for `source`: the differential oracle.
-///
-/// This never touches the batch driver (see [`execute_row_only`]), so
-/// batch-vs-row comparisons stay honest after the production wiring.
+/// Run the single-row batch policy for partition-invariance comparisons.
 pub(super) fn row_table(graph: &SharedGraph, source: &str) -> BindingTable {
     let planned = plan_source(source);
     let mut ctx = TxContext::read_only(
@@ -351,7 +347,7 @@ pub(super) fn row_table(graph: &SharedGraph, source: &str) -> BindingTable {
         graph.index_providers(),
     )
     .with_plan_metadata(&planned.expr_ids, &planned.subqueries);
-    execute_row_only(&planned, &mut ctx).expect("row path executes")
+    execute_single_row_batches(&planned, &mut ctx).expect("single-row batch policy executes")
 }
 
 /// Run `source` through the production plan runner (batch-routed).
@@ -392,16 +388,12 @@ pub(super) fn optimized_plan(source: &str, graph: &SharedGraph) -> crate::Execut
     crate::optimize(planned, &ctx)
 }
 
-/// Execute the batch prefix of an already-planned query with `policy`.
-///
-/// Returns `None` when the driver declines the shape (the test then asserts
-/// the decline was expected). Fully-batch plans yield `suffix_from ==`
-/// pipeline length; anything earlier means a row suffix resumes.
+/// Execute the entire physical query with `policy`; no decline is possible.
 pub(super) fn batch_prefix_with_policy(
     graph: &SharedGraph,
     planned: &ExecutionPlan,
     policy: BatchPolicy,
-) -> Result<Option<super::query::PrefixOutcome>, ExecutorError> {
+) -> Result<BindingTable, ExecutorError> {
     let ctx = TxContext::read_only(
         graph.read(),
         &planned.impl_defined_caps,
@@ -411,41 +403,12 @@ pub(super) fn batch_prefix_with_policy(
     super::query::execute_with_test_policy(planned, &ctx, policy)
 }
 
-/// Execute an already-planned query through the row executor only.
-///
-/// This replicates the plan runner's row logic without its batch seam: the
-/// pattern runs with no pushed-down row limit (final results are identical;
-/// only early termination differs) and the pipeline runs through the row
-/// dispatcher. Any divergence from production routing is a batch bug.
-pub(super) fn execute_row_only(
+/// Execute with single-row physical batches, not a retained row executor.
+pub(super) fn execute_single_row_batches(
     planned: &ExecutionPlan,
     ctx: &mut TxContext<'_, '_>,
 ) -> Result<BindingTable, ExecutorError> {
-    let table = match planned.pattern_plan.as_ref() {
-        Some(pattern_plan) => {
-            let eval_ctx = EvalCtx {
-                tx: ctx,
-                expr_ids: &planned.expr_ids,
-                subqueries: &planned.subqueries,
-            };
-            let schema = super::super::pattern::schema_for_pattern(pattern_plan);
-            super::super::pattern::execute_pattern_with_seed_schema_and_limit(
-                pattern_plan,
-                None,
-                schema,
-                &eval_ctx,
-                None,
-            )?
-        }
-        None => super::super::plan_runner::seed_table(),
-    };
-    super::super::pipeline::execute_pipeline_with_plan(
-        planned.pipeline.as_slice(),
-        table,
-        ctx,
-        &planned.expr_ids,
-        &planned.subqueries,
-    )
+    super::query::execute_with_test_policy(planned, ctx, BatchPolicy::new(1, 1 << 20).unwrap())
 }
 
 /// Manually pulled scan output: materialized rows plus the physical shape

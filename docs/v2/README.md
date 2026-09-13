@@ -62,6 +62,8 @@ repository or issue evidence.
 
 ## Policy and evidence documents
 
+- [Batch-only execution and cutover inventory](batch-execution.md)
+
 - [Catalog-resolved native calls and algorithm batches](native-calls.md)
 - [Native text/JSON and maintained candidate lifecycle](native-text-json.md)
 

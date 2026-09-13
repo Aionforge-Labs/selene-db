@@ -7,7 +7,7 @@ use crate::{
     runtime::{Binding, BindingTable, ExecutorError},
 };
 
-pub(super) fn execute(inner: &ExecutionPlan) -> Result<BindingTable, ExecutorError> {
+pub(crate) fn execute(inner: &ExecutionPlan) -> Result<BindingTable, ExecutorError> {
     let dump = format!("{inner:#?}");
     Ok(BindingTable::new(
         BindingTableSchema {

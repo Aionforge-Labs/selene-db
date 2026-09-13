@@ -1,10 +1,9 @@
-//! F04-PR04 grouping/sorting differentials: batch families versus the row
-//! oracle and the independent relation model.
+//! Grouping/sorting policy differentials and the independent relation model.
 //!
 //! Each facade query runs through logical planning and the stable result
 //! boundary on both paths; agreement must hold across the fixed and
-//! randomized batch-size matrices. Comparing only against the row executor
-//! is insufficient where both engines could share a wrong rewrite, so
+//! randomized batch-size matrices. Batch-policy agreement alone is not
+//! independent semantic evidence, so
 //! grouping partitions, sort orders, and dedup sets are also checked
 //! against the independently written relation model
 //! ([`super::relation_model`], which shares no executor code with either
@@ -23,7 +22,6 @@ use super::fixtures::{
     batch_prefix_with_policy, hub_graph, oddball_graph, optimized_plan, person_graph, plan_source,
     production_table, row_table,
 };
-use super::query::PrefixOutcome;
 use super::relation_model::{
     ModelSortKey, assert_same_multiset, groups_of, model_distinct, model_sort,
 };
@@ -54,7 +52,7 @@ fn randomized_policies() -> Vec<BatchPolicy> {
         .collect()
 }
 
-/// Execute an already-planned query through the row oracle only.
+/// Execute an already-planned query with the single-row batch policy.
 fn row_execute(graph: &SharedGraph, plan: &ExecutionPlan) -> Result<BindingTable, ExecutorError> {
     let mut ctx = TxContext::read_only(
         graph.read(),
@@ -62,7 +60,7 @@ fn row_execute(graph: &SharedGraph, plan: &ExecutionPlan) -> Result<BindingTable
         &crate::EmptyProcedureRegistry,
         graph.index_providers(),
     );
-    super::fixtures::execute_row_only(plan, &mut ctx)
+    super::fixtures::execute_single_row_batches(plan, &mut ctx)
 }
 
 /// Assert a fully-batch plan agrees with the row oracle under `policy`.
@@ -74,13 +72,7 @@ fn check_full_agree(graph: &SharedGraph, plan: &ExecutionPlan, policy: BatchPoli
     let row = row_execute(graph, plan);
     let batch = batch_prefix_with_policy(graph, plan, policy);
     match (row, batch) {
-        (Ok(expected), Ok(Some(prefix))) => {
-            let PrefixOutcome { table, suffix_from } = prefix;
-            assert_eq!(
-                suffix_from,
-                plan.pipeline.len(),
-                "{what}: driver left a row suffix"
-            );
+        (Ok(expected), Ok(table)) => {
             assert_tables_equivalent(&expected, &table, what);
         }
         (Err(expected), Err(actual)) => assert_eq!(
@@ -89,9 +81,9 @@ fn check_full_agree(graph: &SharedGraph, plan: &ExecutionPlan, policy: BatchPoli
             "{what}: error status diverged (row {expected:?} vs batch {actual:?})"
         ),
         (Ok(_), Err(err)) => panic!("{what}: batch failed where row succeeded: {err:?}"),
-        (Ok(_), Ok(None)) => panic!("{what}: driver declined a covered shape"),
-        (Err(_), Ok(None)) => panic!("{what}: driver declined a failing shape"),
-        (Err(err), Ok(Some(_))) => panic!("{what}: row failed where batch succeeded: {err:?}"),
+        (Err(err), Ok(_)) => {
+            panic!("{what}: single-row policy failed where another policy succeeded: {err:?}")
+        }
     }
 }
 
@@ -127,14 +119,8 @@ fn driver_accepts_group_sort_shapes_and_composes_suffixes() {
         "RETURN count(*) AS c",
     ] {
         let plan = plan_source(source);
-        let prefix = batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
-            .expect("driver executes")
-            .unwrap_or_else(|| panic!("driver declined group/sort shape: {source}"));
-        assert_eq!(
-            prefix.suffix_from,
-            plan.pipeline.len(),
-            "group/sort shape left a row suffix: {source}"
-        );
+        batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
+            .expect("complete group/sort execution");
     }
 }
 
@@ -343,9 +329,8 @@ fn null_ordering_matches_oracle_and_independent_model() {
         .map(|index| plain[*index][1].clone())
         .collect::<Vec<_>>();
     let batch = batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
-        .expect("driver executes")
-        .expect("driver accepts ordering");
-    let batch_names = collect_rows(&batch.table)
+        .expect("driver executes ordering");
+    let batch_names = collect_rows(&batch)
         .iter()
         .map(|row| row[1].clone())
         .collect::<Vec<_>>();
@@ -568,13 +553,12 @@ fn zero_row_schema_and_diagnostics_agree() {
         let expected = row_execute(&person_graph(), &plan).expect("row oracle runs");
         assert_eq!(expected.row_count(), 0);
         let batch = batch_prefix_with_policy(&person_graph(), &plan, BatchPolicy::default_policy())
-            .expect("driver executes")
-            .expect("driver accepts empty shapes");
-        assert_eq!(batch.table.row_count(), 0);
-        assert_tables_equivalent(&expected, &batch.table, source);
+            .expect("driver executes empty shapes");
+        assert_eq!(batch.row_count(), 0);
+        assert_tables_equivalent(&expected, &batch, source);
         assert_eq!(
             descriptor_for(&expected),
-            descriptor_for(&batch.table),
+            descriptor_for(&batch),
             "{source}: descriptors agree at zero rows"
         );
     }
@@ -657,14 +641,13 @@ fn group_shape_probe() {
     let row_us = started.elapsed().as_micros();
     assert_eq!(batch.row_count(), rowed.row_count());
     // Peak estimated bytes through the driver with the default policy.
-    let prefix = batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
-        .expect("driver executes")
-        .expect("driver accepts grouping");
+    let table = batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
+        .expect("driver executes grouping");
     println!(
-        "batch-group-sort probe: shape=few-groups rows={} groups={} batch_us={batch_us} row_us={row_us} suffix_from={}",
+        "batch-group-sort probe: shape=few-groups rows={} groups={} batch_us={batch_us} single_row_policy_us={row_us} output_rows={}",
         batch.row_count(),
         batch.row_count(),
-        prefix.suffix_from,
+        table.row_count(),
     );
 }
 

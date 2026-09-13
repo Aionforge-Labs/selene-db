@@ -10,7 +10,10 @@
 //! The limit is applied exactly at this operator's pipeline position and is
 //! never pushed below it: the child runs untruncated, and once `count` rows
 //! are emitted the operator short-circuits (further pulls return end of
-//! input without touching the child). A small `LIMIT` after a
+//! input without touching the child) only for a proven-safe pattern bound.
+//! A pipeline page drains preceding operators even for LIMIT 0: batch size
+//! must not decide whether a preceding expression error is observed.
+//! A small `LIMIT` after a
 //! multiplicity-producing expansion therefore returns the first rows of the
 //! full expansion rather than limiting the seed.
 
@@ -35,6 +38,7 @@ pub(crate) struct BatchPage<'x> {
     skipped: u64,
     emitted: u64,
     state: OperatorState,
+    complete_input: bool,
 }
 
 impl<'x> BatchPage<'x> {
@@ -51,6 +55,20 @@ impl<'x> BatchPage<'x> {
             skipped: 0,
             emitted: 0,
             state: OperatorState::Created,
+            complete_input: false,
+        }
+    }
+
+    /// Pipeline page: consume prior work before returning a successful result.
+    /// Only the separately proved pattern bound may short-circuit its input.
+    pub(crate) fn for_pipeline(
+        child: Box<dyn PhysicalOperator + 'x>,
+        offset: u64,
+        count: u64,
+    ) -> Self {
+        Self {
+            complete_input: true,
+            ..Self::new(child, offset, count)
         }
     }
 
@@ -104,6 +122,13 @@ impl<'x> BatchPage<'x> {
         // pulling the child again. No limit is ever pushed below this
         // operator; the child simply stops being consumed.
         if self.emitted >= self.count {
+            if self.complete_input {
+                while let Some(batch) = self.child.next_batch(ctx, buffer)? {
+                    ctx.budget_mut().release(batch.estimated_bytes());
+                    batch.recycle(buffer);
+                    ctx.check_cancel(span)?;
+                }
+            }
             self.state = OperatorState::Exhausted;
             return Ok(None);
         }
@@ -117,6 +142,7 @@ impl<'x> BatchPage<'x> {
             columns.push((values, nulls));
         }
         let mut taken = 0usize;
+        let mut bindings = Vec::new();
         while (self.emitted + taken as u64) < self.count {
             let Some(child) = self.child.next_batch(ctx, buffer)? else {
                 break;
@@ -129,13 +155,14 @@ impl<'x> BatchPage<'x> {
                 if self.emitted + taken as u64 >= self.count {
                     break;
                 }
-                let row = child.logical_row(index);
+                let row = child.logical_binding(index);
                 for (slot, (column, nulls)) in columns.iter_mut().enumerate() {
                     let value = row.get(slot).cloned().unwrap_or(Value::Null);
                     nulls.push(value == Value::Null);
                     column.push(value);
                 }
                 taken += 1;
+                bindings.push(row);
             }
             ctx.budget_mut().release(child.estimated_bytes());
             child.recycle(buffer);
@@ -163,6 +190,7 @@ impl<'x> BatchPage<'x> {
             .collect::<Result<Vec<_>, _>>()?;
         let batch =
             BindingBatch::from_batch_columns(self.child.output_schema().clone(), batch_columns)
+                .and_then(|batch| batch.with_binding_sites(&bindings))
                 .map_err(|_| ExecutorError::ImplementationDefined {
                     detail: "batch page built a malformed batch",
                 })?;

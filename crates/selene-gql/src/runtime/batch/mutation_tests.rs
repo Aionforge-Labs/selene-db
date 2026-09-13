@@ -183,11 +183,22 @@ fn delete_collects_incident_edges_across_all_input_batches() {
         &mut txn,
         graph.index_providers(),
     );
-    let prefix = super::query::try_execute_prefix(&plan, &ctx)
-        .unwrap()
-        .unwrap();
-    assert_eq!(prefix.table.row_count(), 2);
-    let PipelineOp::Mutation(op) = &plan.pipeline[prefix.suffix_from] else {
+    let pattern = plan.pattern_plan.as_ref().unwrap();
+    let table = super::query::execute_pattern(
+        pattern,
+        crate::runtime::pattern::schema_for_pattern(pattern),
+        None,
+        crate::runtime::EvalCtx {
+            tx: &ctx,
+            expr_ids: &plan.expr_ids,
+            subqueries: &plan.subqueries,
+        },
+        BatchPolicy::new(1, usize::MAX).unwrap(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(table.row_count(), 2);
+    let PipelineOp::Mutation(op) = &plan.pipeline[0] else {
         panic!("mutation")
     };
     PhysicalMutation::new(
@@ -196,7 +207,7 @@ fn delete_collects_incident_edges_across_all_input_batches() {
         &plan.subqueries,
         BatchPolicy::new(1, usize::MAX).unwrap(),
     )
-    .execute(prefix.table, &mut ctx)
+    .execute(table, &mut ctx)
     .unwrap();
     assert_eq!(ctx.snapshot().node_count(), 2);
     assert_eq!(ctx.snapshot().edge_count(), 0);

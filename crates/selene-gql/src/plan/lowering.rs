@@ -1,17 +1,18 @@
-//! Narrow logical-to-row execution adapter (transition-only until F04-PR09).
+//! Physical planning for the single batch executor.
 //!
 //! Semantic → logical lowering is the only analysis route: [`plan_with_caps`]
 //! first lowers through [`crate::plan::logical::lower_logical`], so every
 //! supported family reaches logical planning and unsupported features fail
-//! through the same profile authority with useful spans. This adapter then
-//! transports those fixed decisions into today's row [`ExecutionPlan`].
+//! through the same profile authority with useful spans. Physical lowering
+//! transports those fixed decisions into the optimizer's [`ExecutionPlan`].
 //!
-//! Source is borrowed solely for unchanged syntax payloads required by today's
-//! row plan (label predicates, property values, ordering of arms/blocks).
+//! Source is borrowed solely for unchanged syntax payloads required by physical
+//! operators (label predicates, property values, ordering of arms/blocks).
 //! Resolved identities, types, effects, scopes, procedure metadata, path
 //! automata, and grouping/ordering keys come from the frozen semantic tree
-//! and the logical plan. This adapter never analyzes, never mutates syntax,
-//! and never rederives a semantic decision.
+//! and the logical plan. Physical lowering never analyzes, never mutates syntax,
+//! and never rederives a semantic decision. The optimizer IR is retained, not
+//! translated into a second row plan: runtime assembly consumes it directly.
 
 mod aggregate;
 mod binding_refs;
@@ -64,8 +65,8 @@ pub fn plan(
 /// stamping the caller-supplied implementation-defined caps.
 ///
 /// Single-path entry: semantic → logical lowering runs first, so every
-/// supported family is fixed in logical IR before this row adapter runs.
-/// The adapter then transports those decisions into [`ExecutionPlan`]:
+/// supported family is fixed in logical IR before physical lowering runs.
+/// Physical lowering transports those decisions into [`ExecutionPlan`]:
 /// queries / set-composed / NEXT-chained pipelines walk the read pipeline;
 /// mutations lower from the analyzer's [`MutationWriteSet`]; DDL lowers to a
 /// single [`PipelineOp::Catalog`]; transaction control lowers to a single
@@ -92,7 +93,7 @@ pub fn plan_with_caps(
     // Single-path gate: every statement reaches logical planning first.
     // Unsupported features fail here through the same profile authority with
     // useful spans; supported families fix their identities, types, effects,
-    // scopes, and path automata in logical IR before row lowering runs.
+    // scopes, and path automata in logical IR before physical lowering runs.
     let logical = crate::plan::logical::lower_logical(analyzed, registry)?;
     let paths = PathLowering {
         paths: &logical.paths,
@@ -109,22 +110,22 @@ pub fn plan_with_caps(
     // `max_quantifier`, so a post-lowering stamp here covers every statement kind.
     plan.impl_defined_caps = *caps;
     plan.refresh_pipeline_op_high_water();
-    // Verify that the row plan transports the logical decisions: the
-    // metadata-resolved row effects must agree with both the semantic summary
+    // Verify that the physical plan transports the logical decisions: the
+    // metadata-resolved effects must agree with both the semantic summary
     // and the logical plan. A parser-only check would miss an effectful
     // nested CALL; this check resolves every planned call from registration
     // metadata and enforces the GP18 no-mix policy before the facade can
     // route the plan to execution.
     let semantic = crate::plan::logical::classify_analyzed(analyzed);
-    let row_summary = crate::plan::logical::verify_plan_effects(&semantic, &plan)?;
-    if row_summary.effect != logical.effects.effect
-        || row_summary.has_data_write != logical.effects.has_data_write
-        || row_summary.has_catalog_write != logical.effects.has_catalog_write
-        || row_summary.has_maintenance_write != logical.effects.has_maintenance_write
+    let physical_summary = crate::plan::logical::verify_plan_effects(&semantic, &plan)?;
+    if physical_summary.effect != logical.effects.effect
+        || physical_summary.has_data_write != logical.effects.has_data_write
+        || physical_summary.has_catalog_write != logical.effects.has_catalog_write
+        || physical_summary.has_maintenance_write != logical.effects.has_maintenance_write
     {
         return Err(PlannerError::EffectMismatch {
-            detail: "row plan effects disagree with the logical plan",
-            span: row_summary.origin,
+            detail: "physical plan effects disagree with the logical plan",
+            span: physical_summary.origin,
         });
     }
     Ok(plan)

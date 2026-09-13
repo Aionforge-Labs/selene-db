@@ -2,8 +2,8 @@
 //!
 //! Every descriptor names semantic bindings, expression identities, types, and
 //! source origins without parser syntax nodes, physical row coordinates,
-//! storage positions, or execution policy. The row adapter transports these
-//! decisions into the old runtime; it never rederives them.
+//! storage positions, or execution policy. Physical lowering transports these
+//! decisions into batch operators; it never rederives them.
 
 use crate::{
     NullsPolicy, OrderDirection, SourceSpan,
@@ -120,7 +120,7 @@ pub struct LogicalOrderKey {
 /// The payload carried here is intentionally coarse: the statement kind plus
 /// its source origin and effect. Unchanged DDL payloads (labels, property
 /// definitions, endpoints) stay in source syntax and are transported by the
-/// narrow logical-to-row adapter; no semantic decision is rederived there.
+/// physical lowerer; no semantic decision is rederived there.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LogicalCatalogKind {
     /// Database-catalog command (`CREATE/DROP SCHEMA/GRAPH/GRAPH TYPE`).

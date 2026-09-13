@@ -149,10 +149,6 @@ impl<'x, 'a, 'ctx, 'g, 'plan> BatchMatch<'x, 'a, 'ctx, 'g, 'plan> {
                 since_check = 0;
             }
             since_check += 1;
-            // Batch prefixes never carry mutation insert sites (mutations
-            // always end the prefix), so seeded evaluation starts site-free
-            // exactly as the row path's site-free pattern rows do.
-            debug_assert!(row.insert_sites().is_empty());
             // Seed in input coordinates; the inner evaluation writes into
             // target coordinates with shared columns index-stable.
             let seed = pipeline::seed_row(row, &self.input_schema, &self.target);
@@ -184,7 +180,10 @@ impl<'x, 'a, 'ctx, 'g, 'plan> BatchMatch<'x, 'a, 'ctx, 'g, 'plan> {
                 )
                 .inspect_err(|_| ctx.budget_mut().release(reserved))?;
                 reserved = reserved.saturating_add(bytes);
-                output.push(matched);
+                output.push(Binding::with_insert_sites(
+                    matched.values().iter().cloned(),
+                    row.cloned_insert_sites(),
+                ));
                 kept += 1;
             }
             if kept == 0 && self.optional {
@@ -240,7 +239,7 @@ fn materialize_input(
     while let Some(batch) = child.next_batch(ctx, &mut buffer)? {
         rows.reserve(batch.logical_rows());
         for index in 0..batch.logical_rows() {
-            rows.push(Binding::new(batch.logical_row(index)));
+            rows.push(batch.logical_binding(index));
         }
         ctx.budget_mut().release(batch.estimated_bytes());
         batch.recycle(&mut buffer);
@@ -293,6 +292,7 @@ fn pull_rows(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let batch = BindingBatch::from_batch_columns(schema.clone(), batch_columns)
+        .and_then(|batch| batch.with_binding_sites(&rows[*cursor - take..*cursor]))
         .map_err(|_| ExecutorError::ImplementationDefined { detail: malformed })?;
     ctx.budget_mut()
         .reserve(batch.estimated_bytes())
@@ -600,7 +600,6 @@ impl<'x, 'a, 'ctx, 'g, 'plan> BatchCorrelatedChain<'x, 'a, 'ctx, 'g, 'plan> {
                 since_check = 0;
             }
             since_check += 1;
-            debug_assert!(row.insert_sites().is_empty());
             // One single-row seed table per input row, as the row operator
             // builds it: correlated bindings cannot cross input rows because
             // each block evaluation observes exactly one seed.

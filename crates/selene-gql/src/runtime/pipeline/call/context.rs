@@ -25,7 +25,7 @@ pub(super) fn validate_call_tier(call: &PlannedCall) -> Result<(), ExecutorError
     Ok(())
 }
 
-pub(super) fn build<'borrow, 'ctx, 'g>(
+pub(crate) fn build<'borrow, 'ctx, 'g>(
     call: &PlannedCall,
     ctx: &'borrow mut TxContext<'ctx, 'g>,
 ) -> Result<ProcedureContext<'borrow, 'g>, ExecutorError>

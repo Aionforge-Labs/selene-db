@@ -1,11 +1,9 @@
-//! Pull-based physical batch execution substrate (F04-PR01, production since
-//! F04-PR02).
+//! The sole physical executor (F04-PR09).
 //!
 //! This module implements the physical operator contract and the typed
 //! binding-batch representation. Primitive families (scan seed, one-hop
-//! expansion, filter, project, page) execute through these operators when the
-//! batch query driver ([`query`]) accepts the plan; every other operator
-//! stays with the row executor until its owning F04 slice. Mutation stages
+//! expansion, filter, project, page) and compound queries execute through
+//! [`query`] without decline or fallback. Mutation stages
 //! ([`mutation`]) drain bounded inputs through the borrowed transaction at an
 //! eager barrier; [`catalog`] and [`control`] are single-shot operations over
 //! existing graph/facade services. Batches are an
@@ -40,12 +38,13 @@
 //! - [`page`] — offset/limit across batch boundaries.
 //! - [`unit`] — single-row seed sources.
 //! - [`tracer`] — operator-to-result materialization for tests and drivers.
-//! - [`query`] — batch query driver: plan acceptance and operator assembly.
+//! - [`query`] / [`assembly`] — the single driver and read-segment assembly.
 //! - [`mutation`] — bounded eager writes using one borrowed transaction.
 //! - [`catalog`] / [`control`] — single-shot catalog and session/transaction operations.
-//! - [`reference`] — row-reference comparison helpers (test seam only).
+//! - [`reference`] — result comparison helpers (test-only, not an oracle).
 
 pub(crate) mod aggregate;
+mod assembly;
 pub(crate) mod binding_batch;
 pub(crate) mod budget;
 pub(crate) mod call;
@@ -56,6 +55,8 @@ pub(crate) mod chain;
 pub(crate) mod control;
 pub(crate) mod distinct;
 pub(crate) mod expand;
+mod extend;
+mod extend_kernel;
 pub(crate) mod filter;
 pub(crate) mod join;
 pub(crate) mod mutation;
@@ -72,9 +73,18 @@ pub(crate) mod relation_model;
 pub(crate) mod scan;
 pub(crate) mod set;
 pub(crate) mod sort;
+mod table_call;
 pub(crate) mod tracer;
 pub(crate) mod tree;
+mod tree_source;
 pub(crate) mod unit;
+mod write_call;
+mod write_composition;
+
+#[cfg(test)]
+mod cutover_tests;
+#[cfg(test)]
+mod inventory_tests;
 
 #[cfg(test)]
 mod aggregate_differentials;

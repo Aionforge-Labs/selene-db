@@ -75,7 +75,7 @@ fn pull_all<S: PhysicalOperator + ?Sized>(
         // Rows are cloned out before recycling, so returned storage
         // cannot alias materialized output. At most one batch is live
         // at any point in this loop.
-        rows.extend(batch.logical_rows_vec().into_iter().map(Binding::new));
+        rows.extend((0..batch.logical_rows()).map(|index| batch.logical_binding(index)));
         ctx.budget_mut().release(batch.estimated_bytes());
         batch.recycle(buffer);
     }
