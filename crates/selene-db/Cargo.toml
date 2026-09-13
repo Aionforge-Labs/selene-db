@@ -39,6 +39,10 @@ name = "catalog_lifecycle"
 harness = false
 
 [[bench]]
+name = "facade_read_write"
+harness = false
+
+[[bench]]
 name = "durable_checkpoint"
 harness = false
 
