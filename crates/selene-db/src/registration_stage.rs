@@ -29,6 +29,7 @@ impl DatabaseDraft {
         let mut bound_indexes = self
             .selected_graph()?
             .catalog_bound_indexes()
+            .filter(|descriptor| !matches!(descriptor.payload(), CatalogPayload::Index(index) if matches!(index.configuration, IndexConfiguration::Constraint { .. })))
             .map(|descriptor| {
                 let (CatalogObjectId::Index(id), CatalogPayload::Index(index)) =
                     (descriptor.id(), descriptor.payload())
@@ -129,11 +130,21 @@ pub(crate) fn stage_constraints(
         }) {
             rules.swap_remove(position);
         } else {
+            // Named catalog constraints survive unrelated schema changes. A
+            // dropped/changed target must be explicitly removed with its backing.
+            if graph.validate_constraint_target(&rule).is_ok()
+                && rule.kind != selene_catalog::ConstraintKind::Unique
+            {
+                continue;
+            }
             transaction.remove(id);
+            if let Some(backing) = rule.backing_index {
+                transaction.remove(CatalogObjectId::Index(backing));
+            }
         }
     }
     rules.sort_by(|a, b| (&a.target, &a.declaring_type).cmp(&(&b.target, &b.declaring_type)));
-    for rule in rules {
+    for mut rule in rules {
         let raw = next_id(high_water.constraint, "constraint")?;
         let id = selene_catalog::ConstraintId::new(raw).map_err(Error::from_catalog_invariant)?;
         let name = format!(
@@ -144,6 +155,7 @@ pub(crate) fn stage_constraints(
             rule.target.properties[0].len(),
             rule.target.properties[0]
         );
+        add_constraint_backing(transaction, owner, &name, &mut rule, high_water)?;
         let descriptor = CatalogDescriptor::constraint(
             id,
             CatalogName::delimited(&name).map_err(Error::from_catalog_name)?,
@@ -158,6 +170,46 @@ pub(crate) fn stage_constraints(
             .map_err(Error::from_catalog_invariant)?;
         high_water.constraint = raw;
     }
+    Ok(())
+}
+
+pub(crate) fn add_constraint_backing(
+    transaction: &mut CatalogTransaction,
+    owner: GraphId,
+    name: &str,
+    rule: &mut selene_catalog::ConstraintDeclaration,
+    high_water: &mut crate::database::HighWaterMarks,
+) -> Result<()> {
+    let raw = next_id(high_water.index, "constraint backing")?;
+    let id = IndexId::new(raw).map_err(Error::from_catalog_invariant)?;
+    transaction
+        .insert(
+            CatalogDescriptor::index(
+                id,
+                CatalogName::delimited(format!("constraint-backing:{name}"))
+                    .map_err(Error::from_catalog_name)?,
+                CatalogParent::Graph(owner),
+                transaction.generation(),
+                CreationMetadata::new(transaction.generation(), None),
+                IndexDeclaration {
+                    metadata: DeclarationMetadata::new(DeclarationState::Ready),
+                    target: rule.target.clone(),
+                    configuration: IndexConfiguration::Constraint {
+                        declaring_type: rule.declaring_type.clone(),
+                    },
+                },
+            )
+            .map_err(Error::from_catalog_invariant)?,
+        )
+        .map_err(Error::from_catalog_invariant)?;
+    rule.backing_index = Some(id);
+    rule.metadata
+        .dependencies
+        .push(selene_catalog::DeclarationDependency {
+            id: CatalogObjectId::Index(id),
+            generation: transaction.generation(),
+        });
+    high_water.index = raw;
     Ok(())
 }
 

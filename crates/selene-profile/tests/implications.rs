@@ -314,6 +314,9 @@ fn direct_target_and_surviving_compatibility_order_preserve_m01_pr01() {
     for id in base.iter().copied() {
         if !downgraded.contains(id) && id != "IM_DROP_GRAPH" && id != "GH02" {
             expected_survivors.push(id);
+            if id == "IM_ALTER_EDGE_TYPE" {
+                expected_survivors.push("IM_COMPOSITE_CONSTRAINTS");
+            }
             if id == "GS04" {
                 expected_survivors.extend(PROMOTED.iter().copied());
             }

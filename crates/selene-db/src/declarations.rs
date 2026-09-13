@@ -1,5 +1,7 @@
 //! Facade declaration inspection and graph-owned registration administration.
 
+mod constraints;
+
 use selene_catalog::{
     CatalogDescriptor, CatalogObjectId, CatalogObjectKind, CatalogParent, CatalogPayload,
     CatalogTransaction, CreationMetadata,

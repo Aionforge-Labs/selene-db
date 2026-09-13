@@ -129,6 +129,10 @@ pub(super) fn index_encode(e: &mut Encoder, v: &IndexDeclaration) -> CodecResult
             Ok(())
         }
         IndexConfiguration::Text => e.u8(3),
+        IndexConfiguration::Constraint { declaring_type } => {
+            e.u8(4)?;
+            e.text(declaring_type)
+        }
     }
 }
 pub(super) fn index_decode(d: &mut Decoder<'_, '_>) -> CodecResult<IndexDeclaration> {
@@ -163,6 +167,9 @@ pub(super) fn index_decode(d: &mut Decoder<'_, '_>) -> CodecResult<IndexDeclarat
             },
         },
         3 => IndexConfiguration::Text,
+        4 => IndexConfiguration::Constraint {
+            declaring_type: d.text()?.into(),
+        },
         _ => return Err(E::Invalid("index configuration")),
     };
     Ok(IndexDeclaration {

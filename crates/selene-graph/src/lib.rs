@@ -89,7 +89,9 @@ pub use mutator::Mutator;
 pub use reachability::{ReachabilityDirection, ReachabilityError, ReachableNode};
 pub use selene_core::JsonPathSelector;
 pub use selene_core::{HnswIndexConfig, IvfIndexConfig};
-pub use shared::{GraphAllocationAuthority, SharedGraph, SharedGraphBuilder};
+pub use shared::{
+    GraphAllocationAuthority, SharedGraph, SharedGraphBuilder, ValidatedGraphSnapshot,
+};
 pub use store::{EdgeStore, NodeStore};
 pub use text_index::{TextIndex, TextIndexMemoryUsage, TextIndexStats};
 pub use text_search::{TextSearchError, TextSearchHit};

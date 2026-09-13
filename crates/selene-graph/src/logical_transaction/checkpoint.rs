@@ -205,9 +205,12 @@ impl ReplayState {
                 .map(schema::materialize)
                 .transpose()?
                 .map(Arc::new);
-            let graph = super::graph_apply::logical_graph(None, delta, bound, &mut budget)?;
+            let mut graph = super::graph_apply::logical_graph(None, delta, bound, &mut budget)?;
             graph
                 .validate_logical_catalog(&snapshot, &delta.backing_indexes)
+                .map_err(|_| E::Semantic)?;
+            graph
+                .admit_replay_constraints(None, &snapshot, &delta.changes)
                 .map_err(|_| E::Semantic)?;
             state.graphs.insert(delta.id, Arc::new(graph));
             state
@@ -216,7 +219,8 @@ impl ReplayState {
         }
         state.validate_coverage()?;
         named_types::validate_bindings(
-            &state,
+            &mut state,
+            None,
             &snapshot,
             &snapshot,
             &tx,

@@ -895,6 +895,42 @@ it is not current total-memory accounting.
 
 ### Catalog lifecycle facade
 
+F05-PR05 adds the `composite_constraints` group to the existing
+`catalog_lifecycle` target (no new benchmark target). It measures 100 and 1,000
+nodes at key arities 1 and 2. Activation includes complete backing construction
+and publication; fixture population is outside that measurement. `one_update`
+uses an indexed equality selection. Mixed commit/rollback rows contain one
+delete, one key-reusing create and one update in an explicit transaction. These
+are absolute in-memory facade latencies, not isolated index probes, durable WAL
+latencies, or a baseline speedup claim. Each transaction preserves graph size.
+
+```bash
+scripts/run-benches.sh --bench catalog_lifecycle --compile-only
+scripts/run-benches.sh --profile quick --bench catalog_lifecycle --filter composite_constraints
+```
+
+Graph unit tests independently prove bounded old/new affected-entity work at 10
+and 10,000 nodes and arities 1 and 2; timing is not used as a complexity proof.
+
+Measured on native Apple M5 / 16 GiB, macOS 27.0 (26A5425a), rustc 1.97.1,
+optimized bench profile with thin LTO, one codegen unit and mimalloc. Serialized
+quick runs use 10 samples, 100 ms warmup and a requested 500 ms measurement
+window (Criterion extends slow rows). Reported intervals are confidence
+intervals, not observed min/max. No comparative baseline was measured.
+
+| Nodes / arity | Activation | One key update | Mixed commit | Mixed rollback |
+|---|---:|---:|---:|---:|
+| 100 / 1 | 262.56–269.61 µs | 112.12–117.39 µs | 0.9538–0.9697 ms | 0.9303–0.9847 ms |
+| 100 / 2 | 307.75–325.00 µs | 114.24–119.28 µs | 1.0467–1.0699 ms | 1.0058–1.0529 ms |
+| 1,000 / 1 | 2.6700–2.7430 ms | 142.55–149.11 µs | 6.0816–6.4663 ms | 6.0095–6.3386 ms |
+| 1,000 / 2 | 3.1331–3.2602 ms | 152.58–155.04 µs | 7.0460–7.6101 ms | 6.8274–7.2759 ms |
+
+The mixed rows retain ordinary facade request overhead and mutation planning,
+and commit rows accumulate tombstone churn; they are not an O(delta) claim for
+the whole database. The table records the final run. An earlier interim run had
+wider intervals; Criterion's automatic comparison to it is not a matched
+baseline experiment and is not used for a speedup claim.
+
 F02-PR02 adds `catalog_declaration/{lookup,clone_arc,draft_build}` to
 `catalog_descriptors` and `catalog_declaration/outer_publication` to
 `catalog_lifecycle`. These are additional groups in the existing registered

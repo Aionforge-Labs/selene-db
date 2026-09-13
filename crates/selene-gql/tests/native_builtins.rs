@@ -194,7 +194,7 @@ fn feature_status_reports_generated_capability_records() {
     let evidence_counts = uint_column(&table, "evidence_count");
     let profile_hashes = string_column(&table, "profile_hash");
 
-    assert_eq!(feature_ids.len(), 210);
+    assert_eq!(feature_ids.len(), 211);
     assert_eq!(
         feature_ids,
         capabilities()

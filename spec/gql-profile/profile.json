@@ -2529,6 +2529,7 @@
     "IM_DROP_CASCADE",
     "IM_ALTER_NODE_TYPE",
     "IM_ALTER_EDGE_TYPE",
+    "IM_COMPOSITE_CONSTRAINTS",
     "GG01",
     "GP01",
     "GP02",
@@ -5828,6 +5829,18 @@
       "applicability": "APP-ALWAYS"
     },
     {
+      "id": "IM_COMPOSITE_CONSTRAINTS",
+      "name": "selene-db named Rust catalog UNIQUE/key constraints (not GQL grammar)",
+      "runtime_support": "supported",
+      "unsupported_rationale": "",
+      "runtime_order": 301,
+      "clause_anchors": [],
+      "evidence": [
+        "EVID-COMPOSITE-CONSTRAINTS"
+      ],
+      "applicability": "APP-ALWAYS"
+    },
+    {
       "id": "IM_DROP_CASCADE",
       "name": "selene-db cascading DROP TYPE extension",
       "runtime_support": "supported",
@@ -5958,6 +5971,11 @@
       "id": "EVID-CATALOG-TRANSACTIONS",
       "reference": "crates/selene-gql/src/runtime/statement.rs",
       "description": "Catalog statements execute through the current write transaction path."
+    },
+    {
+      "id": "EVID-COMPOSITE-CONSTRAINTS",
+      "reference": "docs/v2/composite-constraints.md",
+      "description": "Named catalog tuple constraints, null/missing policy, complete backing and incremental final-state enforcement."
     },
     {
       "id": "EVID-CONFORMANCE-G010-POSITIVE",
