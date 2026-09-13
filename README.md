@@ -26,12 +26,14 @@ the [2.0 line and 1.x end-of-life policy](docs/v2/eol-and-version-policy.md).
 The [tracked 2.0 program](docs/v2/README.md) owns finalized decisions,
 milestones, work-item contracts, review roles, issue ownership, and
 evidence-gated conformance wording.
+The [release-readiness note](docs/v2/release-readiness.md) separates the current
+embedding contract, executable regression evidence and unresolved claim gaps.
 
 ## What Is Here
 
 | Area | Current surface |
 |---|---|
-| Facade | In-memory `Database`, catalog-owned schemas and named graphs, explicitly selected stable-ID sessions, structured diagnostics, and immutable result rows with declared descriptors. |
+| Facade | Memory-only builder or fallible format-2 create/open, catalog-owned schemas and named graphs, database-owning sessions, structured diagnostics, and immutable result rows with declared descriptors. |
 | GQL | Parser, analyzer, planner, optimizer, executor, parameter binding, source-string plan cache, feature-status reporting, and ISO-oriented errors. |
 | Graph storage | In-memory property graph with stable external IDs, dense internal rows, immutable reader snapshots, typed property indexes, composite indexes, and one mutation funnel. |
 | Transactions | Serialized writers, snapshot readers, rollback by non-publication, and provider fanout under the write lock. |
@@ -110,9 +112,9 @@ fn main() -> Result<(), selene_db::Error> {
 The facade returns immutable row values, analyzer-declared result descriptors,
 and structured diagnostics. A session retains the selected graph's stable
 identity and revalidates it for each request; drop or replacement makes the old
-session stale. Transaction and `SESSION` controls are rejected until the facade
-owns their state. GQL catalog DDL routes to the same catalog lifecycle service
-used above.
+session stale. Transaction and supported `SESSION` controls use facade-owned
+state. Sessions are `Send` and intentionally not `Sync`; serialize each session's
+requests. GQL catalog DDL routes to the same catalog lifecycle service used above.
 The [Embedding Guide](docs/embedding-guide.md) identifies the stable entry point
 and documents the lower advanced APIs separately.
 
@@ -156,26 +158,13 @@ Native procedures are part of the engine, not loadable extensions. Tests can
 inject alternate `ProcedureRegistry` implementations, but production code uses
 the in-tree `BuiltinProcedureRegistry`.
 
-Closed graph schemas support typed property declarations with durable literal
-defaults. Scalar defaults cover the implemented value families, `JSON` defaults
-canonicalize from JSON string images, `VECTOR` defaults use numeric list
-literals, and `LIST<T>` defaults use recursively validated list literals such as
-`tags :: LIST<STRING> DEFAULT ['agentic', 'memory']` or
-`embeddings :: LIST<VECTOR> DEFAULT [[1, 0], [0, 1]]`. Closed and open
-`RECORD` properties can use record-constructor defaults such as
-`config :: RECORD{host :: STRING, port :: INTEGER} DEFAULT RECORD{host: 'h', port: 1}`,
-with nested field validation for lists, vectors, JSON fields, and nested
-records.
-
-Forward-only edge schema migrations can widen endpoint sets and add optional
-properties without rebuilding the store:
-
-```gql
-ALTER EDGE TYPE :CONCERNS (
-  FROM :Issue, :PullRequest, :Commit TO :Document,
-  commit_sha :: STRING
-)
-```
+The facade's Rust `GraphTypeDefinition` builder supports closed graph schemas,
+typed properties and recursively validated durable defaults, including lists,
+records, JSON and vectors. This does **not** imply complete GG02 GQL graph-type
+syntax: the GQL catalog subset remains property-free named node types. Do not
+use historical `CREATE/ALTER NODE TYPE` or `ALTER EDGE TYPE` recipes as facade
+grammar. See the [schema/reopen contract](docs/v2/checkpoint-reopen.md) and the
+[runnable facade examples](docs/v2/roadmap/examples/facade_release.rs).
 
 ## Native Retrieval
 
@@ -430,14 +419,22 @@ RETURN node_id, score
 
 ## Persistence
 
-Persistence stays below graph semantics:
+Use `Database::create` on an existing empty directory and `Database::open` to
+reopen it. These fallible APIs use format 2 only on native Linux/macOS. Open is
+non-destructive and eagerly reconstructs retained supported indexes; the
+infallible builder remains memory-only. Checkpoint serializes writes. Prune is
+explicit and respects active artifact leases; verification is read-only, not a
+writer-readiness or physical-durability guarantee.
 
-- WAL records changes and provider sections;
-- snapshots store graph and provider state;
-- MANIFEST recovery chooses the live snapshot/WAL set;
-- retention pruning removes old snapshots and WAL archives;
-- vector and text providers rebuild derived in-memory state from primary graph
-  values during recovery and compaction.
+Drop all owning sessions/catalog handles before reopening as another writer.
+Stable graph/element IDs survive ordinary reopen, but process-local references
+must be issued again. An indeterminate result is **not** permission to retry:
+inspect its phase, live visibility and durable outcome, then reconcile. See
+[durable commit](docs/v2/durable-commit.md) and
+[recovery verification](docs/v2/recovery-verification.md).
+
+Format 1 is rejected, not decoded or migrated. Rebuild a fresh database from
+application-owned source data; the project provides no 1.x migration support.
 
 The library crates are allocator-agnostic. Benchmark binaries use mimalloc by
 default so allocator A/B rows can be measured without forcing an embedder-wide

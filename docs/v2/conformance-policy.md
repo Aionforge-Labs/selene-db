@@ -10,8 +10,11 @@ and evidence; they must not reproduce the publication.
 The generated, implication-closed profile reports parser admission, runtime
 status, formal claim state, and evidence as separate fields. It is not
 sufficient evidence for a formal 2.0 conformance claim, and the current profile
-is not release-claimable. Public wording is limited to “GQL-oriented” or
-“implements selected GQL syntax and semantics,” with known gaps.
+is not release-claimable. “GQL-oriented” or “implements selected GQL syntax and
+semantics” remains appropriate. The executable `iso_aligned` gate additionally
+permits exactly “ISO-aligned with disclosed conformance gaps; not a complete
+selected-profile claim.” That wording requires the generated disclosures and
+an unchanged tested revision; it is not a formal minimum-conformance claim.
 
 ## Claim states
 
@@ -22,6 +25,13 @@ is not release-claimable. Public wording is limited to “GQL-oriented” or
 | Selected profile implication-closed and complete; all evidence green | Generated wording that names the exact implementation, profile, features, and property types. |
 
 Manual release prose must not exceed the generated claim.
+
+Minimum conformance requires all non-optional syntax and semantics plus the
+required graph, type and Unicode conditions (§24.2). A selected optional-feature
+subset does not redefine that minimum. Its implication closure adds requirements,
+not exemptions. Passing tests, registry counts and grammar-production counts are
+not a standards progress metric. The [release-readiness note](release-readiness.md)
+keeps functional readiness separate from claim and artifact qualification.
 
 ## M01 authority
 

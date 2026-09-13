@@ -244,6 +244,48 @@ fn claim_decision_enforces_failure_and_selected_profile_closure() {
     assert_eq!(claim_decision(SelectedProfile, true, &blockers), Denied);
 }
 
+#[test]
+fn blockers_identify_unclaimed_features_and_pending_choices_instead_of_progress_counts() {
+    let harness = harness();
+    let blockers = harness.static_blockers();
+    let claims = &blockers
+        .iter()
+        .find(|item| item.code == "feature_claims")
+        .unwrap()
+        .detail;
+    let annex = &blockers
+        .iter()
+        .find(|item| item.code == "annex_b")
+        .unwrap()
+        .detail;
+    for id in TARGET_FEATURE_CLOSURE {
+        let feature = harness
+            .profile
+            .profile()
+            .features
+            .iter()
+            .find(|feature| feature.id.as_str() == id.as_str())
+            .unwrap();
+        if feature.claim_state != ClaimState::Claimed {
+            assert!(claims.contains(&format!("\"{}\"", id.as_str())));
+        }
+    }
+    for record in &harness.profile.profile().implementation_defined_choices {
+        if harness.profile.applicability(record.applicability.as_str()) == Some(true)
+            && matches!(
+                record.decision,
+                ImplementationDefinedDecision::Pending { .. }
+            )
+        {
+            assert!(annex.split([',', ' ']).any(|id| id == record.id.as_str()));
+        }
+    }
+    let report = harness.render_traceability();
+    assert!(report.contains("not the full supported semantic corpus"));
+    assert!(report.contains("all non-optional syntax and semantics"));
+    assert!(report.contains("does not approve a release-scope reduction"));
+}
+
 fn failed_runner(source: &str) -> Result<Actual, String> {
     if source.is_empty() {
         Ok(Actual::parser(ObservedStatus::Success))
@@ -344,7 +386,8 @@ fn fixed_provenance_manifest_is_closed_and_hashes_only_semantics() {
         .unwrap();
     assert_eq!(
         manifest.result_hash,
-        "30365513805e8ab86f457b8f69dee1995d1b48513b07fab322cb67f0f1d9148e"
+        // Runner v2 hashes explicit blocker identities, not feature counts.
+        "60420f4cb22c71e1c144122815821a8263d44740475c43cde888c85acb170bd2"
     );
     let encoded = serde_json::to_vec(&manifest).unwrap();
     assert_eq!(

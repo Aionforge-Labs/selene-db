@@ -62,6 +62,8 @@ repository or issue evidence.
 
 ## Policy and evidence documents
 
+- [Release readiness, embedding contract and claim gaps](release-readiness.md)
+
 - [Analyzed scalar expression and JSON-path indexes](expression-indexes.md)
 
 - [Batch-only execution and cutover inventory](batch-execution.md)

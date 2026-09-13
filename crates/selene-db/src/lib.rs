@@ -9,16 +9,23 @@
 //! closed graph types. A [`Session`] holds copied catalog/profile defaults,
 //! optional embedder-provided authorization, a controlled typed parameter map,
 //! and one active-request slot. [`RequestOutcome`] retains the immutable context
-//! used by each explicit [`Request`]. M03-PR04 provides facade-owned detached
-//! transaction state, serial multi-request visibility, and one outer in-memory
-//! publication for implicit and explicit mutations. An
+//! used by each explicit [`Request`]. Transactions use facade-owned detached
+//! state, serial multi-request visibility, and one outer publication for implicit
+//! and explicit mutations. An in-memory
 //! [`ErrorKind::MutationIndeterminate`] result means the complete mutation is
-//! already visible and must not be retried blindly. F02-PR04 separately reports
+//! already visible and must not be retried blindly. Durable databases separately report
 //! [`DurableCommitOutcome`] for the format-2 commit path. [`Database::create`],
 //! [`Database::open`] and [`Database::checkpoint`] provide fallible durable
 //! lifecycle separately from the infallible memory builder. Checkpoint serializes
 //! writes; open eagerly rebuilds all retained supported indexes or returns an error.
-//! This first slice adds no destructive repair, background readiness or release claim.
+//! Native persistence supports Linux and macOS, reads/writes format 2 only, and
+//! offers no format-1 decoder or migration. There is no destructive repair or
+//! background readiness mode. Stable catalog/element IDs are not process-local
+//! [`DatabaseId`], [`GraphRef`], [`NodeRef`] or [`EdgeRef`] handles: reopen gives
+//! fresh handle provenance, even when stable IDs survive.
+//!
+//! This API does not assert ISO minimum or complete selected-profile conformance.
+//! Native vector, JSON, text and algorithm capabilities remain Selene extensions.
 //!
 //! # Quickstart
 //!

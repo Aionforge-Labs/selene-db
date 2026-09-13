@@ -140,7 +140,8 @@ node types; there is no ignored directed-only flag. Use existing mutation calls
 for supported indexes. This does not expand the property-free GQL catalog
 graph-type subset. See the tested rustdoc and
 [checkpoint/reopen contract](v2/checkpoint-reopen.md) for exact bounds, outcomes,
-compatibility and remaining PR06/07/08 responsibilities. This is not a GA or
+compatibility. See [release readiness](v2/release-readiness.md) and the
+[runnable facade examples](v2/roadmap/examples/facade_release.rs). This is not a GA or
 durable-preview/conformance announcement. Lower legacy persistence recipes below
 are advanced historical APIs and are not the facade's format-2 open path.
 
@@ -169,7 +170,9 @@ selene-graph = { package = "selene-db-graph", version = "2.0.0-alpha.1" }
 selene-gql = { package = "selene-db-gql", version = "2.0.0-alpha.1" }
 ```
 
-Adds the Pest grammar, AST, semantic analyzer, planner, optimizer, and row-at-a-time executor. You can now `parse → analyze → plan → execute_statement`. `CALL` is still off (`EmptyProcedureRegistry` always returns `None`).
+Adds the Pest grammar, AST, semantic analyzer, planner, optimizer, and pull-based
+batch executor. The old row executor is deleted. Prefer the facade's configured
+native registry rather than assembling lower execution contexts.
 
 ### 2.3 With persistence
 
@@ -181,7 +184,9 @@ selene-gql = { package = "selene-db-gql", version = "2.0.0-alpha.1" }
 selene-persist = { package = "selene-db-persist", version = "2.0.0-alpha.1" }
 ```
 
-Adds the WAL writer (`SLDB` magic), the snapshot writer (`SLSN` magic), and the two-step recovery driver. `selene-persist` is graph-blind: it takes `&[Change]` slices and routes them by provider tag.
+The old WAL/snapshot assembly recipes are not a supported 2.0 persistence entry
+point. Use the format-2 facade lifecycle above. Format 1 has no reader or migration
+path in the current engine; `selene-persist` remains a lower, graph-blind boundary.
 
 ### 2.4 With `CALL` (platform built-ins + graph algorithms)
 

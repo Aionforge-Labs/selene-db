@@ -19,7 +19,7 @@ use super::{ConformanceError, Contract, Harness, invalid};
 
 const FORMAT_VERSION: u32 = 1;
 const REPOSITORY: &str = "jscott3201/selene-db";
-const RUNNER_VERSION: &str = "1";
+const RUNNER_VERSION: &str = "2";
 pub(super) const TRACE_PATH: &str = "docs/gql/conformance-evidence.md";
 const TEST_COMMAND: &str = "cargo run --locked -p selene-db-testing --bin selene-conformance -- run --root . --revision <EXPECTED_REVISION> --claim <CLAIM> --output <EXTERNAL_PATH>";
 const ISO_WORDING: &str =
@@ -369,7 +369,10 @@ impl Harness {
                 ClaimState::ClaimedPendingEvidence => "claimed_pending_evidence",
                 ClaimState::Claimed => "claimed",
             };
-            *claims.entry(key).or_insert(0usize) += 1;
+            claims
+                .entry(key)
+                .or_insert_with(Vec::new)
+                .push(feature.id.as_str());
         }
         if claims.keys().any(|key| *key != "claimed") {
             blockers.push(blocker("feature_claims", &format!("{claims:?}")));
@@ -386,11 +389,15 @@ impl Harness {
                         ImplementationDefinedDecision::Pending { .. }
                     )
             })
-            .count();
-        if annex_pending != 0 {
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>();
+        if !annex_pending.is_empty() {
             blockers.push(blocker(
                 "annex_b",
-                &format!("{annex_pending} applicable decisions remain pending"),
+                &format!(
+                    "applicable decisions remain pending: {}",
+                    annex_pending.join(", ")
+                ),
             ));
         }
         if !self.profile.profile().release_claimable {
@@ -452,12 +459,12 @@ impl Harness {
                 ));
             }
         }
-        output.push_str("\n## Current blockers\n\n");
+        output.push_str("\nStatic completion means a compiled contract exists, not that it passed at this revision. Only an executed result manifest records a pass. G010 currently checks parser feature observation; GC04 includes parser rejection and facade catalog execution. These registrations are not the full supported semantic corpus.\n\nThe [canonical feature matrix](conformance/features.md) enumerates direct selections, their Table 10 implication closure, runtime support and evidence references. The [Annex B report](conformance/implementation-defined.md) records choices and pending decisions. Neither feature cardinalities nor passing regression tests establish minimum conformance: that requires all non-optional syntax and semantics and the required graph, type and Unicode conditions.\n\n## Current blockers\n\n");
         for blocker in self.static_blockers() {
             output.push_str(&format!("- `{}`: {}\n", blocker.code, blocker.detail));
         }
         output.push_str(&format!(
-            "\nPermitted wording: “{ISO_WORDING}”\n\nA complete selected-profile claim is blocked. M10-PR05 owns complete inventory, final Annex B decisions, and the release-claim transition. Result manifests are external outputs and are not checked in.\n"
+            "\nPermitted wording: “{ISO_WORDING}”\n\nA complete selected-profile claim is blocked. [F06-PR01](../v2/roadmap/Milestone-F06-PR-01.md) carries forward M10-PR05's inventory, Annex B and claim work. This report does not approve a release-scope reduction or excuse incorrect agreed behavior. See [release readiness](../v2/release-readiness.md). Result manifests are external outputs and are not checked in.\n"
         ));
         output
     }
