@@ -63,11 +63,13 @@ set -euo pipefail
 REGISTRY="
 selene-db-catalog|catalog_descriptors|0
 selene-db|catalog_lifecycle|0
+selene-db|facade_read_write|0
 selene-db|durable_commit|1
 selene-db|durable_checkpoint|0
 selene-db-core|value_clone|0
 selene-db-core|vector_wgpu|0
 selene-db-graph|single_graph|0
+selene-db-graph|read_write_guard|0
 selene-db-graph|mixed_edge_storage|0
 selene-db-graph|logical_wal|0
 selene-db-graph|vector_index_rebuild|0
@@ -114,6 +116,7 @@ selene-db-algorithms|vector_graph_retrieval|0
 SMOKE="
 selene-db-graph|single_graph|node_fetch
 selene-db-graph|single_graph|label_index
+selene-db-graph|read_write_guard|typed_index_point|checked_candidates_x8|mixed_r60w40
 selene-db-graph|bulk_mutation|commit_batch
 selene-db-persist|store_control|anchor
 selene-db-gql|plan_optimize|

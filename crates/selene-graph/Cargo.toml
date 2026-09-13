@@ -57,6 +57,10 @@ name = "single_graph"
 harness = false
 
 [[bench]]
+name = "read_write_guard"
+harness = false
+
+[[bench]]
 name = "mixed_edge_storage"
 harness = false
 

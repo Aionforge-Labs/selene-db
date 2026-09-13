@@ -15,6 +15,267 @@ iai-callgrind instruction-count layer — it needs valgrind, which never runs on
 the macOS dev machine, so it was dropped rather than left as a perpetually-TBD
 placeholder.
 
+## Balanced lookup-map decision and guards — F05-PR07 / #1137
+
+2026-09-12 native measurements over `72c885e2a10730776f8ca26bbb3fff8997ca3248`.
+Apple M5, 10 cores, 16 GiB, macOS 27.0 (26A5425a), rustc 1.97.1
+(`8bab26f4f`, LLVM 22.1.6), aarch64-apple-darwin. Cargo bench profile:
+opt-level 3, thin LTO, one codegen unit, debug information; default mimalloc,
+no new dependencies, features or CPU flags. All benchmark invocations were
+serialized, with compilation before measurement and correctness before A/B.
+
+**Decision: explicitly retain `MapM` (512-entry chunks) for the read-hot label
+and stable-ID maps and retain every candidate identity/liveness check.** Reject
+the tested `MapL` (1,024-entry chunks) inverse-map alternative. This is acceptance
+of the measured existing tradeoff, **not a performance improvement claim** or an
+assertion that these maps are optimal. The experiment changed only the private
+`node_rows`/`edge_rows` fields and their constructors/rebuild initialization;
+adjacency, label maps, typed indexes, candidates, fixtures and public APIs were
+unchanged. The experiment was removed; there is no alternate engine mode or
+compatibility bridge. In particular, no historical imbl rollback was attempted.
+
+### Baseline, attribution and limits
+
+Before any edits, the unchanged `single_graph` rows measured:
+
+| Row | 10k | 50k | 100k |
+|---|---:|---:|---:|
+| `graph_node_fetch` | 6.706 ns | 7.699 ns | 7.435 ns |
+| `graph_label_index_lookup` | 10.870 ns | 10.872 ns | 11.662 ns |
+| `graph_typed_index_point` | 15.151 ns | 15.242 ns | 15.235 ns |
+
+These are fresh costs, not a rerun across #1118. #1137's historical 8–81%
+regressions and write gains remain issue-reported boundary measurements; the
+F04-PR09 batch-executor numbers below are a **different comparison**. The original
+baseline invocation completed these nine rows but hit a 240-second command
+timeout during unrelated fixture setup before the physical-candidate rows; those
+unreached rows are not evidence. The dedicated guard avoids that broad setup.
+The original node-fetch throughput annotation counts fixture size, not fetches;
+use its time, not its Gelem/s display.
+
+Native `sample` profiles (1 ms interval, separate from timing evidence) exposed
+label-tree `get_gen`/`memcmp` and `node_entry_is_current` in checked candidate
+operations. For example, the sampled canonical repeated-candidate path had 3,188
+samples in `node_entry_is_current`. The facade trace had 5,661 parser samples
+under 6,324 `Session::execute` samples in one request path: full requests do not
+reduce to a map probe even with a reused session. These are path-local sample
+counts, not whole-workload CPU percentages. `xctrace` was unavailable because only
+Command Line Tools, not full Xcode, is installed. Cache misses and allocator-exact
+live bytes were not measured; layout/cache attribution remains a hypothesis,
+especially for unaffected typed-index rows. Integer tree descent is inlined into
+the candidate/fetch paths. Increasing its chunk size tests fewer tree levels
+against larger searches/COW copies without changing the validation work.
+
+The host was not exclusively reserved: a later native process check showed other
+OpenCode/desktop activity and load averages 6.32/6.57/7.07. No task-owned build or
+second benchmark overlapped measurement. A/B/A and a longer final A recheck expose
+the residual scheduling/thermal/code-layout uncertainty; do not interpret a
+Criterion p-value as eliminating host drift. No Linux, x86-64, other ARM CPU,
+system-allocator, durable-I/O, allocator-count or cache-counter qualification is
+claimed. Recheck this guard set at RC, particularly after batch/path/index changes.
+
+### Same-input representation experiment
+
+New registered targets: **`read_write_guard`** (graph) and **`facade_read_write`**
+(facade). Full graph scales are 10k/50k/100k. The canonical `BenchFixture` is
+unchanged: three labels, three directed edges per node and typed indexes. The
+additional sparse fixture starts stable node IDs at `2^40`, deletes every fifth
+node and incident edges, and uses 1,024 shared-prefix node/edge labels. Rows remain
+holes until compaction; the regression test also verifies compacted IDs. Quick
+uses 1k canonical nodes and a minimum 2,048 sparse nodes (the benchmark parameter
+is the requested profile scale). This high-ID case must not become an ID-indexed
+dense allocation.
+
+Fetches rotate through live IDs at stride 7,919 and consume property-map lengths;
+label and typed point probes consume returned cardinalities. Checked candidate
+rows bind at most 1,024 IDs once and repeatedly call public checked difference
+with an empty set, including all identity/forward/reverse/liveness validation,
+result allocation/copy and drop. They are not pure validation-only timers and
+never substitute unchecked row iteration. `x8` repeats that entire operation
+eight times. Clone rows include clone and drop. Mixed rows consume 60 reads and
+commit 20 property updates, 10 creates and 10 deletes in one batch. Reconstruction
+and final graph drop are outside timing, identical for A and B; this is not 40
+separate commits. Facade rows use a selected open graph, registered i64 index,
+reused session and full GQL parse/execute/result consumption; update toggles one
+non-indexed value without growing the graph. They are in-memory, not durable.
+
+A = baseline MapM; B = experimental MapL inverse maps only. Each cell is the
+Criterion point estimate with its 95% confidence interval. Delta is the ratio of
+the displayed point estimates, not Criterion's separate bootstrap change estimate.
+Initial runs used 30 samples, 100 ms warmup, 1.5 s measurement (Criterion extended
+slow mixed rows to collect 30 samples).
+
+| 100k graph guard | A (95% CI) | B (95% CI) | B/A |
+|---|---:|---:|---:|
+| canonical fetch | 26.176 [25.701–26.661] ns | 28.929 [26.557–32.294] ns | +10.5% |
+| canonical label | 10.531 [10.372–10.691] ns | 10.654 [10.515–10.812] ns | +1.2% |
+| canonical edge label | 7.635 [7.552–7.739] ns | 8.174 [8.058–8.294] ns | +7.1% |
+| canonical typed point (miss) | 15.910 [15.793–16.038] ns | 15.828 [15.630–16.046] ns | −0.5% |
+| canonical candidates x1 | 8.391 [8.301–8.481] µs | 8.005 [7.926–8.097] µs | −4.6% |
+| canonical candidates x8 | 67.216 [66.565–67.917] µs | 64.347 [63.720–65.054] µs | −4.3% |
+| canonical clone/drop | 25.353 [25.180–25.568] µs | 25.404 [25.195–25.749] µs | +0.2% |
+| canonical mixed | 332.89 [306.99–366.67] µs | 298.38 [285.65–313.71] µs | −10.4% |
+| sparse fetch | 27.287 [26.797–27.794] ns | 25.779 [25.487–26.098] ns | −5.5% |
+| sparse label | 42.420 [41.901–43.093] ns | 44.524 [44.072–45.164] ns | +5.0% |
+| sparse edge label | 41.290 [40.977–41.670] ns | 46.807 [46.365–47.418] ns | +13.4% |
+| sparse typed point | 15.113 [14.950–15.319] ns | 14.514 [14.338–14.712] ns | −4.0% |
+| sparse candidates x1 | 8.025 [7.942–8.114] µs | 8.435 [8.336–8.587] µs | +5.1% |
+| sparse candidates x8 | 63.686 [63.242–64.207] µs | 66.946 [65.833–68.321] µs | +5.1% |
+| sparse clone/drop | 10.787 [10.718–10.892] µs | 10.927 [10.768–11.172] µs | +1.3% |
+| sparse mixed | 259.72 [249.58–269.68] µs | 259.20 [254.79–264.23] µs | −0.2% |
+
+Smaller scales do not establish a consistent improvement either: sparse fetch
+at 10k was 10.285 → 11.754 ns (+14.3%), at 50k 16.772 → 17.767 ns (+5.9%);
+checked x8 at 10k was 53.369 → 55.870 µs (+4.7%), at 50k 58.676 → 63.898 µs
+(+8.9%). Canonical 50k mixed was 186.18 → 226.22 µs (+21.5%). The first canonical
+10k fetch was noisy (17.472 ns, CI 13.856–23.314); returning to A measured 11.520
+ns, so B's 11.582 ns is **not** a demonstrated improvement over that noisy row.
+
+Unchanged `write_txn_lifecycle` cross-check (100-node mutation batches):
+
+| Row | A | B | B/A |
+|---|---:|---:|---:|
+| graph clone 10k | 1.120 µs | 1.108 µs | −1.0% |
+| graph clone 100k | 25.098 µs | 26.500 µs | +5.6% |
+| indexed clone 10k | 252.43 ns | 274.04 ns | +8.6% |
+| indexed clone 100k | 5.345 µs | 5.683 µs | +6.3% |
+| create 10k | 151.76 µs | 134.79 µs | −11.2% |
+| create 100k | 255.86 µs | 218.30 µs | −14.7% |
+| delete 10k | 128.11 µs | 123.77 µs | −3.4% |
+| delete 100k | 159.76 µs | 156.64 µs | −2.0% |
+
+Create is noisy: 100k A CI 230.02–287.87 µs versus B 201.29–239.23 µs.
+100k delete CIs are 157.04–162.58 versus 153.69–159.81 µs. These write rows alone
+would not justify the change, just as write-only acceptance did not price #1137.
+
+### Return-to-A control and facade/memory evidence
+
+All 48 graph guards and four facade guards were rerun after removing B. That
+1.5-second pass encountered severe outliers: canonical 100k clone reached 49.726
+µs (CI 35.477–63.272), sparse fetch 53.736 ns (30.998–82.532), and facade 10k read
+114.50 µs (81.230–159.03). These are disclosed failed stability controls, **not
+engine regressions**. A final 4-second, 30-sample A recheck measured:
+
+| 100k graph guard | canonical A recheck | sparse A recheck |
+|---|---:|---:|
+| fetch | 26.470 [26.200–26.717] ns | 26.102 [25.288–27.268] ns |
+| label | 9.932 [9.861–10.012] ns | 41.263 [40.923–41.692] ns |
+| edge label | 7.547 [7.490–7.617] ns | 42.528 [42.243–42.873] ns |
+| typed point (canonical miss) | 15.217 [15.108–15.329] ns | 15.322 [14.884–16.080] ns |
+| checked x1 | 7.739 [7.698–7.778] µs | 8.140 [8.105–8.175] µs |
+| checked x8 | 60.475 [60.003–60.917] µs | 64.998 [64.658–65.381] µs |
+| clone/drop | 24.211 [24.160–24.284] µs | 10.050 [9.973–10.142] µs |
+| mixed | 309.25 [292.83–328.55] µs | 243.16 [237.64–248.81] µs |
+
+| Complete facade row | A | B | final A (95% CI) |
+|---|---:|---:|---:|
+| indexed read 1k | 81.953 µs | 60.909 µs | 61.415 [61.023–61.850] µs |
+| indexed read 10k | 82.507 µs | 60.842 µs | 62.483 [62.136–62.837] µs |
+| indexed update 1k | 145.03 µs | 113.82 µs | 115.88 [115.36–116.49] µs |
+| indexed update 10k | 186.92 µs | 151.80 µs | 153.35 [152.38–154.62] µs |
+
+The apparent B read gain (about 26%) also appears without B in final A (about
+24–25%); **do not attribute it to the map change**. This control is why the
+experiment is rejected rather than claiming an end-to-end win. The accepted
+MapM tradeoff is a logarithmic read/checked-pairing cost with structurally shared
+mutation snapshots, without evidence for paying a new representation's risks.
+Labels remain MapM despite the measured ~41 ns many-label cost: there is no
+measured whole-path benefit justifying another label-map implementation here.
+
+Memory uses three fresh child processes per scale, native `ps` RSS in bytes:
+empty process, after sparse construction/consistency checking, with 16 shallow
+graph clones, then with 16 retained mutation versions (update/create/delete).
+This includes allocator-retained arenas, construction/rebuild temporaries, code
+and thread costs; it is **not exact live graph heap** or peak RSS. No allocator
+purge or unsafe allocation counter is used. A's empty process was 2,686,976 bytes.
+
+| Sparse scale | A built / clones16 / versions16 | B built / clones16 / versions16 |
+|---|---:|---:|
+| 10k | 108,904,448 / 108,920,832 / 114,933,760 | 109,903,872 / 109,920,256 / 116,146,176 |
+| 50k | 406,700,032 / 406,749,184 / 408,698,880 | 410,255,360 / 410,304,512 / 411,254,784 |
+| 100k | 819,724,288 / 819,724,288 / 822,886,400 | 808,501,248 / 808,501,248 / 811,843,584 |
+
+Displayed representative observations; triplicate ranges differed by at most
+16,384 bytes in the initial A/B runs. Built RSS B/A is +0.9%, +0.9%, −1.4%:
+not a consistent memory saving. Returning to A reproduced the listed values
+(one intermediate 100k process differed by 32,768 bytes). A zero clone RSS delta
+does not mean allocation-free cloning: spare resident allocator pages can absorb
+the clone. The large built RSS includes the many-label fixture's construction
+and consistency re-derivation and must not be marketed as bytes per stored node.
+
+### Typed-hit correction and final guard qualification
+
+Final inspection caught that the new canonical typed probe initially used age
+18, below the canonical fixture's minimum age 20. The canonical typed rows above
+are therefore **misses**, not hits. Sparse probes and the unchanged original
+`single_graph` baseline were hits. The delivered guard uses age 20 and asserts a
+positive cardinality outside timing for both shapes. Corrected hit rows received
+their own same-input A/B/A comparison (`f05pr07-hit-mapm`, 30 samples, 1.5 seconds):
+
+| Hit row | A (95% CI), ns | B (95% CI), ns | B/A | restored A (95% CI), ns |
+|---|---:|---:|---:|---:|
+| canonical 10k | 14.804 [14.634–14.992] | 15.992 [15.832–16.157] | +8.0% | 17.152 [16.817–17.651] |
+| canonical 50k | 15.171 [14.995–15.360] | 16.217 [15.993–16.494] | +6.9% | 18.042 [17.694–18.515] |
+| canonical 100k | 14.604 [14.560–14.660] | 16.593 [16.394–16.802] | +13.6% | 17.037 [16.784–17.337] |
+| sparse 10k | 13.477 [13.399–13.551] | 14.688 [14.542–14.847] | +9.0% | 16.308 [15.513–17.358] |
+| sparse 50k | 14.237 [14.167–14.330] | 14.899 [14.737–15.101] | +4.6% | 16.620 [16.489–16.764] |
+| sparse 100k | 14.019 [13.934–14.105] | 15.345 [15.183–15.527] | +9.5% | 16.001 [15.770–16.258] |
+
+The A control again drifts, so this is not a causal typed-index regression claim.
+It supplies no evidence for accepting B. The complete delivered quick guard also
+ran successfully after restoring MapM (16 rows; 10 samples, 500 ms), including
+the smoke selection's six typed/candidate/mixed rows and all setup assertions.
+The old miss baselines must not be used to compare the corrected hit workload.
+
+### Reproduction and future regression contract
+
+Use both new targets for storage-layout acceptance, never writes alone. Smoke now
+also runs typed point, repeated checked-candidate and mixed guards alongside its
+existing node-fetch/label and mutation rows. No numeric CI speed threshold is
+invented. Keep full native A/B comparisons and RC rechecks as review evidence.
+
+```sh
+# Untouched current-engine cost reproduction (nine read rows completed).
+scripts/run-benches.sh --profile full --bench single_graph --filter 'graph_(node_fetch|typed_index_point|label_index_lookup|physical_candidate_set)' --save-baseline f05pr07-original
+# Run once on A, then --baseline f05pr07-original on the candidate.
+scripts/run-benches.sh --profile full --bench write_txn_lifecycle --filter '(graph_clone/(10000|100000)$|((create|delete)_only/n(10000|100000)/100$))' --save-baseline f05pr07-original
+# A, then B, then restored A with identical fixtures and command settings.
+scripts/run-benches.sh --profile full --bench read_write_guard --bench facade_read_write --save-baseline f05pr07-mapm
+scripts/run-benches.sh --profile full --bench read_write_guard --bench facade_read_write --baseline f05pr07-mapm
+# Longer final A stability controls, after the full A/B/A set.
+scripts/run-benches.sh --profile full --bench read_write_guard --filter '/100000$' --sample-size 30 --measurement-time 4 --baseline f05pr07-mapm
+scripts/run-benches.sh --profile full --bench facade_read_write --sample-size 30 --measurement-time 4 --baseline f05pr07-mapm
+# Corrected hit workload: A save, then B and restored A compare.
+scripts/run-benches.sh --profile full --bench read_write_guard --filter 'typed_index_point' --save-baseline f05pr07-hit-mapm
+scripts/run-benches.sh --profile full --bench read_write_guard --filter 'typed_index_point' --baseline f05pr07-hit-mapm
+scripts/run-benches.sh --profile quick --bench read_write_guard --save-baseline f05pr07-final-quick
+```
+
+Profiling used the same wrapper with graph filter
+`(node_fetch|label_lookup|checked_candidates_x8|mixed_r60w40)/100000$`, measurement
+time 5 seconds, and facade filter `/10000$`, measurement time 8 seconds, both saved
+as `f05pr07-profile-only`. Attach `sample <bench-process> 65 1 -wait -file <path>`
+(20 seconds for facade) separately; profiled timing is excluded from A/B tables.
+Criterion artifacts live under ignored `target/criterion`; the two native sample
+files are task-owned temporary evidence (`f05pr07-72c-{graph,facade}.sample`).
+
+#1137 closure evidence is the explicit MapM decision, same-input read **and**
+write/mixed/clone/RSS experiment with rejection and A controls, and retained
+consumed read guards. Existing candidate/mutation/recovery fixtures were not
+edited: 791 baseline graph tests passed, 1,092 graph+facade tests passed with B
+(two ignored facade tests), and 792 graph tests passed after removing B. The new
+sparse regression checks indexed values, repeated checked algebra, retained
+snapshot isolation, stale-generation rejection, deletion and compaction. No
+speedup, removal of the historical regression, or universal map winner is claimed.
+
+Full local validation also passed: 4,842 workspace nextest tests (five ignored),
+33 doctests, fmt, workspace check/clippy/docs, generated-profile freshness and
+repository policy/benchmark-runner checks. The prescribed advisory cache failed
+online initialization with the pre-existing non-empty-directory error; offline
+audit of that cache and a fresh online temporary-cache audit both passed (1,243
+advisories, 292 dependencies). No parser/decoder changes remain, so no new fuzz
+campaign was run.
+
 ## Batch-only cutover — F04-PR09
 
 2026-09-12, working tree over `97facacb9c94a678d36e185fb8a37f5fb9483327`,
