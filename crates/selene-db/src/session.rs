@@ -31,7 +31,7 @@ mod transaction;
 /// require_sync::<selene_db::Session>();
 /// ```
 ///
-/// Transaction controls use facade-owned detached state and the single Part 1
+/// Transaction controls use facade-owned detached state and the single
 /// publication authority. Selected `SESSION SET`/`RESET` controls persist in
 /// facade state, while `SESSION CLOSE` releases transaction state and rejects
 /// future requests. Relative graph and graph-type references resolve against
@@ -96,9 +96,10 @@ impl Session {
 
     /// Parse, plan, and execute one GQL statement.
     ///
-    /// This compatibility entry point executes a [`Request`] with no
-    /// request-scoped bindings and converts its [`RequestOutcome`] back to the
-    /// existing `Result` shape. Session bindings still seed the request.
+    /// This convenience entry point executes a [`Request`] with no request-scoped
+    /// bindings and converts its [`RequestOutcome`] to `Result`. Session bindings
+    /// still seed the request. Use [`Self::execute_request`] to retain the request
+    /// context and complete diagnostic bundle on both success and failure.
     ///
     /// # Errors
     ///

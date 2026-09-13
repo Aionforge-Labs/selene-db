@@ -48,12 +48,17 @@ profile-generated output is stale.
 `selene_profile::load_conformance` validates each declared closure count and
 hash against the canonical profile, plus profile and rule hash bindings, IDs,
 references, owners, expected dimensions, and dispositions. The checked-in seed
-currently pins 144 features; profile growth does not require a validator-code
-change. Semantic array reordering does not change canonical bytes or hashes.
+pins its exact feature identities; profile growth does not require a validator-code
+change. See the generated feature matrix for direct selections and implication
+closure. Cardinality is an integrity check, not conformance progress. Semantic
+array reordering does not change canonical bytes or hashes.
 
-The three executable seed records have explicit compiled registrations and
+The executable seed records have explicit compiled registrations and
 complete static dispositions. The inventory marker remains pending under
-M10-PR05, which owns complete inventory and the final claim transition.
+M10-PR05, carried forward by F06-PR01 for inventory and the final claim transition.
+Static disposition is not a test result: G010 observes parsing, while GC04
+includes parser rejection and facade catalog execution. The full semantic
+regression suite is separate from this still-incomplete rule inventory.
 Execution manifests are caller-provided external outputs, not static authority.
 Refresh or check the SHA-free traceability page with:
 

@@ -1,5 +1,5 @@
-// Source-grounded test pattern for the current facade; not compiled in this review.
-// Place in a real selene-db integration-test target and run its ordinary checks.
+// Compiled and executed by crates/selene-db/tests/release_examples.rs.
+// Uses only the stable facade; there is no lower-engine construction shortcut.
 use selene_db::{CreatePolicy, Database, ObjectPath, SchemaPath, WriteSummary};
 
 #[test]

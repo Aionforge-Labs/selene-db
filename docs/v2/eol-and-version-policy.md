@@ -50,7 +50,7 @@ checkout can be used immediately with path dependencies while preserving the
 published package alias:
 
 ```toml
-selene-core = { package = "selene-db-core", path = "path/to/selene-db/crates/selene-core", version = "2.0.0-alpha.1" }
+selene-db = { path = "path/to/selene-db/crates/selene-db", version = "2.0.0-alpha.1" }
 ```
 
 ## Owner-only archive procedure
