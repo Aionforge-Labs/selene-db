@@ -27,10 +27,12 @@ pub enum IndexFamily {
     Text,
     /// Required exact constraint backing, not a query access path.
     Constraint,
+    /// A deterministic scalar expression using the ordinary typed key engine.
+    Expression,
 }
 
-/// Reserved pure scalar expression shapes for F05-PR06 analysis. These are data,
-/// not executable GQL strings or closures; no expression can be registered yet.
+/// Legacy shape-only proposals, not analyzed expression proofs. Executable
+/// declarations use the common scalar program in [`IndexConfiguration::Expression`].
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ReservedIndexExpression {
     /// Scalar property selection.
@@ -114,6 +116,13 @@ pub enum IndexConfiguration {
         /// Exact declaring type name.
         declaring_type: String,
     },
+    /// An analyzed pure scalar expression with an explicit physical key kind.
+    Expression {
+        /// Bounded structural expression, never executable source text.
+        expression: selene_core::scalar_index_expression::ScalarIndexExpression,
+        /// Exact scalar key family; drift makes the accelerator unusable.
+        kind: SchemaPropertyIndexKind,
+    },
 }
 
 impl IndexConfiguration {
@@ -125,6 +134,7 @@ impl IndexConfiguration {
             Self::Vector { .. } => IndexFamily::Vector,
             Self::Text => IndexFamily::Text,
             Self::Constraint { .. } => IndexFamily::Constraint,
+            Self::Expression { .. } => IndexFamily::Expression,
         }
     }
 }
@@ -143,6 +153,7 @@ pub fn generated_index_name<'a>(
         IndexFamily::Vector => "vidx",
         IndexFamily::Text => "tidx",
         IndexFamily::Constraint => "cidx",
+        IndexFamily::Expression => "eidx",
     };
     let mut name = format!("{prefix}:{}:{label}", label.len());
     if properties.len() > 1 {
@@ -182,8 +193,9 @@ pub struct IndexDeclaration {
 }
 
 impl IndexDeclaration {
-    /// Reject expression activation until analyzed execution is implemented by
-    /// F05-PR06. A syntactically typed expression is not an analyzed proof.
+    /// Reject activation from an unanalysed shape-only proposal. The facade's
+    /// `Catalog::create_expression_index` performs semantic analysis and admission;
+    /// syntactically typed input alone still cannot assert a usable index.
     pub fn for_expression(_expression: ReservedIndexExpression) -> CatalogResult<Self> {
         Err(CatalogError::InvalidDeclaration {
             reason: "unsupported_expression_target",
@@ -195,6 +207,11 @@ impl IndexDeclaration {
         self.target.validate()?;
         let arity = self.target.properties.len();
         let valid = match &self.configuration {
+            IndexConfiguration::Expression { expression, .. } => {
+                expression.is_valid()
+                    && self.target.element == ElementKind::Node
+                    && self.target.properties == [expression.property.clone()]
+            }
             IndexConfiguration::Constraint { declaring_type } => {
                 !declaring_type.is_empty()
                     && declaring_type.len() <= selene_core::db_string::MAX_DB_STRING_BYTES

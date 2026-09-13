@@ -63,6 +63,7 @@ set -euo pipefail
 REGISTRY="
 selene-db-catalog|catalog_descriptors|0
 selene-db|catalog_lifecycle|0
+selene-db|scalar_expression|0
 selene-db|facade_read_write|0
 selene-db|durable_commit|1
 selene-db|durable_checkpoint|0

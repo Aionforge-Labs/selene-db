@@ -17,6 +17,16 @@ pub enum ScanAccess {
     /// Default: enumerate rows linearly and evaluate predicates row-by-row.
     #[default]
     Linear,
+    /// Complete scalar-expression equality candidates; the original predicate
+    /// remains residual, including when a later snapshot requires scan fallback.
+    ExpressionLookup {
+        /// Stable catalog identity of the selected index.
+        handle: IndexHandle,
+        /// Exact semantic program used to validate the current binding.
+        expression: selene_core::scalar_index_expression::ScalarIndexExpression,
+        /// Analyzed literal equality probe.
+        value: selene_core::Value,
+    },
     /// Use a label bitmap to enumerate candidate rows.
     LabelIndex {
         /// Opaque catalog handle for the selected label index.

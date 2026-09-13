@@ -51,8 +51,9 @@ conversion for existing set algebra; foreign empty sets are not valid shortcuts.
 Global `json_contains_nodes`, `json_path_exists_nodes`, `json_path_contains_nodes`
 and `json_path_value_nodes`, plus their explicit-candidate companions, remain
 exact scans. They use primary JSON values and graph-owned candidate binding.
-There is no expression/containment index and no claim of index acceleration.
-JSON expression-index planning remains **F05-PR06**.
+These procedures do not claim containment-index acceleration. Scalar WHERE
+predicates can use [analyzed expression indexes](expression-indexes.md), delivered
+by F05-PR06; the exact native-procedure scans remain independent alternatives.
 
 Containment is recursive subset containment, not textual matching. JSON number,
 string and boolean values remain distinct. An absent path does not match path

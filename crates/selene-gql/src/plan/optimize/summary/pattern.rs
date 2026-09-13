@@ -225,6 +225,7 @@ fn scan_kind(kind: ScanKind) -> &'static str {
 fn scan_access(access: &ScanAccess) -> &'static str {
     match access {
         ScanAccess::Linear => "Linear",
+        ScanAccess::ExpressionLookup { .. } => "ExpressionLookup",
         ScanAccess::LabelIndex { .. } => "LabelIndex",
         ScanAccess::TypedIndexRange { .. } => "TypedIndexRange",
         ScanAccess::BitmapUnion { .. } => "BitmapUnion",

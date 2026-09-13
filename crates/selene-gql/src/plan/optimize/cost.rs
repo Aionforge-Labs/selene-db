@@ -267,7 +267,7 @@ fn literal_value(key: &IndexKey) -> Option<Value> {
 /// Local planner-`Literal` → `Value` lowering, mirroring
 /// `runtime::scan_resolve::literal_to_value` but kept crate-internal to the
 /// optimizer so the cost module has no runtime dependency. `Null` yields `None`.
-fn literal_to_value(literal: &Literal) -> Option<Value> {
+pub(super) fn literal_to_value(literal: &Literal) -> Option<Value> {
     Some(match literal {
         Literal::Bool(value, _) => Value::Bool(*value),
         Literal::Integer(value, _) | Literal::RadixInteger(value, _, _) => Value::Int(*value),

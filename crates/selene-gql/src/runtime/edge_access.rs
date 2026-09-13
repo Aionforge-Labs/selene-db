@@ -75,7 +75,9 @@ pub(super) fn candidate_edge_filter(
     ctx: &EvalCtx<'_, '_, '_, '_>,
 ) -> Result<Option<CandidateSet<Edge>>, ExecutorError> {
     match &edge.access {
-        ScanAccess::Linear | ScanAccess::LabelIndex { .. } => Ok(None),
+        ScanAccess::Linear
+        | ScanAccess::LabelIndex { .. }
+        | ScanAccess::ExpressionLookup { .. } => Ok(None),
         ScanAccess::TypedIndexRange { .. }
         | ScanAccess::BitmapUnion { .. }
         | ScanAccess::CompositeLookup { .. } => {

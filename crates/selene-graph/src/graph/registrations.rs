@@ -32,6 +32,7 @@ struct CompiledBindings {
     single: FxHashMap<SingleKey, BoundIndex>,
     composite: FxHashMap<CompositeKey, BoundIndex>,
     constraints: Vec<BoundIndex>,
+    expressions: Vec<BoundIndex>,
 }
 
 impl CompiledBindings {
@@ -40,6 +41,7 @@ impl CompiledBindings {
             .values()
             .chain(self.composite.values())
             .chain(&self.constraints)
+            .chain(&self.expressions)
     }
 }
 
@@ -75,14 +77,15 @@ impl SeleneGraph {
             };
             let mut properties = index.target.properties.clone();
             properties.sort();
-            if index.configuration.family() != IndexFamily::Constraint
-                && !targets.insert((
-                    index.target.element,
-                    index.configuration.family(),
-                    index.target.label.clone(),
-                    properties,
-                ))
-            {
+            if !matches!(
+                index.configuration.family(),
+                IndexFamily::Constraint | IndexFamily::Expression
+            ) && !targets.insert((
+                index.target.element,
+                index.configuration.family(),
+                index.target.label.clone(),
+                properties,
+            )) {
                 return Err(invalid("ambiguous_index_implementation"));
             }
         }
@@ -113,14 +116,23 @@ impl SeleneGraph {
         if catalog.descriptor(CatalogObjectId::Graph(owner)).is_none() {
             return Err(invalid("missing_runtime_owner"));
         }
-        let declarations = catalog
+        let declarations: Vec<_> = catalog
             .declarations(CatalogObjectId::Graph(owner))
             .cloned()
             .collect();
-        let binding = self.compile_bindings(owner, catalog.generation(), declarations)?;
+        let prior_expressions = self.expression_indexes.clone();
+        self.bind_expression_indexes(&declarations)?;
+        let binding = match self.compile_bindings(owner, catalog.generation(), declarations) {
+            Ok(binding) => binding,
+            Err(error) => {
+                self.expression_indexes = prior_expressions;
+                return Err(error);
+            }
+        };
         let prior = self.catalog_binding.replace(binding);
         if let Err(error) = self.rebuild_constraints() {
             self.catalog_binding = prior;
+            self.expression_indexes = prior_expressions;
             return Err(CatalogError::InvalidDeclaration {
                 reason: match error {
                     crate::GraphError::TypeViolation(_) => "constraint_validation_failed",
@@ -143,10 +155,31 @@ impl SeleneGraph {
         let mut single = FxHashMap::default();
         let mut composite = FxHashMap::default();
         let mut constraints = Vec::new();
+        let mut expressions = Vec::new();
         for (position, descriptor) in declarations.iter().enumerate() {
             let CatalogPayload::Index(index) = descriptor.payload() else {
                 continue;
             };
+            if matches!(index.configuration, IndexConfiguration::Expression { .. }) {
+                if index.metadata.state != DeclarationState::Ready
+                    && !self.expression_indexes.contains_key(&descriptor.id().get())
+                {
+                    continue;
+                }
+                if self
+                    .expression_indexes
+                    .get(&descriptor.id().get())
+                    .is_none_or(|entry| entry.descriptor != *descriptor)
+                {
+                    return Err(invalid("missing_expression_implementation"));
+                }
+                expressions.push(BoundIndex {
+                    descriptor: position,
+                    source_name: None,
+                    properties: SmallVec::new(),
+                });
+                continue;
+            }
             if let IndexConfiguration::Constraint { declaring_type } = &index.configuration {
                 if !declarations.iter().any(|d| {
                     matches!(d.payload(), CatalogPayload::Constraint(rule)
@@ -246,6 +279,7 @@ impl SeleneGraph {
             single,
             composite,
             constraints,
+            expressions,
         })))
     }
 
@@ -313,6 +347,8 @@ impl SeleneGraph {
     /// implementations. Compaction must never turn a bound graph into unbound.
     pub(crate) fn rebind_catalog_after_rebuild(&mut self, source: &Self) -> CatalogResult<()> {
         if let Some(binding) = &source.catalog_binding {
+            self.expression_indexes.clear();
+            self.bind_expression_indexes(&binding.0.declarations)?;
             self.catalog_binding = Some(self.compile_bindings(
                 binding.0.owner,
                 binding.0.generation,
@@ -377,6 +413,12 @@ impl SeleneGraph {
     #[doc(hidden)]
     #[must_use]
     pub fn matches_index_declaration(&self, declaration: &IndexDeclaration) -> bool {
+        if matches!(
+            declaration.configuration,
+            IndexConfiguration::Expression { .. }
+        ) {
+            return self.matches_expression_declaration(declaration);
+        }
         let Ok(label) = db_string(&declaration.target.label) else {
             return false;
         };

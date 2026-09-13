@@ -241,7 +241,7 @@ fn signed_array_index(index: i64, len: usize) -> Option<usize> {
         usize::try_from(index).ok().filter(|index| *index < len)
     } else {
         let offset = usize::try_from(index.unsigned_abs()).ok()?;
-        (offset <= len).then_some(len - offset)
+        len.checked_sub(offset)
     }
 }
 

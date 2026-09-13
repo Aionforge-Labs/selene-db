@@ -1154,6 +1154,48 @@ it is not current total-memory accounting.
 | 100 | 103 | 197.40 B | 101 | 95.80 B |
 | 1,000 | 1,003 | 197.94 B | 1,001 | 95.98 B |
 
+### Scalar expression indexes — F05-PR06 / #1097
+
+The `scalar_expression` target isolates 1,000 JSON-valued `:Doc` nodes. The
+selective key matches one row; the nonselective key matches 999. `false`/`true`
+mean scan-only/no expression registration versus a maintained expression index.
+Each query checks its expected count before timing. Maintenance includes the same
+facade selection, one JSON replacement and publication on both paths. Rebuild
+measures complete expression-key construction/publication and database drop;
+fixture population is outside timing, with one fixture per iteration.
+
+```bash
+scripts/run-benches.sh --bench scalar_expression --compile-only
+scripts/run-benches.sh --profile quick --bench scalar_expression
+/usr/bin/time -l scripts/run-benches.sh --profile quick --bench scalar_expression --filter rebuild
+```
+
+The scan-budget regression separately proves exactly one visited candidate for a
+selective query over 128 nodes (budget zero fails, one succeeds); scan-only
+execution exceeds budget one. This is execution evidence, not an index-existence
+flag. Command-level RSS includes Cargo/runner processes and benchmark fixtures,
+not merely key allocations. On native arm64 macOS 27.0 (26A5425a), rustc 1.97.1,
+optimized bench profile/thin LTO/one codegen unit and mimalloc, the isolated target
+used 10 samples, 100 ms warmup and a requested 500 ms measurement window:
+
+| 1,000 nodes | Scan/no expression index | Expression index |
+|---|---:|---:|
+| Selective (1 match) | 371.53–459.84 µs | 91.397–95.024 µs |
+| Nonselective (999 matches) | 372.91–428.15 µs | 387.00–403.64 µs |
+| One JSON update, including selection/publication | 307.95–318.09 µs | 302.74–321.79 µs |
+| Complete rebuild/publication and database drop | — | 630.44–701.94 µs |
+
+Intervals are Criterion confidence intervals, not observed min/max. The subsequent
+rebuild-only command measured 598.60–655.22 µs, took 1.62 s and reported 93,093,888
+bytes maximum command RSS. This is not per-index retained heap or a
+power-loss/durable-write measurement. An earlier
+run in the broad `catalog_lifecycle` binary included unrelated fixture setup and
+reported 497,025,024 bytes command RSS; it is not used for memory attribution.
+Criterion automatically compared the same group names across earlier runs;
+those percentages are not a controlled before/after result and are not claimed.
+Absolute timings varied across runs, including the unchanged scan baseline;
+the nonselective and maintenance intervals do not establish a speed advantage.
+
 ### Catalog lifecycle facade
 
 F05-PR05 adds the `composite_constraints` group to the existing

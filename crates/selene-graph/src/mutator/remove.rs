@@ -74,6 +74,12 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
                 row.get(),
                 id,
             );
+            crate::expression_index::update(
+                &mut graph.expression_indexes,
+                Some((&labels, &old_props)),
+                Some((&labels, &new_props)),
+                row.get(),
+            );
         }
         self.txn
             .changes
@@ -192,6 +198,12 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
                 &props,
                 row.get(),
                 id,
+            );
+            crate::expression_index::update(
+                &mut graph.expression_indexes,
+                Some((&old_labels, &props)),
+                Some((&new_labels, &props)),
+                row.get(),
             );
         }
         self.txn

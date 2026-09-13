@@ -624,7 +624,7 @@ fn json_signed_array_index(value: i64, len: usize) -> Option<usize> {
         return usize::try_from(value).ok().filter(|idx| *idx < len);
     }
     let offset = usize::try_from(value.unsigned_abs()).ok()?;
-    (offset <= len).then_some(len - offset)
+    len.checked_sub(offset)
 }
 
 fn json_signed_wide_array_index(value: i128, len: usize) -> Option<usize> {
@@ -632,7 +632,7 @@ fn json_signed_wide_array_index(value: i128, len: usize) -> Option<usize> {
         return usize::try_from(value).ok().filter(|idx| *idx < len);
     }
     let offset = usize::try_from(value.unsigned_abs()).ok()?;
-    (offset <= len).then_some(len - offset)
+    len.checked_sub(offset)
 }
 
 fn json_decimal_array_index(

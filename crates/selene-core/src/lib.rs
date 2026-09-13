@@ -42,6 +42,7 @@ mod property_structural_type;
 pub mod property_value_type;
 pub mod reserved;
 mod result_order;
+pub mod scalar_index_expression;
 pub mod schema;
 mod stored_value;
 mod structural_match;

@@ -176,7 +176,7 @@ fn register(
     match &index.configuration {
         // The complete backing is built by bind_catalog against the pinned
         // primary state. It has no query-index placeholder or row-ID payload.
-        IndexConfiguration::Constraint { .. } => {}
+        IndexConfiguration::Constraint { .. } | IndexConfiguration::Expression { .. } => {}
         IndexConfiguration::Property(kinds) if properties.len() == 1 => {
             let entry = PropertyIndexEntry::new(TypedIndex::new(property_kind(kinds[0])), name);
             let entries = match index.target.element {

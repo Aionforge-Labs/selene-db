@@ -73,7 +73,7 @@ impl Session<'_> {
         let (result, request, _, _) = self.with_facade_request(request, false, |session| {
             let lowered = crate::plan::plan_with_caps(&analyzed, registry, &session.caps)
                 .map_err(|source| ExecutorError::Plan { source })?;
-            let plan = Arc::new(session.optimize_plan(lowered));
+            let plan = Arc::new(session.optimize_plan(lowered, &analyzed));
             super::super::statement::ensure_source_policy(
                 &plan,
                 SourceExecutionPolicy::PrepareCatalogSession,

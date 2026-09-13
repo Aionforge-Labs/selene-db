@@ -25,6 +25,14 @@ use crate::{IndexKey, Literal, ScanAccess, TypedIndexBounds};
 /// variants that do not carry parameter-shaped probe keys (Linear / LabelIndex).
 pub(super) fn bounds_detail_for_access(access: &ScanAccess) -> Option<String> {
     match access {
+        ScanAccess::ExpressionLookup {
+            handle,
+            expression,
+            value,
+        } => Some(format!(
+            "Expression({}, {expression:?}, {value:?})",
+            handle.raw()
+        )),
         ScanAccess::TypedIndexRange { bounds, .. } => Some(render_bounds(bounds)),
         ScanAccess::BitmapUnion { keys, .. } => Some(render_bitmap_union_keys(keys)),
         ScanAccess::CompositeLookup { keys, .. } => Some(render_composite_keys(keys)),
