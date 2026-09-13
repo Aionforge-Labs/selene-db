@@ -444,7 +444,9 @@ fn selected_unique_rule_is_declared_and_remains_enforced_after_index_drop() {
         .catalog
         .descriptors()
         .find_map(|descriptor| match descriptor.payload() {
-            selene_catalog::CatalogPayload::Index(index) => Some(index),
+            selene_catalog::CatalogPayload::Index(index) if index.target.properties.len() == 2 => {
+                Some(index)
+            }
             _ => None,
         })
         .unwrap();

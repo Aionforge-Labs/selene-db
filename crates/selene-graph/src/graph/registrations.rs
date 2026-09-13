@@ -31,11 +31,15 @@ struct CompiledBindings {
     declarations: Vec<CatalogDescriptor>,
     single: FxHashMap<SingleKey, BoundIndex>,
     composite: FxHashMap<CompositeKey, BoundIndex>,
+    constraints: Vec<BoundIndex>,
 }
 
 impl CompiledBindings {
     fn indexes(&self) -> impl Iterator<Item = &BoundIndex> {
-        self.single.values().chain(self.composite.values())
+        self.single
+            .values()
+            .chain(self.composite.values())
+            .chain(&self.constraints)
     }
 }
 
@@ -71,12 +75,14 @@ impl SeleneGraph {
             };
             let mut properties = index.target.properties.clone();
             properties.sort();
-            if !targets.insert((
-                index.target.element,
-                index.configuration.family(),
-                index.target.label.clone(),
-                properties,
-            )) {
+            if index.configuration.family() != IndexFamily::Constraint
+                && !targets.insert((
+                    index.target.element,
+                    index.configuration.family(),
+                    index.target.label.clone(),
+                    properties,
+                ))
+            {
                 return Err(invalid("ambiguous_index_implementation"));
             }
         }
@@ -112,7 +118,16 @@ impl SeleneGraph {
             .cloned()
             .collect();
         let binding = self.compile_bindings(owner, catalog.generation(), declarations)?;
-        self.catalog_binding = Some(binding);
+        let prior = self.catalog_binding.replace(binding);
+        if let Err(error) = self.rebuild_constraints() {
+            self.catalog_binding = prior;
+            return Err(CatalogError::InvalidDeclaration {
+                reason: match error {
+                    crate::GraphError::TypeViolation(_) => "constraint_validation_failed",
+                    _ => "constraint_backing_failed",
+                },
+            });
+        }
         Ok(())
     }
 
@@ -127,10 +142,27 @@ impl SeleneGraph {
         }
         let mut single = FxHashMap::default();
         let mut composite = FxHashMap::default();
+        let mut constraints = Vec::new();
         for (position, descriptor) in declarations.iter().enumerate() {
             let CatalogPayload::Index(index) = descriptor.payload() else {
                 continue;
             };
+            if let IndexConfiguration::Constraint { declaring_type } = &index.configuration {
+                if !declarations.iter().any(|d| {
+                    matches!(d.payload(), CatalogPayload::Constraint(rule)
+                    if rule.backing_index.map(CatalogObjectId::Index) == Some(descriptor.id())
+                    && rule.target == index.target && &rule.declaring_type == declaring_type
+                    && rule.metadata.state == DeclarationState::Ready)
+                }) {
+                    return Err(invalid("unowned_constraint_backing"));
+                }
+                constraints.push(BoundIndex {
+                    descriptor: position,
+                    source_name: None,
+                    properties: SmallVec::new(),
+                });
+                continue;
+            }
             let label =
                 db_string(&index.target.label).map_err(|_| invalid("invalid_property_target"))?;
             let properties = index
@@ -213,6 +245,7 @@ impl SeleneGraph {
             declarations,
             single,
             composite,
+            constraints,
         })))
     }
 
@@ -228,15 +261,28 @@ impl SeleneGraph {
             if constraint.metadata.state != DeclarationState::Ready {
                 continue;
             }
-            let Some(position) = rules.iter().position(|rule| {
+            self.validate_constraint_target(constraint)?;
+            if let Some(backing) = constraint.backing_index {
+                if !declarations.iter().any(|d| d.id() == CatalogObjectId::Index(backing)
+                && matches!(d.payload(), CatalogPayload::Index(index) if index.target == constraint.target
+                    && matches!(&index.configuration, IndexConfiguration::Constraint { declaring_type } if declaring_type == &constraint.declaring_type)
+                    && index.metadata.state == DeclarationState::Ready)) {
+                return Err(invalid("missing_constraint_backing"));
+            }
+            } else if constraint.kind != selene_catalog::ConstraintKind::Unique
+                || constraint.target.properties.len() != 1
+            {
+                return Err(invalid("missing_constraint_backing"));
+            }
+            if let Some(position) = rules.iter().position(|rule| {
                 rule.target == constraint.target
                     && rule.declaring_type == constraint.declaring_type
                     && rule.kind == constraint.kind
-                    && rule.backing_index == constraint.backing_index
-            }) else {
+            }) {
+                rules.swap_remove(position);
+            } else if constraint.kind == selene_catalog::ConstraintKind::Unique {
                 return Err(invalid("unsupported_constraint_activation"));
-            };
-            rules.swap_remove(position);
+            }
         }
         if !rules.is_empty() {
             return Err(invalid("undeclared_unique_implementation"));
@@ -272,6 +318,12 @@ impl SeleneGraph {
                 binding.0.generation,
                 binding.0.declarations.clone(),
             )?);
+        }
+        self.rebuild_constraints()
+            .map_err(|_| invalid("constraint_backing_failed"))?;
+        if let Some((named, _)) = &source.named_constraints {
+            self.admit_named_constraints(None, named.clone(), &[])
+                .map_err(|_| invalid("named_constraint_backing_failed"))?;
         }
         Ok(())
     }

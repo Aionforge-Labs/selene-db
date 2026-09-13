@@ -17,7 +17,49 @@ pub struct GraphAllocationAuthority {
     allocator: Arc<Mutex<IdAllocator>>,
 }
 
+/// Opaque proof that primary state and required constraint backing were admitted
+/// together. A caller can inspect/copy primary data but cannot forge this proof
+/// from an edited snapshot. This is process-local, never a persisted credential.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct ValidatedGraphSnapshot(pub(crate) Arc<SeleneGraph>);
+
+impl ValidatedGraphSnapshot {
+    /// Inspect the admitted immutable snapshot.
+    #[must_use]
+    pub fn graph(&self) -> &SeleneGraph {
+        &self.0
+    }
+
+    /// Build a private runtime without rescanning already-admitted constraints.
+    /// The allocation domain must belong to the same stable graph.
+    pub fn runtime(&self, authority: &GraphAllocationAuthority) -> GraphResult<SharedGraph> {
+        if self.0.graph_id() != authority.graph {
+            return Err(GraphError::Inconsistent {
+                reason: "allocation authority belongs to another graph".into(),
+            });
+        }
+        let mut graph = self.0.as_ref().clone();
+        graph.remint_layout();
+        let mut providers: Vec<Arc<dyn crate::IndexProvider>> = Vec::new();
+        if let Some(provider) = super::candidates::prepare(&graph)? {
+            providers.push(provider);
+        }
+        let mut shared = SharedGraph::from_validated_graph(graph, providers.into())?;
+        let floor = shared.allocator.lock().clone();
+        authority.allocator.lock().raise_to(&floor);
+        shared.allocator = Arc::clone(&authority.allocator);
+        Ok(shared)
+    }
+}
+
 impl SharedGraph {
+    /// Retain an unforgeable admission proof for detached facade execution.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn validated_snapshot(&self) -> ValidatedGraphSnapshot {
+        ValidatedGraphSnapshot(self.read())
+    }
     /// Retain this graph's monotonic allocation authority across detached work.
     #[doc(hidden)]
     #[must_use]

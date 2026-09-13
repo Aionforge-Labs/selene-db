@@ -45,14 +45,14 @@ fn checked_in_profile_loads_and_preserves_seed_contract() {
     let profile = parse_profile(SOURCE).expect("checked-in profile validates");
     assert_eq!(profile.hash(), PROFILE_HASH);
     assert_eq!(profile.profile().features.len(), 199);
-    assert_eq!(profile.profile().implementation_extensions.len(), 11);
-    assert_eq!(capabilities().len(), 210);
+    assert_eq!(profile.profile().implementation_extensions.len(), 12);
+    assert_eq!(capabilities().len(), 211);
     assert_eq!(
         capabilities()
             .iter()
             .filter(|record| record.status == CapabilityStatus::Supported)
             .count(),
-        143
+        144
     );
     assert_eq!(
         capabilities()
@@ -66,7 +66,7 @@ fn checked_in_profile_loads_and_preserves_seed_contract() {
             .iter()
             .filter(|record| record.flagger_status == FlaggerStatus::Accepted)
             .count(),
-        153
+        154
     );
     assert_eq!(annex_b_records().count(), 117);
     assert_eq!(PROFILE_FORMAT_VERSION, 3);

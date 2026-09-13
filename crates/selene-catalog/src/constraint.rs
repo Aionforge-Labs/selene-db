@@ -9,11 +9,11 @@ use crate::{
 /// Declarative constraint semantics.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ConstraintKind {
-    /// Existing arity-one uniqueness; missing and null values do not conflict.
+    /// Tuple uniqueness; a tuple with any missing/null component is excluded.
     Unique,
-    /// Reserved named composite uniqueness. Activation belongs to F05-PR05.
+    /// Composite spelling of the same tuple uniqueness semantics.
     CompositeUnique,
-    /// Reserved named key semantics. Activation belongs to F05-PR05.
+    /// Unique tuple with every component required and non-null.
     Key,
 }
 
@@ -29,7 +29,7 @@ pub struct ConstraintDeclaration {
     pub declaring_type: String,
     /// Semantic constraint family.
     pub kind: ConstraintKind,
-    /// Optional future exact backing index; current arity-one enforcement uses whole-state validation.
+    /// Exact required backing. An active constraint must name complete backing.
     pub backing_index: Option<IndexId>,
 }
 
@@ -44,13 +44,14 @@ impl ConstraintDeclaration {
                 reason: "invalid_declaring_type",
             });
         }
-        if self.kind == ConstraintKind::Unique && self.target.properties.len() != 1 {
-            return Err(CatalogError::InvalidDeclaration {
-                reason: "unique_arity",
-            });
-        }
+        // Format-2 catalogs written before F05-PR05 encode unary annotations
+        // without a separate IndexId. Runtime admission builds the same complete
+        // tuple index for that representation; it is not a scan fallback.
+        let legacy_inline =
+            self.kind == ConstraintKind::Unique && self.target.properties.len() == 1;
         if self.metadata.state == DeclarationState::Ready
-            && (self.kind != ConstraintKind::Unique || self.backing_index.is_some())
+            && self.backing_index.is_none()
+            && !legacy_inline
         {
             return Err(CatalogError::InvalidDeclaration {
                 reason: "unsupported_constraint_activation",

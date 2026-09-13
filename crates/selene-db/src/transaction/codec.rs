@@ -63,8 +63,10 @@ impl DatabaseDraft {
         graph_types.sort_by_key(|ty| ty.id);
         let mut graphs = Vec::new();
         for (id, replacement) in &self.graph_replacements {
-            let mut next = replacement.snapshot().clone();
-            next.bind_catalog(&self.catalog).map_err(|_| E::Semantic)?;
+            // Replacements are bound during staging and rechecked by the outer
+            // authority before encoding. Do not rebuild complete backing for a
+            // data-only transaction just to extract its logical identities.
+            let next = replacement.snapshot();
             let original = base.graphs.get(id).map(|instance| instance.graph.read());
             let changes = self
                 .logical_changes
@@ -79,7 +81,7 @@ impl DatabaseDraft {
             {
                 return Err(E::Invalid("new graph data requires logical changes"));
             }
-            graphs.push(graph_delta(original.as_deref(), &next, changes)?);
+            graphs.push(graph_delta(original.as_deref(), next, changes)?);
         }
         Ok(LogicalTransaction {
             catalog,

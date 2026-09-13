@@ -110,6 +110,10 @@ fn corpus_covers_generated_flagger_capabilities() {
         .iter()
         .filter(|record| record.flagger_status == FlaggerStatus::Accepted)
         .map(|record| record.id)
+        // Rust catalog-only facility: deliberately no GQL grammar or Flagger
+        // stamping site. Activation/write/reopen coverage is in the facade's
+        // composite_constraints integration tests, not a fabricated GQL clause.
+        .filter(|feature| *feature != FeatureId::IM_COMPOSITE_CONSTRAINTS)
         .filter(|feature| !positive.contains(feature) && !blocked_accepted.contains(feature))
         .collect::<Vec<_>>();
     assert!(

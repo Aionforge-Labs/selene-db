@@ -20,6 +20,8 @@ const OMITTED: ExecutionOutcome = ExecutionOutcome::SUCCESSFUL_OMITTED;
 #[path = "catalog_lifecycle/declarations.rs"]
 mod declarations;
 
+#[path = "catalog_lifecycle/constraints.rs"]
+mod constraints;
 #[path = "catalog_lifecycle/runtime_bindings.rs"]
 mod runtime_bindings;
 
@@ -678,6 +680,6 @@ fn bench_catalog_lifecycle(c: &mut Criterion) {
 criterion_group! {
     name = catalog_lifecycle;
     config = criterion_config();
-    targets = bench_catalog_lifecycle, declarations::bench, runtime_bindings::bench
+    targets = bench_catalog_lifecycle, declarations::bench, runtime_bindings::bench, constraints::bench
 }
 criterion_main!(catalog_lifecycle);

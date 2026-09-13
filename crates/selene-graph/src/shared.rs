@@ -15,7 +15,7 @@ use std::sync::{
 };
 
 mod allocation;
-pub use allocation::GraphAllocationAuthority;
+pub use allocation::{GraphAllocationAuthority, ValidatedGraphSnapshot};
 mod builder;
 mod candidates;
 mod index_ddl;
@@ -98,6 +98,17 @@ impl SharedGraph {
             type_def.validate_ref()?;
             crate::type_validator::validate_entity_state(&graph, type_def)?;
         }
+        graph.rebuild_constraints()?;
+        if let Some((named, _)) = &graph.named_constraints {
+            graph.admit_named_constraints(None, named.clone(), &[])?;
+        }
+        Self::from_validated_graph(graph, providers)
+    }
+
+    fn from_validated_graph(
+        graph: SeleneGraph,
+        providers: Arc<[Arc<dyn IndexProvider>]>,
+    ) -> GraphResult<Self> {
         let node_floor = (graph.node_store.labels.len() as u64).saturating_add(1);
         let edge_floor = (graph.edge_store.label.len() as u64).saturating_add(1);
         let allocator = IdAllocator::from_meta_with_floors(&graph.meta, node_floor, edge_floor);

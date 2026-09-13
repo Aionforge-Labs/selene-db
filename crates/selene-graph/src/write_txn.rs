@@ -71,6 +71,25 @@ pub struct PreparedGraphCommit {
 }
 
 impl PreparedGraphCommit {
+    /// Admit the catalog's named type against this complete prepared delta.
+    #[doc(hidden)]
+    pub fn admit_named_constraints(
+        &mut self,
+        before: &SeleneGraph,
+        named: Arc<crate::GraphTypeDef>,
+    ) -> GraphResult<()> {
+        Arc::make_mut(&mut self.next_snapshot).admit_named_constraints(
+            Some(before),
+            named,
+            &self.changes,
+        )
+    }
+    /// Retain the complete, immutable result of transaction validation.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn validated_snapshot(&self) -> crate::ValidatedGraphSnapshot {
+        crate::ValidatedGraphSnapshot(Arc::clone(&self.next_snapshot))
+    }
     /// Install validated catalog bindings before the facade's sole publication.
     #[doc(hidden)]
     pub fn bind_catalog(
@@ -458,6 +477,9 @@ impl<'g> WriteTxn<'g> {
         }
 
         let generation = self.read().meta.generation;
+        // A predecessor's proof does not certify new primary values. Retained
+        // named obligations are re-admitted below through the same delta service.
+        self.guard_mut().named_constraints = None;
 
         let mut validation_warnings = Vec::new();
         if let Some(type_def) = self.read().meta.bound_type.as_deref() {
@@ -477,13 +499,29 @@ impl<'g> WriteTxn<'g> {
                         .into_iter()
                         .map(|warning| CommitWarning { warning }),
                 );
-            } else {
-                crate::type_validator::validate_unique_property_changes(
-                    &self.changes,
-                    self.read(),
-                    type_def,
-                )?;
             }
+        }
+        if schema_changed || self.read().meta.bound_type.is_none() {
+            self.guard_mut().rebuild_constraints()?;
+        } else {
+            let expanded =
+                pipeline::expand_truncates_for_fanout(&self.changes, &self.truncate_expansions);
+            let before = self.pre_txn.as_deref().expect("rollback snapshot");
+            let indexes = before.constraints.apply(
+                expanded.as_deref().unwrap_or(&self.changes),
+                before,
+                self.read(),
+            )?;
+            self.guard_mut().constraints = indexes;
+        }
+        if let Some(before) = self.pre_txn.clone()
+            && let Some((named, _)) = &before.named_constraints
+        {
+            Arc::make_mut(&mut *self.guard).admit_named_constraints(
+                Some(&before),
+                Arc::clone(named),
+                &self.changes,
+            )?;
         }
         for warning in validation_warnings {
             if !self.warnings.contains(&warning) {

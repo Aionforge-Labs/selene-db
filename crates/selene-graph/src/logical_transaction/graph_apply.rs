@@ -153,7 +153,7 @@ pub(crate) fn logical_graph(
     graph.meta.next_edge_id = delta.next_edge_id;
     crate::shared::rebuild_derived_state(&mut graph).map_err(|_| E::Semantic)?;
     if let Some(definition) = graph.meta.bound_type.as_deref() {
-        crate::type_validator::validate_entity_state(&graph, definition)
+        crate::type_validator::validate_entity_shape(&graph, definition)
             .map_err(|_| E::Semantic)?;
         for change in &delta.changes {
             if matches!(change, Change::NodeUpdated { labels_diff, .. } if !labels_diff.is_empty())

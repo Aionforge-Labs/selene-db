@@ -309,10 +309,13 @@ impl ReplayState {
                 .map(schema::materialize)
                 .transpose()?
                 .map(Arc::new);
-            let graph =
+            let mut graph =
                 graph_apply::logical_graph(original.map(AsRef::as_ref), delta, bound, budget)?;
             graph
                 .validate_logical_catalog(&snapshot, &delta.backing_indexes)
+                .map_err(|_| E::Semantic)?;
+            graph
+                .admit_replay_constraints(original.map(AsRef::as_ref), &snapshot, &delta.changes)
                 .map_err(|_| E::Semantic)?;
             candidate
                 .backing_indexes
@@ -332,7 +335,8 @@ impl ReplayState {
         }
         candidate.validate_coverage()?;
         named_types::validate_bindings(
-            &candidate,
+            &mut candidate,
+            Some(self),
             &old,
             &snapshot,
             transaction,

@@ -14,10 +14,10 @@ mod unique;
 
 #[cfg(test)]
 pub(crate) use unique::unique_property_check_required;
-pub(crate) use unique::{validate_unique_property_changes, validate_unique_property_state};
+pub(crate) use unique::{ConstraintIndexes, validate_unique_property_state};
 
 /// Identifier for a typed graph entity.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum EntityId {
     /// Node entity.
     Node(NodeId),
@@ -327,6 +327,17 @@ pub fn validate_entity_state(
     graph: &SeleneGraph,
     type_def: &GraphTypeDef,
 ) -> Result<Vec<TypeWarning>, TypeViolation> {
+    let warnings = validate_entity_shape(graph, type_def)?;
+    validate_unique_property_state(graph, type_def)?;
+    Ok(warnings)
+}
+
+/// Validate materialized element shapes without repeating constraint-index work.
+#[doc(hidden)]
+pub fn validate_entity_shape(
+    graph: &SeleneGraph,
+    type_def: &GraphTypeDef,
+) -> Result<Vec<TypeWarning>, TypeViolation> {
     let mut warnings = Vec::new();
     let nodes = graph
         .live_node_candidates()
@@ -340,7 +351,6 @@ pub fn validate_entity_state(
     for id in edges.iter() {
         warnings.extend(validate_edge_state(id, graph, type_def)?.1);
     }
-    validate_unique_property_state(graph, type_def)?;
     Ok(warnings)
 }
 

@@ -69,7 +69,9 @@ pub(crate) fn validate(
             if target.parent() != descriptor.parent() || index.target != constraint.target {
                 return Err(fail("wrong_backing_owner_or_target"));
             }
-            if !matches!(index.configuration, IndexConfiguration::Property(_)) {
+            if !matches!(&index.configuration, IndexConfiguration::Constraint { declaring_type }
+                if declaring_type == &constraint.declaring_type)
+            {
                 return Err(fail("incomplete_backing_kind"));
             }
         }

@@ -42,6 +42,8 @@ mod checkpoint;
 mod codec;
 mod durable;
 mod named;
+mod outcome;
+pub(crate) use outcome::{AuthorityOutcome, require_committed};
 mod state;
 #[cfg(test)]
 mod test_schema;
@@ -66,21 +68,6 @@ impl<'writer> MutationReservation<'writer> {
             _not_send: PhantomData,
         }
     }
-}
-
-/// Durability-independent result of the in-memory authority cut-line.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(
-    dead_code,
-    reason = "non-committed authority outcomes are injected only by test failpoints until M09"
-)]
-pub(crate) enum AuthorityOutcome {
-    /// Publication was canceled before the outer state store.
-    Canceled,
-    /// The complete state was stored and acknowledged.
-    Committed,
-    /// The complete state was stored, but acknowledgement was uncertain.
-    Indeterminate,
 }
 
 #[derive(Clone, Copy)]
@@ -134,7 +121,7 @@ pub(crate) struct DatabaseDraft {
     graph_removals: BTreeSet<GraphId>,
     graph_replacements: BTreeMap<GraphId, DetachedGraphReplacement>,
     logical_changes: BTreeMap<GraphId, Vec<selene_core::Change>>,
-    selected_graph: Option<Box<SeleneGraph>>,
+    selected_graph: Option<selene_graph::ValidatedGraphSnapshot>,
     allocation: Option<GraphAllocationAuthority>,
     forget_graphs: BTreeSet<CoreGraphId>,
     modified: bool,
@@ -192,7 +179,7 @@ impl DatabaseDraft {
             instance_identity: Arc::as_ptr(&instance) as usize,
             generation: snapshot.meta.generation,
         });
-        self.selected_graph = Some(Box::new(snapshot.as_ref().clone()));
+        self.selected_graph = Some(instance.graph.validated_snapshot());
         self.allocation = Some(instance.graph.allocation_authority());
         drop(snapshot);
         Ok(instance)
@@ -228,7 +215,10 @@ impl DatabaseDraft {
         self.graph_replacements
             .get(&pinned.id)
             .map(DetachedGraphReplacement::snapshot)
-            .or(self.selected_graph.as_deref())
+            .or(self
+                .selected_graph
+                .as_ref()
+                .map(|snapshot| snapshot.graph()))
             .ok_or_else(|| Error::catalog_invariant("database draft lost its selected graph"))
     }
 
@@ -236,8 +226,21 @@ impl DatabaseDraft {
         let authority = self.allocation.as_ref().ok_or_else(|| {
             Error::catalog_invariant("database draft has no allocation authority")
         })?;
-        SharedGraph::try_from_graph_with_allocation(self.selected_graph()?.clone(), authority)
-            .map_err(Error::invalid_graph_type_source)
+        let id = self.selected_graph_id()?;
+        match self.graph_replacements.get(&id) {
+            Some(DetachedGraphReplacement::Prepared(prepared)) => {
+                prepared.validated_snapshot().runtime(authority)
+            }
+            Some(DetachedGraphReplacement::Snapshot(snapshot)) => {
+                SharedGraph::try_from_graph_with_allocation(snapshot.as_ref().clone(), authority)
+            }
+            None => self
+                .selected_graph
+                .as_ref()
+                .ok_or_else(|| Error::catalog_invariant("missing admitted snapshot"))?
+                .runtime(authority),
+        }
+        .map_err(Error::invalid_graph_type_source)
     }
 
     pub(crate) fn selected_graph_id(&self) -> Result<GraphId> {
@@ -323,6 +326,7 @@ impl DatabaseDraft {
                 .bind_catalog(&self.catalog)
                 .map_err(Error::from_catalog_invariant)?;
         }
+        self.admit_named_prepared(&mut prepared)?;
         self.validate_named_graph(prepared.snapshot(), prepared.changes())?;
         self.graph_removals.remove(&id);
         self.modified = true;
@@ -564,6 +568,7 @@ impl DatabaseInner {
             return Ok(AuthorityOutcome::Canceled);
         }
 
+        draft.admit_named_replacements(&current)?;
         draft.validate_named_replacements(&current)?;
         let encoded = wal
             .as_mut()
@@ -583,8 +588,15 @@ impl DatabaseInner {
             graphs.remove(&id);
         }
         for (id, replacement) in graph_replacements {
+            let validated = match &replacement {
+                DetachedGraphReplacement::Prepared(prepared) => Some(prepared.validated_snapshot()),
+                _ => None,
+            };
             let snapshot = replacement.into_snapshot();
             let graph = match current.graphs.get(&id) {
+                Some(instance) if validated.is_some() => validated
+                    .expect("prepared snapshot")
+                    .runtime(&instance.graph.allocation_authority()),
                 Some(instance) => SharedGraph::try_from_graph_with_allocation(
                     snapshot,
                     &instance.graph.allocation_authority(),
@@ -665,14 +677,6 @@ impl DatabaseInner {
         } else {
             false
         }
-    }
-}
-
-pub(crate) fn require_committed(outcome: AuthorityOutcome) -> Result<()> {
-    match outcome {
-        AuthorityOutcome::Committed => Ok(()),
-        AuthorityOutcome::Canceled => Err(Error::mutation_canceled()),
-        AuthorityOutcome::Indeterminate => Err(Error::mutation_indeterminate()),
     }
 }
 

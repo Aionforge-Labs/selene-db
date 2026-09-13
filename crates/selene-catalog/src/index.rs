@@ -25,6 +25,8 @@ pub enum IndexFamily {
     Vector,
     /// Text index.
     Text,
+    /// Required exact constraint backing, not a query access path.
+    Constraint,
 }
 
 /// Reserved pure scalar expression shapes for F05-PR06 analysis. These are data,
@@ -106,6 +108,12 @@ pub enum IndexConfiguration {
     },
     /// Current native BM25 tokenizer/scorer semantics are pinned by the profile coordinate.
     Text,
+    /// Exact equality tuples scoped to one declaring node or edge type.
+    /// Unlike a query index this backing must be complete before activation.
+    Constraint {
+        /// Exact declaring type name.
+        declaring_type: String,
+    },
 }
 
 impl IndexConfiguration {
@@ -116,6 +124,7 @@ impl IndexConfiguration {
             Self::Property(_) => IndexFamily::Property,
             Self::Vector { .. } => IndexFamily::Vector,
             Self::Text => IndexFamily::Text,
+            Self::Constraint { .. } => IndexFamily::Constraint,
         }
     }
 }
@@ -133,6 +142,7 @@ pub fn generated_index_name<'a>(
         IndexFamily::Property => "idx",
         IndexFamily::Vector => "vidx",
         IndexFamily::Text => "tidx",
+        IndexFamily::Constraint => "cidx",
     };
     let mut name = format!("{prefix}:{}:{label}", label.len());
     if properties.len() > 1 {
@@ -185,6 +195,10 @@ impl IndexDeclaration {
         self.target.validate()?;
         let arity = self.target.properties.len();
         let valid = match &self.configuration {
+            IndexConfiguration::Constraint { declaring_type } => {
+                !declaring_type.is_empty()
+                    && declaring_type.len() <= selene_core::db_string::MAX_DB_STRING_BYTES
+            }
             IndexConfiguration::Property(kinds) => {
                 kinds.len() == arity && (arity == 1 || self.target.element == ElementKind::Node)
             }

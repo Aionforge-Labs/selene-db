@@ -1,24 +1,262 @@
-//! Unique property validation helpers.
+//! Complete, snapshot-owned constraint indexes. All arities use the same tuple
+//! and final-state delta implementation. Index state is never a WAL payload.
 
-use std::collections::HashMap;
-
-use selene_core::{
-    Change, ComparisonMode, DbString, EdgeId, NodeId, PropertyMap, Value, ValueComparisonDomain,
-};
+use immutable_chunkmap::map::MapM;
+use selene_catalog::{ConstraintDeclaration, ConstraintKind, ElementKind};
+use selene_core::{Change, DbString, PropertyMap, Value};
+use std::collections::BTreeSet;
 
 use super::{EntityId, TypeViolation, validate_edge_state, validate_node_state};
-use crate::graph::SeleneGraph;
-use crate::graph_types::{GraphTypeDef, PropertyTypeDef};
+use crate::{GraphTypeDef, SeleneGraph};
 
-pub(crate) fn graph_type_has_unique_properties(type_def: &GraphTypeDef) -> bool {
-    type_def
-        .node_types
-        .iter()
-        .any(|node_type| node_type.properties.iter().any(|property| property.unique))
-        || type_def
-            .edge_types
+mod domain;
+#[cfg(test)]
+mod incremental_tests;
+mod key;
+
+#[derive(Clone, Debug)]
+struct RuleIndex {
+    rule: ConstraintDeclaration,
+    properties: Vec<DbString>,
+    entries: MapM<Vec<Vec<u8>>, EntityId>,
+    domains: domain::Domains,
+}
+
+/// Private complete backing, shared copy-on-write with the primary snapshot.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ConstraintIndexes {
+    indexes: Vec<RuleIndex>,
+    #[cfg(test)]
+    pub(crate) visited: usize,
+}
+
+impl ConstraintIndexes {
+    pub(crate) fn matches_rules(&self, rules: &[ConstraintDeclaration]) -> bool {
+        self.indexes.len() == rules.len()
+            && self
+                .indexes
+                .iter()
+                .zip(rules)
+                .all(|(index, rule)| &index.rule == rule)
+    }
+    pub(crate) fn build(
+        graph: &SeleneGraph,
+        rules: Vec<ConstraintDeclaration>,
+    ) -> Result<Self, TypeViolation> {
+        let mut result = Self {
+            indexes: rules
+                .into_iter()
+                .map(|rule| RuleIndex {
+                    properties: rule
+                        .target
+                        .properties
+                        .iter()
+                        .map(|p| selene_core::db_string(p).expect("admitted constraint property"))
+                        .collect(),
+                    rule,
+                    entries: MapM::new(),
+                    domains: domain::Domains::default(),
+                })
+                .collect(),
+            #[cfg(test)]
+            visited: 0,
+        };
+        if result.indexes.is_empty() {
+            return Ok(result);
+        }
+        for id in graph
+            .live_node_candidates()
+            .expect("validated node mappings")
             .iter()
-            .any(|edge_type| edge_type.properties.iter().any(|property| property.unique))
+        {
+            result.change(graph, EntityId::Node(id), true)?;
+        }
+        for id in graph
+            .live_edge_candidates()
+            .expect("validated edge mappings")
+            .iter()
+        {
+            result.change(graph, EntityId::Edge(id), true)?;
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn apply(
+        &self,
+        changes: &[Change],
+        before: &SeleneGraph,
+        after: &SeleneGraph,
+    ) -> Result<Self, TypeViolation> {
+        let mut result = self.clone();
+        #[cfg(test)]
+        {
+            result.visited = 0;
+        }
+        if result.indexes.is_empty() {
+            return Ok(result);
+        }
+        let mut affected = BTreeSet::new();
+        for change in changes {
+            match change {
+                Change::NodeCreated { id, .. }
+                | Change::NodeUpdated { id, .. }
+                | Change::NodeDeleted { id, .. }
+                | Change::NodePropertyRemoved { id, .. }
+                | Change::NodeLabelRemoved { id, .. } => {
+                    affected.insert(EntityId::Node(*id));
+                }
+                Change::EdgeCreated { id, .. }
+                | Change::EdgeUpdated { id, .. }
+                | Change::EdgeDeleted { id, .. }
+                | Change::EdgePropertyRemoved { id, .. } => {
+                    affected.insert(EntityId::Edge(*id));
+                }
+                // WriteTxn supplies the existing truncate tombstone expansion.
+                Change::NodesOfTypeTruncated { .. }
+                | Change::EdgesOfTypeTruncated { .. }
+                | Change::GraphReset { .. }
+                | Change::SchemaChanged { .. } => {}
+            }
+        }
+        // A node label transition can move an incident edge into another declaring
+        // type even though the edge itself has no property delta.
+        for change in changes {
+            let id = match change {
+                Change::NodeUpdated {
+                    id, labels_diff, ..
+                } if !labels_diff.is_empty() => *id,
+                Change::NodeLabelRemoved { id, .. } => *id,
+                _ => continue,
+            };
+            for graph in [before, after] {
+                for adjacency in [
+                    graph.outgoing_edges(id),
+                    graph.incoming_edges(id),
+                    graph.undirected_edges(id),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    for edge in adjacency.iter() {
+                        affected.insert(EntityId::Edge(edge.edge_id));
+                    }
+                }
+            }
+        }
+        // Remove *all* old tuples before probing any final tuple: swaps and reuse
+        // are independent of statement/batch iteration order.
+        for id in &affected {
+            result.change(before, *id, false)?;
+        }
+        for id in &affected {
+            result.change(after, *id, true)?;
+        }
+        Ok(result)
+    }
+
+    fn change(
+        &mut self,
+        graph: &SeleneGraph,
+        id: EntityId,
+        insert: bool,
+    ) -> Result<(), TypeViolation> {
+        let Some(type_def) = graph.meta.bound_type.as_deref() else {
+            return Ok(());
+        };
+        let (element, declared_in, properties) = match id {
+            EntityId::Node(id) if graph.is_node_alive(id) => {
+                let (index, _) = validate_node_state(id, graph, type_def)?;
+                (
+                    ElementKind::Node,
+                    &type_def.node_types[index as usize].name,
+                    graph.node_properties(id),
+                )
+            }
+            EntityId::Edge(id) if graph.is_edge_alive(id) => {
+                let (ty, _) = validate_edge_state(id, graph, type_def)?;
+                (ElementKind::Edge, &ty.name, graph.edge_properties(id))
+            }
+            _ => return Ok(()),
+        };
+        #[cfg(test)]
+        {
+            self.visited += 1;
+        }
+        let empty = PropertyMap::new();
+        let properties = properties.unwrap_or(&empty);
+        for index in &mut self.indexes {
+            if index.rule.target.element != element
+                || index.rule.declaring_type != declared_in.as_str()
+            {
+                continue;
+            }
+            index.change(properties, id, declared_in, insert)?;
+        }
+        Ok(())
+    }
+}
+
+impl RuleIndex {
+    fn change(
+        &mut self,
+        properties: &PropertyMap,
+        id: EntityId,
+        declared_in: &DbString,
+        insert: bool,
+    ) -> Result<(), TypeViolation> {
+        let mut values = Vec::with_capacity(self.properties.len());
+        for property in &self.properties {
+            match properties.get(property) {
+                Some(value) if !matches!(value, Value::Null) => values.push(value),
+                _ if self.rule.kind == ConstraintKind::Key => {
+                    return Err(TypeViolation::MissingRequiredProperty {
+                        entity_id: id,
+                        property: property.clone(),
+                        declared_in: declared_in.clone(),
+                    });
+                }
+                _ => return Ok(()),
+            }
+        }
+        let comparison = |source| TypeViolation::UniquePropertyComparison {
+            entity_id: id,
+            property: self.properties[0].clone(),
+            declared_in: declared_in.clone(),
+            source,
+        };
+        let tuple = values
+            .iter()
+            .map(|value| {
+                let mut bytes = Vec::new();
+                key::write(value, &mut bytes, 1).map_err(comparison)?;
+                Ok(bytes)
+            })
+            .collect::<Result<Vec<_>, TypeViolation>>()?;
+        self.domains.change(&values, insert).map_err(comparison)?;
+        if insert {
+            if let Some(conflicting_entity_id) = self.entries.get(&tuple).copied() {
+                return Err(TypeViolation::UniquePropertyDuplicate {
+                    entity_id: id,
+                    conflicting_entity_id,
+                    property: self.properties[0].clone(),
+                    declared_in: declared_in.clone(),
+                });
+            }
+            self.entries.insert_cow(tuple, id);
+        } else {
+            self.entries.remove_cow(&tuple);
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn validate_unique_property_state(
+    graph: &SeleneGraph,
+    type_def: &GraphTypeDef,
+) -> Result<(), TypeViolation> {
+    let mut graph = graph.clone();
+    graph.meta.bound_type = Some(std::sync::Arc::new(type_def.clone()));
+    ConstraintIndexes::build(&graph, graph.constraint_rules()).map(|_| ())
 }
 
 #[cfg(test)]
@@ -27,490 +265,27 @@ pub(crate) fn unique_property_check_required(
     graph: &SeleneGraph,
     type_def: &GraphTypeDef,
 ) -> Result<bool, TypeViolation> {
-    Ok(!collect_changed_unique_candidates(changes, graph, type_def)?.is_empty())
-}
-
-pub(crate) fn validate_unique_property_changes(
-    changes: &[Change],
-    graph: &SeleneGraph,
-    type_def: &GraphTypeDef,
-) -> Result<(), TypeViolation> {
-    let candidates = collect_changed_unique_candidates(changes, graph, type_def)?;
-    if candidates.is_empty() {
-        return Ok(());
-    }
-    let (candidate_by_key, mut impacted_domains) = index_unique_candidates(&candidates)?;
-    validate_candidate_conflicts(graph, type_def, &candidate_by_key, &mut impacted_domains)
-}
-
-pub(crate) fn validate_unique_property_state(
-    graph: &SeleneGraph,
-    type_def: &GraphTypeDef,
-) -> Result<(), TypeViolation> {
-    if !graph_type_has_unique_properties(type_def) {
-        return Ok(());
-    }
-
-    let mut seen = HashMap::new();
-    let mut domains = HashMap::new();
-    let nodes = graph
-        .live_node_candidates()
-        .expect("alive nodes have consistent typed stable-ID mappings");
-    for id in nodes.iter() {
-        let (node_type_index, _) = validate_node_state(id, graph, type_def)?;
-        let node_type = &type_def.node_types[node_type_index as usize];
-        let empty_props = PropertyMap::new();
-        let properties = graph.node_properties(id).unwrap_or(&empty_props);
-        record_unique_properties(
-            EntityId::Node(id),
-            UniqueEntityKind::Node,
-            node_type.name.clone(),
-            &node_type.properties,
-            properties,
-            &mut seen,
-            &mut domains,
-        )?;
-    }
-    let edges = graph
-        .live_edge_candidates()
-        .expect("alive edges have consistent typed stable-ID mappings");
-    for id in edges.iter() {
-        let (edge_type, _) = validate_edge_state(id, graph, type_def)?;
-        let empty_props = PropertyMap::new();
-        let properties = graph.edge_properties(id).unwrap_or(&empty_props);
-        record_unique_properties(
-            EntityId::Edge(id),
-            UniqueEntityKind::Edge,
-            edge_type.name.clone(),
-            &edge_type.properties,
-            properties,
-            &mut seen,
-            &mut domains,
-        )?;
-    }
-    Ok(())
-}
-
-fn collect_changed_unique_candidates<'g>(
-    changes: &[Change],
-    graph: &'g SeleneGraph,
-    type_def: &GraphTypeDef,
-) -> Result<Vec<UniqueCandidate<'g>>, TypeViolation> {
-    if !graph_type_has_unique_properties(type_def) {
-        return Ok(Vec::new());
-    }
-
-    let mut candidates = Vec::new();
+    // Kept only as a legacy test observation, not an enforcement implementation.
     for change in changes {
-        match change {
-            Change::NodeCreated { id, .. } => collect_node_candidates(
-                *id,
-                graph,
-                type_def,
-                UniqueSelection::All,
-                &mut candidates,
-            )?,
+        let (id, diff) = match change {
             Change::NodeUpdated {
                 id,
                 labels_diff,
                 properties_diff,
-            } => {
-                let selection = if labels_diff.is_empty() {
-                    UniqueSelection::SetProperties(properties_diff)
-                } else {
-                    UniqueSelection::All
-                };
-                collect_node_candidates(*id, graph, type_def, selection, &mut candidates)?;
-            }
-            Change::EdgeCreated { id, .. } => collect_edge_candidates(
-                *id,
-                graph,
-                type_def,
-                UniqueSelection::All,
-                &mut candidates,
-            )?,
-            Change::EdgeUpdated {
-                id,
-                properties_diff,
-            } => collect_edge_candidates(
-                *id,
-                graph,
-                type_def,
-                UniqueSelection::SetProperties(properties_diff),
-                &mut candidates,
-            )?,
-            Change::NodeLabelRemoved { id, .. } => collect_node_candidates(
-                *id,
-                graph,
-                type_def,
-                UniqueSelection::All,
-                &mut candidates,
-            )?,
-            Change::NodeDeleted { .. }
-            | Change::EdgeDeleted { .. }
-            | Change::SchemaChanged { .. }
-            | Change::NodePropertyRemoved { .. }
-            | Change::EdgePropertyRemoved { .. }
-            | Change::NodesOfTypeTruncated { .. }
-            | Change::EdgesOfTypeTruncated { .. }
-            | Change::GraphReset { .. } => {}
-        }
-    }
-    Ok(candidates)
-}
-
-fn collect_node_candidates<'g>(
-    id: NodeId,
-    graph: &'g SeleneGraph,
-    type_def: &GraphTypeDef,
-    selection: UniqueSelection<'_>,
-    candidates: &mut Vec<UniqueCandidate<'g>>,
-) -> Result<(), TypeViolation> {
-    if !graph.is_node_alive(id) {
-        return Ok(());
-    }
-    let (node_type_index, _) = validate_node_state(id, graph, type_def)?;
-    let node_type = &type_def.node_types[node_type_index as usize];
-    let Some(properties) = graph.node_properties(id) else {
-        return Ok(());
-    };
-    collect_entity_candidates(
-        EntityId::Node(id),
-        UniqueEntityKind::Node,
-        node_type.name.clone(),
-        &node_type.properties,
-        properties,
-        selection,
-        candidates,
-    )?;
-    Ok(())
-}
-
-fn collect_edge_candidates<'g>(
-    id: EdgeId,
-    graph: &'g SeleneGraph,
-    type_def: &GraphTypeDef,
-    selection: UniqueSelection<'_>,
-    candidates: &mut Vec<UniqueCandidate<'g>>,
-) -> Result<(), TypeViolation> {
-    if !graph.is_edge_alive(id) {
-        return Ok(());
-    }
-    let (edge_type, _) = validate_edge_state(id, graph, type_def)?;
-    let Some(properties) = graph.edge_properties(id) else {
-        return Ok(());
-    };
-    collect_entity_candidates(
-        EntityId::Edge(id),
-        UniqueEntityKind::Edge,
-        edge_type.name.clone(),
-        &edge_type.properties,
-        properties,
-        selection,
-        candidates,
-    )?;
-    Ok(())
-}
-
-fn collect_entity_candidates<'g>(
-    entity_id: EntityId,
-    entity_kind: UniqueEntityKind,
-    declared_in: DbString,
-    declarations: &[PropertyTypeDef],
-    properties: &'g PropertyMap,
-    selection: UniqueSelection<'_>,
-    candidates: &mut Vec<UniqueCandidate<'g>>,
-) -> Result<(), TypeViolation> {
-    for declaration in declarations
-        .iter()
-        .filter(|declaration| declaration.unique && selection.includes(&declaration.name))
-    {
-        let Some(value) = properties.get(&declaration.name) else {
-            continue;
+            } if labels_diff.is_empty() => (*id, Some(properties_diff)),
+            Change::NodeCreated { id, .. }
+            | Change::NodeUpdated { id, .. }
+            | Change::NodeLabelRemoved { id, .. } => (*id, None),
+            _ => continue,
         };
-        if matches!(value, Value::Null) {
-            continue;
-        }
-        candidates.push(UniqueCandidate {
-            entity_id,
-            value,
-            key: UniquePropertyKey {
-                entity_kind,
-                declared_in: declared_in.clone(),
-                property: declaration.name.clone(),
-                value: UniqueValueKey::new(value, entity_id, &declaration.name, &declared_in)?,
-            },
-        });
-    }
-    Ok(())
-}
-
-type IndexedUniqueCandidates = (
-    HashMap<UniquePropertyKey, EntityId>,
-    HashMap<UniquePropertyDomain, ValueComparisonDomain>,
-);
-
-fn index_unique_candidates(
-    candidates: &[UniqueCandidate<'_>],
-) -> Result<IndexedUniqueCandidates, TypeViolation> {
-    let mut candidate_by_key = HashMap::with_capacity(candidates.len());
-    let mut impacted_domains = HashMap::new();
-    for candidate in candidates {
-        observe_unique_value(
-            impacted_domains.entry(candidate.key.domain()).or_default(),
-            candidate.entity_id,
-            &candidate.key.property,
-            &candidate.key.declared_in,
-            candidate.value,
-        )?;
-        if let Some(conflicting_entity_id) =
-            candidate_by_key.insert(candidate.key.clone(), candidate.entity_id)
+        let (index, _) = validate_node_state(id, graph, type_def)?;
+        if type_def.node_types[index as usize]
+            .properties
+            .iter()
+            .any(|p| p.unique && diff.is_none_or(|d| d.set.iter().any(|(name, _)| name == &p.name)))
         {
-            if conflicting_entity_id == candidate.entity_id {
-                continue;
-            }
-            return Err(TypeViolation::UniquePropertyDuplicate {
-                entity_id: candidate.entity_id,
-                conflicting_entity_id,
-                property: candidate.key.property.clone(),
-                declared_in: candidate.key.declared_in.clone(),
-            });
+            return Ok(true);
         }
     }
-    Ok((candidate_by_key, impacted_domains))
+    Ok(false)
 }
-
-fn validate_candidate_conflicts(
-    graph: &SeleneGraph,
-    type_def: &GraphTypeDef,
-    candidate_by_key: &HashMap<UniquePropertyKey, EntityId>,
-    impacted_domains: &mut HashMap<UniquePropertyDomain, ValueComparisonDomain>,
-) -> Result<(), TypeViolation> {
-    let nodes = graph
-        .live_node_candidates()
-        .expect("alive nodes have consistent typed stable-ID mappings");
-    for id in nodes.iter() {
-        let (node_type_index, _) = validate_node_state(id, graph, type_def)?;
-        let node_type = &type_def.node_types[node_type_index as usize];
-        let empty_props = PropertyMap::new();
-        let properties = graph.node_properties(id).unwrap_or(&empty_props);
-        validate_entity_candidate_conflicts(
-            EntityId::Node(id),
-            UniqueEntityKind::Node,
-            node_type.name.clone(),
-            &node_type.properties,
-            properties,
-            candidate_by_key,
-            impacted_domains,
-        )?;
-    }
-    let edges = graph
-        .live_edge_candidates()
-        .expect("alive edges have consistent typed stable-ID mappings");
-    for id in edges.iter() {
-        let (edge_type, _) = validate_edge_state(id, graph, type_def)?;
-        let empty_props = PropertyMap::new();
-        let properties = graph.edge_properties(id).unwrap_or(&empty_props);
-        validate_entity_candidate_conflicts(
-            EntityId::Edge(id),
-            UniqueEntityKind::Edge,
-            edge_type.name.clone(),
-            &edge_type.properties,
-            properties,
-            candidate_by_key,
-            impacted_domains,
-        )?;
-    }
-    Ok(())
-}
-
-fn validate_entity_candidate_conflicts(
-    entity_id: EntityId,
-    entity_kind: UniqueEntityKind,
-    declared_in: DbString,
-    declarations: &[PropertyTypeDef],
-    properties: &PropertyMap,
-    candidate_by_key: &HashMap<UniquePropertyKey, EntityId>,
-    impacted_domains: &mut HashMap<UniquePropertyDomain, ValueComparisonDomain>,
-) -> Result<(), TypeViolation> {
-    for declaration in declarations.iter().filter(|property| property.unique) {
-        let domain = UniquePropertyDomain {
-            entity_kind,
-            declared_in: declared_in.clone(),
-            property: declaration.name.clone(),
-        };
-        let Some(observed) = impacted_domains.get_mut(&domain) else {
-            continue;
-        };
-        let Some(value) = properties.get(&declaration.name) else {
-            continue;
-        };
-        if matches!(value, Value::Null) {
-            continue;
-        }
-        observe_unique_value(
-            observed,
-            entity_id,
-            &domain.property,
-            &domain.declared_in,
-            value,
-        )?;
-        let key = UniquePropertyKey {
-            value: UniqueValueKey::new(value, entity_id, &domain.property, &domain.declared_in)?,
-            entity_kind: domain.entity_kind,
-            declared_in: domain.declared_in.clone(),
-            property: domain.property.clone(),
-        };
-        if let Some(candidate_entity_id) = candidate_by_key.get(&key).copied()
-            && candidate_entity_id != entity_id
-        {
-            return Err(TypeViolation::UniquePropertyDuplicate {
-                entity_id: candidate_entity_id,
-                conflicting_entity_id: entity_id,
-                property: key.property,
-                declared_in: key.declared_in,
-            });
-        }
-    }
-    Ok(())
-}
-
-#[derive(Clone, Debug)]
-struct UniqueCandidate<'g> {
-    entity_id: EntityId,
-    key: UniquePropertyKey,
-    value: &'g Value,
-}
-
-#[derive(Clone, Copy)]
-enum UniqueSelection<'a> {
-    All,
-    SetProperties(&'a selene_core::PropertyDiff),
-}
-
-impl UniqueSelection<'_> {
-    fn includes(self, property: &DbString) -> bool {
-        match self {
-            Self::All => true,
-            Self::SetProperties(diff) => diff
-                .set
-                .iter()
-                .any(|(changed_property, _)| changed_property == property),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct UniquePropertyKey {
-    entity_kind: UniqueEntityKind,
-    declared_in: DbString,
-    property: DbString,
-    value: UniqueValueKey,
-}
-
-impl UniquePropertyKey {
-    fn domain(&self) -> UniquePropertyDomain {
-        UniquePropertyDomain {
-            entity_kind: self.entity_kind,
-            declared_in: self.declared_in.clone(),
-            property: self.property.clone(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct UniquePropertyDomain {
-    entity_kind: UniqueEntityKind,
-    declared_in: DbString,
-    property: DbString,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum UniqueEntityKind {
-    Node,
-    Edge,
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct UniqueValueKey(Vec<u8>);
-
-impl UniqueValueKey {
-    fn new(
-        value: &Value,
-        entity_id: EntityId,
-        property: &DbString,
-        declared_in: &DbString,
-    ) -> Result<Self, TypeViolation> {
-        let mut bytes = Vec::new();
-        key::write(value, &mut bytes, 1).map_err(|source| {
-            TypeViolation::UniquePropertyComparison {
-                entity_id,
-                property: property.clone(),
-                declared_in: declared_in.clone(),
-                source,
-            }
-        })?;
-        Ok(Self(bytes))
-    }
-}
-
-fn record_unique_properties(
-    entity_id: EntityId,
-    entity_kind: UniqueEntityKind,
-    declared_in: DbString,
-    declarations: &[PropertyTypeDef],
-    properties: &PropertyMap,
-    seen: &mut HashMap<UniquePropertyKey, EntityId>,
-    domains: &mut HashMap<UniquePropertyDomain, ValueComparisonDomain>,
-) -> Result<(), TypeViolation> {
-    for declaration in declarations.iter().filter(|property| property.unique) {
-        let Some(value) = properties.get(&declaration.name) else {
-            continue;
-        };
-        if matches!(value, Value::Null) {
-            continue;
-        }
-        let key = UniquePropertyKey {
-            entity_kind,
-            declared_in: declared_in.clone(),
-            property: declaration.name.clone(),
-            value: UniqueValueKey::new(value, entity_id, &declaration.name, &declared_in)?,
-        };
-        observe_unique_value(
-            domains.entry(key.domain()).or_default(),
-            entity_id,
-            &key.property,
-            &key.declared_in,
-            value,
-        )?;
-        if let Some(conflicting_entity_id) = seen.get(&key).copied() {
-            return Err(TypeViolation::UniquePropertyDuplicate {
-                entity_id,
-                conflicting_entity_id,
-                property: declaration.name.clone(),
-                declared_in,
-            });
-        }
-        seen.insert(key, entity_id);
-    }
-    Ok(())
-}
-
-fn observe_unique_value(
-    domain: &mut ValueComparisonDomain,
-    entity_id: EntityId,
-    property: &DbString,
-    declared_in: &DbString,
-    value: &Value,
-) -> Result<(), TypeViolation> {
-    domain
-        .observe(value, ComparisonMode::Distinctness)
-        .map_err(|source| TypeViolation::UniquePropertyComparison {
-            entity_id,
-            property: property.clone(),
-            declared_in: declared_in.clone(),
-            source,
-        })
-}
-
-mod key;

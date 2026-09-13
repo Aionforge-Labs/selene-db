@@ -52,7 +52,9 @@ pub fn graph_delta(
         }
     }
     let mut backing_indexes: Vec<_> = next.catalog_bound_indexes().map(|d| d.id().get()).collect();
-    if backing_indexes.len()
+    let constraint_backing = next.catalog_bound_indexes().filter(|d| matches!(d.payload(),
+        selene_catalog::CatalogPayload::Index(index) if matches!(index.configuration, selene_catalog::IndexConfiguration::Constraint { .. }))).count();
+    if backing_indexes.len() - constraint_backing
         != next.property_index.len()
             + next.edge_property_index.len()
             + next.composite_property_index.len()

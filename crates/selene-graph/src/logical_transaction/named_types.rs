@@ -58,7 +58,8 @@ pub(super) fn materialize(
 }
 
 pub(super) fn validate_bindings(
-    candidate: &ReplayState,
+    candidate: &mut ReplayState,
+    previous: Option<&ReplayState>,
     old: &CatalogSnapshot,
     catalog: &CatalogSnapshot,
     tx: &LogicalTransaction,
@@ -117,8 +118,6 @@ pub(super) fn validate_bindings(
             }
         };
         account_validation(graph, named, budget)?;
-        crate::type_validator::validate_entity_state(graph, named)
-            .map_err(|_| E::Invalid("named graph type conformance"))?;
         for change in delta.into_iter().flat_map(|delta| &delta.changes) {
             budget.charge(1, 0)?;
             let label_change = match change {
@@ -136,6 +135,16 @@ pub(super) fn validate_bindings(
             crate::type_validator::validate_change(change, graph, named)
                 .map_err(|_| E::Invalid("named graph type operation"))?;
         }
+        let graph = Arc::make_mut(candidate.graphs.get_mut(&graph_id).expect("named graph"));
+        graph
+            .admit_named_constraints(
+                previous
+                    .and_then(|p| p.graphs.get(&graph_id))
+                    .map(AsRef::as_ref),
+                named.clone(),
+                delta.map_or(&[], |delta| delta.changes.as_slice()),
+            )
+            .map_err(|_| E::Invalid("named graph type conformance"))?;
     }
     Ok(())
 }

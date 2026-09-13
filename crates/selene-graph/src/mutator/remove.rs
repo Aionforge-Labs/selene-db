@@ -65,6 +65,15 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
                 &new_props,
                 row.get(),
             )?;
+            crate::text_index::apply_node_update(
+                &mut graph.text_index,
+                &labels,
+                &old_props,
+                &labels,
+                &new_props,
+                row.get(),
+                id,
+            );
         }
         self.txn
             .changes
@@ -175,6 +184,15 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
                 &props,
                 row.get(),
             )?;
+            crate::text_index::apply_node_update(
+                &mut graph.text_index,
+                &old_labels,
+                &props,
+                &new_labels,
+                &props,
+                row.get(),
+                id,
+            );
         }
         self.txn
             .changes
