@@ -16,14 +16,14 @@ that minimum. Incorrect agreed behavior remains a defect regardless of wording.
 
 These are separate authorities:
 
-- [Canonical profile](../../spec/gql-profile/profile.json): target selections,
+- Canonical profile (`spec/gql-profile/profile.json`): target selections,
   runtime inventory, claim state, choices and extension identities.
-- [Generated feature matrix](../gql/conformance/features.md): direct selections,
+- Generated feature matrix (`docs/gql/conformance/features.md`): direct selections,
   Table 10 implication closure and feature-specific evidence references. The
   closure is an identity/integrity check, not a feature-count progress metric.
-- [Generated Annex B report](../gql/conformance/implementation-defined.md): each
+- Generated Annex B report (`docs/gql/conformance/implementation-defined.md`): each
   applicable choice or explicitly pending decision, rationale and references.
-- [Generated claim report](../gql/conformance-evidence.md): static registrations
+- Generated claim report (`docs/gql/conformance-evidence.md`): static registrations
   and exact blocker IDs. Only executing the runner produces pass/fail observations;
   checked-in static `complete` dispositions are not hand-authored pass records.
 - Workspace regression tests: broader behavior evidence, not an independently
