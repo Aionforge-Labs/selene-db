@@ -19,6 +19,8 @@ pub struct OptimizeContext<'a> {
     /// `None`, every index rule and the selectivity estimator fall back to their
     /// structural / heuristic behavior, producing pre-OPT-5 plans verbatim.
     pub index_catalog: Option<&'a dyn IndexCatalog>,
+    /// Frozen semantic authority for expression-index equivalence proofs.
+    pub analyzed: Option<&'a crate::AnalyzedStatement>,
 }
 
 impl<'a> OptimizeContext<'a> {
@@ -28,6 +30,7 @@ impl<'a> OptimizeContext<'a> {
         Self {
             impl_defined_caps,
             index_catalog: None,
+            analyzed: None,
         }
     }
 
@@ -35,6 +38,13 @@ impl<'a> OptimizeContext<'a> {
     #[must_use]
     pub const fn with_index_catalog(mut self, catalog: &'a dyn IndexCatalog) -> Self {
         self.index_catalog = Some(catalog);
+        self
+    }
+
+    /// Attach the same semantic tree from which this plan was lowered.
+    #[must_use]
+    pub const fn with_analyzed(mut self, analyzed: &'a crate::AnalyzedStatement) -> Self {
+        self.analyzed = Some(analyzed);
         self
     }
 }

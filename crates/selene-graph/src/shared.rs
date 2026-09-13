@@ -89,6 +89,11 @@ impl SharedGraph {
         crate::composite_property_index::rebuild_composite_property_indexes(&mut graph)?;
         crate::vector_index::rebuild_vector_indexes(&mut graph)?;
         crate::text_index::rebuild_text_indexes(&mut graph)?;
+        graph
+            .rebuild_expression_indexes()
+            .map_err(|error| crate::GraphError::Inconsistent {
+                reason: error.to_string(),
+            })?;
         if let Some(provider) = candidates::prepare(&graph)? {
             providers.push(provider);
             validate_unique_provider_tags(&providers)?;

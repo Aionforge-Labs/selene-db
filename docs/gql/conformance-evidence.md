@@ -5,9 +5,9 @@
 | Field | Value |
 |---|---|
 | Profile | `selene-gql-core-2.0` |
-| Profile hash | `44a47070250dcccb2aaff635f76be5ace06d140f5b73481f7d58a2241f4290ef` |
+| Profile hash | `04fbecdb1dcaa6795a65654cb1dcb1ea18ba35d3e8249b5f9b47e8407b6fda60` |
 | Rules hash | `e97dd73391a5ad423d006087eeac063e802582c3403a039222045704829a8a94` |
-| Evidence hash | `1d9b05f827bd3e9b55107be31855efed94f132bd61e7f3691302839b6b35f813` |
+| Evidence hash | `e7a2bd7fb10084599735f7f0cf9a34192442dd0ec05f705efbbc9217cc2be95c` |
 | Inventory | `seeded_incomplete` |
 | Release claimable | **false** |
 

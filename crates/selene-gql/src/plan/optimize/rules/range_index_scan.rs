@@ -27,7 +27,7 @@ impl Rule for RangeIndexScan {
         let Some(catalog) = ctx.index_catalog else {
             return Transformed::unchanged(plan);
         };
-        let mut changed = false;
+        let mut changed = super::expression_index_scan::rewrite(&mut plan, ctx);
         if let Some(pattern) = &mut plan.pattern_plan {
             changed |= rewrite_tree(&mut pattern.join_tree, &pattern.bindings, catalog);
         }

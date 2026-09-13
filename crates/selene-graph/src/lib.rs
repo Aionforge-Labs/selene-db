@@ -28,6 +28,7 @@ pub(crate) mod composite_property_index;
 pub mod composite_typed_index;
 mod consistency;
 pub mod error;
+mod expression_index;
 pub mod graph;
 pub mod graph_types;
 pub mod id_allocator;

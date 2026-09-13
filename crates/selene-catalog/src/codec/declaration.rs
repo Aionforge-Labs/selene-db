@@ -5,6 +5,9 @@ use super::{
 use crate::*;
 use selene_core::logical::{CodecError as E, CodecResult, Decoder, Encoder};
 
+#[path = "expression.rs"]
+mod expression;
+
 pub(super) fn metadata_encode(e: &mut Encoder, m: &DeclarationMetadata) -> CodecResult<()> {
     e.budget.metadata(1)?;
     e.u8(match m.state {
@@ -133,6 +136,14 @@ pub(super) fn index_encode(e: &mut Encoder, v: &IndexDeclaration) -> CodecResult
             e.u8(4)?;
             e.text(declaring_type)
         }
+        IndexConfiguration::Expression {
+            expression: target,
+            kind,
+        } => {
+            e.u8(5)?;
+            expression::encode(e, target)?;
+            e.index_kind(*kind)
+        }
     }
 }
 pub(super) fn index_decode(d: &mut Decoder<'_, '_>) -> CodecResult<IndexDeclaration> {
@@ -169,6 +180,10 @@ pub(super) fn index_decode(d: &mut Decoder<'_, '_>) -> CodecResult<IndexDeclarat
         3 => IndexConfiguration::Text,
         4 => IndexConfiguration::Constraint {
             declaring_type: d.text()?.into(),
+        },
+        5 => IndexConfiguration::Expression {
+            expression: expression::decode(d)?,
+            kind: d.index_kind()?,
         },
         _ => return Err(E::Invalid("index configuration")),
     };

@@ -60,6 +60,7 @@ pub fn graph_delta(
             + next.composite_property_index.len()
             + next.vector_index.len()
             + next.text_index.len()
+            + next.expression_indexes.len()
     {
         return Err(E::Invalid(
             "unbound index registrations require catalog metadata",

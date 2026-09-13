@@ -5,6 +5,7 @@ mod composite_index_lookup;
 mod constant_folding;
 mod disjunctive_label_expansion;
 mod expand_filter_pushdown;
+mod expression_index_scan;
 mod filter_pushdown;
 mod in_list_optimization;
 mod index_helpers;

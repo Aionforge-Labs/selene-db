@@ -62,6 +62,8 @@ repository or issue evidence.
 
 ## Policy and evidence documents
 
+- [Analyzed scalar expression and JSON-path indexes](expression-indexes.md)
+
 - [Batch-only execution and cutover inventory](batch-execution.md)
 
 - [Catalog-resolved native calls and algorithm batches](native-calls.md)

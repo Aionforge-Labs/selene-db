@@ -89,6 +89,12 @@ impl<'tx, 'g> Mutator<'tx, 'g> {
                 row.get(),
                 id,
             );
+            crate::expression_index::update(
+                &mut graph.expression_indexes,
+                Some((&labels, &props)),
+                None,
+                row.get(),
+            );
             graph.node_store.labels.set(row.index(), LabelSet::new());
             graph
                 .node_store

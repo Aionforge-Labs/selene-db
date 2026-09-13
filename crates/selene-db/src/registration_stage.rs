@@ -29,7 +29,7 @@ impl DatabaseDraft {
         let mut bound_indexes = self
             .selected_graph()?
             .catalog_bound_indexes()
-            .filter(|descriptor| !matches!(descriptor.payload(), CatalogPayload::Index(index) if matches!(index.configuration, IndexConfiguration::Constraint { .. })))
+            .filter(|descriptor| !matches!(descriptor.payload(), CatalogPayload::Index(index) if matches!(index.configuration, IndexConfiguration::Constraint { .. } | IndexConfiguration::Expression { .. })))
             .map(|descriptor| {
                 let (CatalogObjectId::Index(id), CatalogPayload::Index(index)) =
                     (descriptor.id(), descriptor.payload())

@@ -13,6 +13,7 @@ pub mod binding;
 pub mod catalog;
 pub mod category;
 pub mod error;
+pub mod index_expression;
 pub mod scope;
 pub mod semantic;
 pub mod types;

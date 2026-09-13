@@ -49,6 +49,22 @@ pub(super) fn candidate_entities(
 ) -> Result<Vec<ScanEntityId>, ExecutorError> {
     match &scan.access {
         ScanAccess::Linear => linear_entities(scan.kind, ctx),
+        ScanAccess::ExpressionLookup {
+            handle,
+            expression,
+            value,
+        } => {
+            if scan.kind == ScanKind::Node
+                && let Some(candidates) =
+                    ctx.tx
+                        .snapshot()
+                        .scalar_expression_candidates(handle.raw(), expression, value)
+            {
+                Ok(candidates.into_iter().map(ScanEntityId::Node).collect())
+            } else {
+                label_index_entities(scan, ctx)
+            }
+        }
         ScanAccess::LabelIndex { .. } => label_index_entities(scan, ctx),
         ScanAccess::TypedIndexRange {
             property,

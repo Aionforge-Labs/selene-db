@@ -100,6 +100,7 @@ pub struct SeleneGraph {
     pub(crate) layout: SnapshotLayout,
     /// Derived catalog binding for facade-owned graphs, never snapshot/WAL payload.
     pub(crate) catalog_binding: Option<registrations::CatalogBinding>,
+    pub(crate) expression_indexes: crate::expression_index::ExpressionIndexes,
     /// Complete constraint backing; never serialized and never supplied by callers.
     pub(crate) constraints: crate::type_validator::ConstraintIndexes,
     pub(crate) named_constraints:
@@ -134,6 +135,7 @@ impl SeleneGraph {
             edge_rows: engine_id_map(),
             layout: SnapshotLayout::new(),
             catalog_binding: None,
+            expression_indexes: Default::default(),
             constraints: crate::type_validator::ConstraintIndexes::default(),
             named_constraints: None,
         }

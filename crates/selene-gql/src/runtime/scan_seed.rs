@@ -73,7 +73,9 @@ fn value_constraint_passes(
     ctx: &EvalCtx<'_, '_, '_, '_>,
 ) -> Result<bool, ExecutorError> {
     match &scan.access {
-        ScanAccess::Linear | ScanAccess::LabelIndex { .. } => Ok(true),
+        ScanAccess::Linear
+        | ScanAccess::LabelIndex { .. }
+        | ScanAccess::ExpressionLookup { .. } => Ok(true),
         ScanAccess::TypedIndexRange {
             property,
             kind,

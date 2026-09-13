@@ -72,6 +72,26 @@ impl LiveIndexCatalog {
 }
 
 impl IndexCatalog for LiveIndexCatalog {
+    fn expression_index(
+        &self,
+        label: &DbString,
+        expression: &selene_core::scalar_index_expression::ScalarIndexExpression,
+        value: &Value,
+    ) -> Option<(TypedIndexLookup, u64)> {
+        self.snapshot
+            .scalar_expression_indexes(label)
+            .find_map(|(id, candidate, kind)| {
+                if candidate != expression {
+                    return None;
+                }
+                let count = self.snapshot.scalar_expression_cardinality(id, value)?;
+                Some((
+                    TypedIndexLookup::new(IndexHandle::new(id), index_kind_from(kind)),
+                    count,
+                ))
+            })
+    }
+
     fn typed_index(
         &self,
         target: IndexTarget,

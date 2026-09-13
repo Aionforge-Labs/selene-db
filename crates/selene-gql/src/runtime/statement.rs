@@ -453,7 +453,7 @@ impl Session<'_> {
         // optimized, so the two cache-hit early-returns above serve optimized
         // plans at hit-cost. EXPLAIN renders the optimized inner plan for free
         // because the optimizer recurses into PipelineOp::ExplainPlan { inner }.
-        let plan = Arc::new(self.optimize_plan(lowered));
+        let plan = Arc::new(self.optimize_plan(lowered, &analyzed));
         ensure_source_policy(&plan, policy)?;
         let source_arc = Arc::<str>::from(source);
         if !explicit_request
@@ -512,7 +512,11 @@ impl Session<'_> {
     /// (see `selene_graph::WriteTxn::commit`); index *selection* depends only
     /// on which indexes exist, so a structural access path stays correct for
     /// any data mutation within an epoch.
-    pub(super) fn optimize_plan(&self, lowered: ExecutionPlan) -> ExecutionPlan {
+    pub(super) fn optimize_plan(
+        &self,
+        lowered: ExecutionPlan,
+        analyzed: &crate::AnalyzedStatement,
+    ) -> ExecutionPlan {
         if !self.index_selection {
             return lowered;
         }
@@ -522,7 +526,9 @@ impl Session<'_> {
         };
         let catalog = LiveIndexCatalog::new(snapshot);
         let caps = lowered.impl_defined_caps;
-        let ctx = OptimizeContext::new(&caps).with_index_catalog(&catalog);
+        let ctx = OptimizeContext::new(&caps)
+            .with_index_catalog(&catalog)
+            .with_analyzed(analyzed);
         optimize(lowered, &ctx)
     }
 }

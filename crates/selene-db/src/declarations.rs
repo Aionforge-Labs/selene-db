@@ -1,6 +1,7 @@
 //! Facade declaration inspection and graph-owned registration administration.
 
 mod constraints;
+mod expression;
 
 use selene_catalog::{
     CatalogDescriptor, CatalogObjectId, CatalogObjectKind, CatalogParent, CatalogPayload,
@@ -27,6 +28,10 @@ pub use selene_catalog::{
     IndexJsonSelector, NativeBinding, NativeCandidateState, NativeDeclaration, NativeDefault,
     NativeEffect, NativeField, NativeParameter, NativeProcedure, NativeProjection, NativeType,
     PropertyTarget, ReservedIndexExpression,
+};
+/// Bounded expression descriptors shared with durable index declarations.
+pub use selene_core::scalar_index_expression::{
+    ScalarIndexExpression, ScalarIndexOperation, ScalarIndexSelector,
 };
 /// Declarative index configuration types intentionally available without an
 /// application dependency on a lower engine crate.
@@ -333,8 +338,8 @@ impl Catalog {
         })
     }
 
-    /// Remove an inactive declaration or candidate state with dependency RESTRICT.
-    /// Active index removal remains in the supported mutation CALLs; active
+    /// Remove an inactive declaration, expression index or candidate state with dependency RESTRICT.
+    /// Other active index removal remains in the supported mutation CALLs; active
     /// uniqueness cannot be disabled by dropping descriptive metadata.
     pub fn drop_declaration(
         &self,
@@ -355,6 +360,7 @@ impl Catalog {
                 .declaration_metadata()
                 .is_some_and(|metadata| metadata.state == DeclarationState::Ready)
                 && !candidate_state(existing.payload())
+                && !matches!(existing.payload(), CatalogPayload::Index(index) if matches!(index.configuration, IndexConfiguration::Expression { .. }))
             {
                 return Err(declaration_error(
                     "active_declaration_requires_runtime_mutation",

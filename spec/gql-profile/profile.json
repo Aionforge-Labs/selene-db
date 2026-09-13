@@ -5872,7 +5872,7 @@
     },
     {
       "id": "IM_INDEX_DDL",
-      "name": "selene-db named index DDL extension",
+      "name": "selene-db named index DDL and analyzed scalar-expression index extension",
       "runtime_support": "supported",
       "unsupported_rationale": "",
       "runtime_order": 123,
