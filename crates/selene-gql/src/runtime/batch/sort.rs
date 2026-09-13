@@ -280,7 +280,7 @@ fn materialize_child(
     while let Some(batch) = child.next_batch(ctx, &mut buffer)? {
         rows.reserve(batch.logical_rows());
         for index in 0..batch.logical_rows() {
-            rows.push(Binding::new(batch.logical_row(index)));
+            rows.push(batch.logical_binding(index));
         }
         ctx.budget_mut().release(batch.estimated_bytes());
         batch.recycle(&mut buffer);
@@ -343,6 +343,7 @@ pub(crate) fn slice_rows(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let batch = BindingBatch::from_batch_columns(schema.clone(), batch_columns)
+        .and_then(|batch| batch.with_binding_sites(&rows[*cursor - take..*cursor]))
         .map_err(|_| ExecutorError::ImplementationDefined { detail: what })?;
     ctx.budget_mut()
         .reserve(batch.estimated_bytes())

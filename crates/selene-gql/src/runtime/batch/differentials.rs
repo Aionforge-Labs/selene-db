@@ -1,4 +1,4 @@
-//! F04-PR02 acceptance differentials: batch families vs the row oracle.
+//! Primitive batch-policy and indexed-versus-scan differentials.
 //!
 //! Each test maps to one acceptance case from the slice brief:
 //!
@@ -13,12 +13,10 @@
 //! - mixed-edge loops and parallel edges keep their bindings;
 //! - stale candidates fail predictably instead of rebinding silently.
 //!
-//! The row oracle ([`execute_row_only`](super::fixtures::execute_row_only))
-//! replicates the plan runner's row logic without its batch seam, so these
-//! comparisons stay honest after the production wiring. Batch results run
-//! either through the production plan runner
-//! ([`production_table`](super::fixtures::production_table)) or, where the
-//! batch size varies, through the driver directly with an explicit policy.
+//! F04-PR09 ran the old row comparisons before deleting that implementation.
+//! The single-row-policy comparison now tests partition invariance, not an
+//! independent oracle. Literal expectations and the separate relation model
+//! supply independent semantic assertions.
 
 use std::time::Instant;
 
@@ -35,17 +33,17 @@ use super::candidates::ResolvedCandidates;
 use super::expand::BatchExpand;
 use super::filter::BatchFilter;
 use super::fixtures::{
-    batch_prefix_with_policy, eval_for, execute_row_only, hub_graph, indexed_person_graph,
-    oddball_graph, optimized_plan, person_graph, plan_source, production_table, row_table,
-    seed_nodes,
+    batch_prefix_with_policy, eval_for, execute_single_row_batches, hub_graph,
+    indexed_person_graph, oddball_graph, optimized_plan, person_graph, plan_source,
+    production_table, row_table, seed_nodes,
 };
 use super::page::BatchPage;
 use super::project::BatchProject;
+use super::scan::BatchScan;
 use super::{
     BatchBuffer, BatchCancel, BatchExecutionContext, BatchPolicy, MemoryBudget, OperatorState,
     PhysicalOperator, assert_tables_equivalent,
 };
-use super::{query::PrefixOutcome, scan::BatchScan};
 
 /// Batch sizes for the boundary matrix: single-row pulls, small windows that
 /// split fixtures awkwardly, and the production default.
@@ -56,7 +54,7 @@ fn policies() -> Vec<BatchPolicy> {
         .collect()
 }
 
-/// Execute an already-planned query through the row oracle only.
+/// Execute an already-planned query with the single-row batch policy.
 fn row_execute(graph: &SharedGraph, plan: &ExecutionPlan) -> Result<BindingTable, ExecutorError> {
     let mut ctx = TxContext::read_only(
         graph.read(),
@@ -64,7 +62,7 @@ fn row_execute(graph: &SharedGraph, plan: &ExecutionPlan) -> Result<BindingTable
         &crate::EmptyProcedureRegistry,
         graph.index_providers(),
     );
-    execute_row_only(plan, &mut ctx)
+    execute_single_row_batches(plan, &mut ctx)
 }
 
 /// Assert a fully-batch plan agrees with the row oracle under `policy`.
@@ -78,13 +76,7 @@ fn check_full_agree(graph: &SharedGraph, plan: &ExecutionPlan, policy: BatchPoli
     let row = row_execute(graph, plan);
     let batch = batch_prefix_with_policy(graph, plan, policy);
     match (row, batch) {
-        (Ok(expected), Ok(Some(prefix))) => {
-            let PrefixOutcome { table, suffix_from } = prefix;
-            assert_eq!(
-                suffix_from,
-                plan.pipeline.len(),
-                "{what}: driver left a row suffix"
-            );
+        (Ok(expected), Ok(table)) => {
             assert_tables_equivalent(&expected, &table, what);
         }
         (Err(expected), Err(actual)) => assert_eq!(
@@ -93,9 +85,9 @@ fn check_full_agree(graph: &SharedGraph, plan: &ExecutionPlan, policy: BatchPoli
             "{what}: error status diverged (row {expected:?} vs batch {actual:?})"
         ),
         (Ok(_), Err(err)) => panic!("{what}: batch failed where row succeeded: {err:?}"),
-        (Ok(_), Ok(None)) => panic!("{what}: driver declined a covered shape"),
-        (Err(_), Ok(None)) => panic!("{what}: driver declined a failing shape"),
-        (Err(err), Ok(Some(_))) => panic!("{what}: row failed where batch succeeded: {err:?}"),
+        (Err(err), Ok(_)) => {
+            panic!("{what}: single-row policy failed where another policy succeeded: {err:?}")
+        }
     }
 }
 
@@ -108,7 +100,7 @@ fn check_query_matrix(graph: &SharedGraph, source: &str) {
 }
 
 #[test]
-fn driver_accepts_primitive_shapes_and_declines_the_rest() {
+fn primitive_and_path_shapes_execute_completely() {
     let graph = person_graph();
     // Primitive shapes run fully in batches (no row suffix remains).
     for source in [
@@ -118,23 +110,13 @@ fn driver_accepts_primitive_shapes_and_declines_the_rest() {
         "RETURN 1 AS one",
     ] {
         let plan = plan_source(source);
-        let prefix = batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
-            .expect("driver executes")
-            .unwrap_or_else(|| panic!("driver declined primitive shape: {source}"));
-        assert_eq!(
-            prefix.suffix_from,
-            plan.pipeline.len(),
-            "primitive shape left a row suffix: {source}"
-        );
+        batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
+            .expect("complete primitive execution");
     }
     // F05-PR04 includes variable-length paths in the physical prefix.
     let plan = plan_source("MATCH (a)-[:KNOWS*1..2]->(b) RETURN a, b");
-    assert!(
-        batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
-            .expect("driver probes")
-            .is_some(),
-        "variable-length expansion must use batches"
-    );
+    batch_prefix_with_policy(&graph, &plan, BatchPolicy::default_policy())
+        .expect("complete path execution");
 }
 
 #[test]
@@ -166,9 +148,8 @@ fn indexed_and_scan_execution_agree() {
         for policy in policies() {
             check_full_agree(&graph, &optimized, policy, source);
             let batch = batch_prefix_with_policy(&graph, &optimized, policy)
-                .expect("driver executes")
-                .expect("driver accepts indexed shapes");
-            assert_tables_equivalent(&expected, &batch.table, source);
+                .expect("driver executes indexed shapes");
+            assert_tables_equivalent(&expected, &batch, source);
         }
     }
 }
@@ -448,7 +429,7 @@ fn cached_plans_re_resolve_per_execution() {
 }
 
 #[test]
-fn row_suffix_composition_preserves_outcomes() {
+fn complete_batch_composition_preserves_outcomes() {
     // Native, ordering, optional, and set operators run through the row
     // dispatcher on batch-materialized prefixes: structured outcomes
     // (schemas, multiplicities, order) survive result conversion.

@@ -23,6 +23,9 @@ use selene_core::Value;
 
 use crate::plan::BindingTableSchema;
 
+#[path = "binding_sites.rs"]
+mod sites;
+
 /// Internal position of one logical row inside a batch's physical columns.
 ///
 /// This is deliberately a crate-private offset: there is intentionally no
@@ -137,6 +140,7 @@ pub(crate) struct BindingBatch {
     columns: Vec<BatchColumn>,
     selection: Option<Vec<BatchPosition>>,
     logical_rows: usize,
+    insert_sites: Vec<smallvec::SmallVec<[(crate::InsertSiteId, selene_core::NodeId); 4]>>,
 }
 
 impl BindingBatch {
@@ -167,6 +171,7 @@ impl BindingBatch {
             columns: values.into_iter().map(BatchColumn::from_values).collect(),
             selection: None,
             logical_rows: physical,
+            insert_sites: Vec::new(),
         })
     }
 
@@ -197,6 +202,7 @@ impl BindingBatch {
             columns,
             selection: None,
             logical_rows: physical,
+            insert_sites: Vec::new(),
         })
     }
 
@@ -216,6 +222,7 @@ impl BindingBatch {
             columns,
             selection: None,
             logical_rows: 0,
+            insert_sites: Vec::new(),
         }
     }
 
@@ -232,6 +239,7 @@ impl BindingBatch {
             columns: Vec::new(),
             selection: None,
             logical_rows: 1,
+            insert_sites: Vec::new(),
         }
     }
 
@@ -314,6 +322,7 @@ impl BindingBatch {
     }
 
     /// Materialize every logical row in order.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn logical_rows_vec(&self) -> Vec<Vec<Value>> {
         (0..self.logical_rows)
@@ -396,6 +405,7 @@ impl BindingBatch {
             }],
             selection: None,
             logical_rows: self.logical_rows,
+            insert_sites: Vec::new(),
         })
     }
 
@@ -406,6 +416,7 @@ impl BindingBatch {
             .iter()
             .map(BatchColumn::estimated_bytes)
             .sum::<usize>()
+            + self.insert_site_bytes()
             + self.selection.as_ref().map_or(0, |s| {
                 s.capacity().saturating_mul(size_of::<BatchPosition>())
             })

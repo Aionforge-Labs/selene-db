@@ -90,7 +90,7 @@ impl<'x, 'a, 'ctx, 'g, 'plan> BatchCall<'x, 'a, 'ctx, 'g, 'plan> {
     ) -> Result<(), ExecutorError> {
         for index in 0..batch.logical_rows() {
             ctx.check_cancel(self.call.span)?;
-            let row = Binding::new(batch.logical_row(index));
+            let row = batch.logical_binding(index);
             let args = call::evaluate_args(&self.call.args, &row, schema, &self.eval)?;
             call::validate_arguments(self.call, &args)?;
             let mut authority = call::context::build_read_only(self.call, self.eval.tx)?;
@@ -155,9 +155,17 @@ impl PhysicalOperator for BatchCall<'_, '_, '_, '_, '_> {
         if self.schema.columns.is_empty() && self.cursor < self.rows.len() {
             ctx.ensure_generation()?;
             ctx.check_cancel(self.call.span)?;
+            let batch = BindingBatch::unit()
+                .with_binding_sites(&self.rows[self.cursor..self.cursor + 1])
+                .map_err(|_| ExecutorError::ImplementationDefined {
+                    detail: "invalid call binding provenance",
+                })?;
             self.cursor += 1;
             ctx.finish_batch(1);
-            return Ok(Some(BindingBatch::unit()));
+            ctx.budget_mut()
+                .reserve(batch.estimated_bytes())
+                .map_err(|err| err.into_executor_error(self.call.span))?;
+            return Ok(Some(batch));
         }
         let outcome = slice_rows(
             &self.schema,

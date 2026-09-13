@@ -62,10 +62,8 @@ pub(crate) struct BatchOuterJoin<'x, 'a, 'ctx, 'g, 'plan> {
 impl<'x, 'a, 'ctx, 'g, 'plan> BatchOuterJoin<'x, 'a, 'ctx, 'g, 'plan> {
     /// Construct an outer join over `left` with a correlated `right` subtree.
     ///
-    /// The caller guarantees `right` is batch-buildable (see
-    /// [`tree_is_batchable`](super::tree::tree_is_batchable)); per-row
-    /// evaluation reports an internal error otherwise, never a silent
-    /// fallback.
+    /// Correlated evaluation builds `right` through the single physical tree
+    /// assembler. Malformed IR reports an error, never a second executor.
     #[allow(clippy::too_many_arguments)]
     pub(crate) const fn new(
         left: Box<dyn PhysicalOperator + 'x>,

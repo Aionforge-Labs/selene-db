@@ -6,13 +6,10 @@
 //! explicit schemas, dependencies, and effects. It carries no physical
 //! execution policy: no access paths, join order, batch sizes, or parallelism.
 //!
-//! The slice covers scan, filter, project, page, one ordinary mutation path,
-//! and named-procedure calls. Full family coverage and removal of the old
-//! mixed plan belong to F03-PR04; the contracts here are sufficient for
-//! physical batches, path semantic nodes, and native adapters. Execution stays
-//! on the existing engine through the singular semantic-to-current-executor
-//! adapter; mutations describe intent and stage through the existing detached
-//! transaction state with no independent publication path.
+//! Every supported family reaches this logical authority before physical
+//! planning. The optimizer's physical plan feeds only batch execution and eager
+//! transaction barriers. Mutations describe intent and stage through the existing
+//! detached transaction state with no independent publication path.
 
 pub mod descriptors;
 pub mod effect;

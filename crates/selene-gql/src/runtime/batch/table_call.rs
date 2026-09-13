@@ -1,4 +1,4 @@
-//! Inline `CALL { ... }` table-subquery pipeline operator.
+//! Correlated table-call kernel for the physical batch extension.
 
 use selene_core::Value;
 use smallvec::SmallVec;
@@ -6,69 +6,47 @@ use smallvec::SmallVec;
 use crate::{
     BindingTableColumn, BindingTableSchema, ExecutionPlan, PatternPlan, PipelineOp,
     PlannedTableSubquery,
-    runtime::{Binding, BindingTable, ExecutorError, TxContext, pattern, plan_runner},
+    runtime::{Binding, BindingTable, ExecutorError, TxContext, pattern},
 };
 
-pub(super) fn execute(
+pub(super) fn extend(
     call: &PlannedTableSubquery,
-    table: BindingTable,
-    ctx: &mut TxContext<'_, '_>,
-) -> Result<BindingTable, ExecutorError> {
-    execute_read_only(call, table, ctx)
-}
-
-pub(super) fn execute_read_only(
-    call: &PlannedTableSubquery,
-    table: BindingTable,
+    row: &Binding,
+    input_schema: &BindingTableSchema,
     ctx: &TxContext<'_, '_>,
-) -> Result<BindingTable, ExecutorError> {
-    let (input_schema, input_rows) = table.into_parts();
-    let output_schema = output_schema(&input_schema, call);
-    let target_schema = target_schema(call, &input_schema)?;
-    let mut output = Vec::with_capacity(input_rows.len());
-    let mut rows_since_check = 0;
-
-    for row in input_rows {
-        ctx.check_cancellation_stride(&mut rows_since_check, 1)?;
-        if null_outer_binding_is_plan_pattern_binding(call, &row, &input_schema)? {
-            if call.optional {
-                output.push(optional_output_row(call, &row));
-            }
-            continue;
+    policy: super::policy::BatchPolicy,
+    mut emit: impl FnMut(Binding) -> Result<(), ExecutorError>,
+) -> Result<(), ExecutorError> {
+    if null_outer_binding_is_plan_pattern_binding(call, row, input_schema)? {
+        if call.optional {
+            emit(optional_output_row(call, row))?;
         }
-        let seed = seed_binding(call, &row, &input_schema, &target_schema)?;
-        let inner = plan_runner::execute_plan_read_only_with_seed(
-            &call.body,
-            Some(BindingTable::new(target_schema.clone(), vec![seed])),
-            ctx,
-        )?;
-        let yield_indices = yield_indices(call, inner.schema())?;
-        if call.optional && inner.rows().is_empty() {
-            output.push(optional_output_row(call, &row));
-            continue;
-        }
+        return Ok(());
+    }
+    let target_schema = target_schema(call, input_schema)?;
+    let seed = seed_binding(call, row, input_schema, &target_schema)?;
+    let inner = super::query::execute_seeded_subplan(
+        &call.body,
+        BindingTable::new(target_schema, vec![seed]),
+        ctx,
+        policy,
+    )?;
+    let indices = yield_indices(call, inner.schema())?;
+    if call.optional && inner.is_empty() {
+        emit(optional_output_row(call, row))?;
+    } else {
         for inner_row in inner.rows() {
-            ctx.check_cancellation_stride(&mut rows_since_check, 1)?;
-            output.push(
+            ctx.check_cancellation()?;
+            emit(
                 row.with_appended_values(
-                    yield_indices
+                    indices
                         .iter()
                         .map(|index| inner_row.get(*index).cloned().unwrap_or(Value::Null)),
                 ),
-            );
+            )?;
         }
     }
-
-    Ok(BindingTable::new(output_schema, output))
-}
-
-fn output_schema(
-    input_schema: &BindingTableSchema,
-    call: &PlannedTableSubquery,
-) -> BindingTableSchema {
-    let mut schema = input_schema.clone();
-    schema.columns.extend(call.yield_schema.clone());
-    schema
+    Ok(())
 }
 
 fn optional_output_row(call: &PlannedTableSubquery, input: &Binding) -> Binding {

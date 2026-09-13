@@ -3,7 +3,7 @@
 use crate::{
     BindingElement, BindingTableSchema, ExecutionPlan, LimitAmount, PatternPlan, PipelineOp,
     ProjectExpr, ValueExpr,
-    runtime::{Binding, BindingTable, EvalCtx, ExecutorError, TxContext, pattern, pipeline},
+    runtime::{BindingTable, ExecutorError, TxContext, pattern, pipeline},
 };
 
 pub(crate) fn execute_plan(
@@ -18,73 +18,7 @@ pub(crate) fn execute_plan_with_seed(
     seed: Option<BindingTable>,
     ctx: &mut TxContext<'_, '_>,
 ) -> Result<BindingTable, ExecutorError> {
-    // F04-PR02 production seam: unseeded plans whose pattern and leading
-    // pipeline prefix fall in the batch families run through the batch
-    // driver. The driver declines (`Ok(None)`) anything outside those
-    // families — including every seeded (correlated) execution — and the row
-    // path below runs unchanged. Errors never fall back: a batch failure
-    // aborts with the row path's diagnostics.
-    let batch_prefix = if seed.is_none() {
-        super::batch::query::try_execute_prefix(plan, ctx)?
-    } else {
-        None
-    };
-    if let Some(prefix) = batch_prefix {
-        let remaining = &plan.pipeline[prefix.suffix_from..];
-        if remaining.is_empty() {
-            return Ok(prefix.table);
-        }
-        return pipeline::execute_pipeline_with_plan(
-            remaining,
-            prefix.table,
-            ctx,
-            &plan.expr_ids,
-            &plan.subqueries,
-        );
-    }
-    let row_limit = pattern_row_limit(plan);
-    let table = {
-        let eval_ctx = EvalCtx {
-            tx: ctx,
-            expr_ids: &plan.expr_ids,
-            subqueries: &plan.subqueries,
-        };
-        match (&plan.pattern_plan, seed) {
-            (Some(pattern_plan), Some(seed)) => {
-                let (schema, rows) = seed.into_parts();
-                let Some(row) = rows.first() else {
-                    return Ok(BindingTable::new(schema, Vec::new()));
-                };
-                let target_schema = target_schema(&schema, pattern_plan);
-                pattern::execute_pattern_with_seed_schema_and_limit(
-                    pattern_plan,
-                    Some(row),
-                    target_schema,
-                    &eval_ctx,
-                    row_limit,
-                )?
-            }
-            (Some(pattern_plan), None) => {
-                let schema = pattern::schema_for_pattern(pattern_plan);
-                pattern::execute_pattern_with_seed_schema_and_limit(
-                    pattern_plan,
-                    None,
-                    schema,
-                    &eval_ctx,
-                    row_limit,
-                )?
-            }
-            (None, Some(seed)) => seed,
-            (None, None) => seed_table(),
-        }
-    };
-    pipeline::execute_pipeline_with_plan(
-        plan.pipeline.as_slice(),
-        table,
-        ctx,
-        &plan.expr_ids,
-        &plan.subqueries,
-    )
+    super::batch::query::execute(plan, seed, ctx)
 }
 
 pub(crate) fn execute_plan_read_only(
@@ -104,85 +38,17 @@ pub(crate) fn execute_plan_read_only_with_seed(
     if crate::plan::classify_plan(plan).rejects_in_read_only() {
         return Err(pipeline::read_only_write_op_error());
     }
-    // Same batch seam as the read-write path, resuming through the read-only
-    // dispatcher so write-bearing suffix operators keep their read-only
-    // rejection diagnostics.
-    let batch_prefix = if seed.is_none() {
-        super::batch::query::try_execute_prefix(plan, ctx)?
-    } else {
-        None
-    };
-    if let Some(prefix) = batch_prefix {
-        let remaining = &plan.pipeline[prefix.suffix_from..];
-        if remaining.is_empty() {
-            return Ok(prefix.table);
-        }
-        return pipeline::execute_pipeline_read_only_with_plan(
-            remaining,
-            prefix.table,
-            ctx,
-            &plan.expr_ids,
-            &plan.subqueries,
-        );
-    }
-    let row_limit = pattern_row_limit(plan);
-    let table = {
-        let eval_ctx = EvalCtx {
-            tx: ctx,
-            expr_ids: &plan.expr_ids,
-            subqueries: &plan.subqueries,
-        };
-        match (&plan.pattern_plan, seed) {
-            (Some(pattern_plan), Some(seed)) => {
-                let (schema, rows) = seed.into_parts();
-                let Some(row) = rows.first() else {
-                    return Ok(BindingTable::new(schema, Vec::new()));
-                };
-                let target_schema = target_schema(&schema, pattern_plan);
-                pattern::execute_pattern_with_seed_schema_and_limit(
-                    pattern_plan,
-                    Some(row),
-                    target_schema,
-                    &eval_ctx,
-                    row_limit,
-                )?
-            }
-            (Some(pattern_plan), None) => {
-                let schema = pattern::schema_for_pattern(pattern_plan);
-                pattern::execute_pattern_with_seed_schema_and_limit(
-                    pattern_plan,
-                    None,
-                    schema,
-                    &eval_ctx,
-                    row_limit,
-                )?
-            }
-            (None, Some(seed)) => seed,
-            (None, None) => seed_table(),
-        }
-    };
-    pipeline::execute_pipeline_read_only_with_plan(
-        plan.pipeline.as_slice(),
-        table,
+    super::batch::query::execute_read_only(
+        plan,
+        seed,
         ctx,
-        &plan.expr_ids,
-        &plan.subqueries,
-    )
-}
-
-pub(crate) fn seed_table() -> BindingTable {
-    BindingTable::new(
-        BindingTableSchema {
-            columns: Vec::new(),
-        },
-        vec![Binding::empty()],
+        super::batch::policy::BatchPolicy::default_policy(),
     )
 }
 
 /// Extend an input schema with a pattern's new columns for seeded execution.
 ///
-/// Shared with the batch seeded-subplan helper so both paths seed into
-/// identical target schemas.
+/// Used by physical seeded subplans and non-leading matches.
 pub(crate) fn target_schema(
     input: &BindingTableSchema,
     pattern_plan: &crate::PatternPlan,

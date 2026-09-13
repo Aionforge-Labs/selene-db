@@ -102,7 +102,7 @@ all three metrics, ties/limits, typed outputs, graph-scoped metadata, failed-wri
 rollback, seven ANN kind/metric combinations, WAL-only and checkpoint reopen,
 deletion/update/insertion, filtered selection and graph replacement.
 `runtime::batch::vector_tests` requires the full vector CALL query to finish in
-the physical prefix for input/output windows 1/2/3/7/1024. Lower graph tests inject
+the physical executor for input/output windows 1/2/3/7/1024. Lower graph tests inject
 failed/partial rebuilds, validate foreign/empty candidates, preserve liveness-only
 binding and pin HNSW's selective-filter underfill behavior.
 
@@ -111,5 +111,5 @@ kernels: they measure candidate coverage and adapter consistency, not independen
 numeric conformance. The hand-derived examples do not share those kernels.
 The repository-root `BENCHMARKS.md` records CPU-only quality, latency, estimated
 memory and build/rebuild cost; these synthetic rows make no model-quality claim.
-There is no new vector-specific row bridge. The common unsupported-query row
-suffix still has F04-PR09 as deletion owner; it is not deleted prematurely here.
+There is no vector-specific row bridge. F04-PR09 removed the common row suffix;
+all calls use the [single physical executor](batch-execution.md).

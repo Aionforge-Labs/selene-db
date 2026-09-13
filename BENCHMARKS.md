@@ -15,6 +15,100 @@ iai-callgrind instruction-count layer — it needs valgrind, which never runs on
 the macOS dev machine, so it was dropped rather than left as a perpetually-TBD
 placeholder.
 
+## Batch-only cutover — F04-PR09
+
+2026-09-12, working tree over `97facacb9c94a678d36e185fb8a37f5fb9483327`,
+Apple M5 / 16 GiB / macOS 27.0, Rust 1.97.1, optimized Cargo bench profile,
+mimalloc. Existing registered targets only. Baseline and candidate runs were
+serial; no competing test/build command was deliberately run during measurement.
+These are quick guard measurements, not publication-quality capacity claims.
+
+The initial unchanged baseline used `--save-baseline f04-pr09-before`; the final
+candidate used the identical commands with `--baseline f04-pr09-before`:
+
+```sh
+scripts/run-benches.sh --profile quick --bench read_pipeline --filter 'read_pipeline/(match_filter_project|match_expand_hashjoin|group_by_highcard|match_limit10|let_single_extend|for_expand_triple|call_subquery_yield)/1000$' --baseline f04-pr09-before
+scripts/run-benches.sh --profile quick --bench bounded_paths --filter gql_path_whole_query --baseline f04-pr09-before
+scripts/run-benches.sh --profile quick --bench procedure_call_repeat --filter procedure_native_call --baseline f04-pr09-before
+```
+
+Read rows use the existing deterministic 1,000-node fixture and warm plan cache.
+The small-query/native-call guards use their existing 8/64-node fixtures. Setup
+is excluded; execution, result construction and drop are included. Read/native
+rows use 10 samples, 100 ms warm-up and 500 ms collection. Paths use 10 samples,
+200 ms warm-up and 1 s requested collection. The path topology and exact result
+counts are described in the following section.
+
+Central estimates below use **arithmetic relative change of the displayed
+estimates**, not Criterion's separately bootstrapped change statistic:
+
+| Guard | Baseline | Final candidate | Absolute change | Relative |
+|---|---:|---:|---:|---:|
+| Small query, 8 nodes | 1.0543 µs | 1.0899 µs | +0.0356 µs | +3.4% |
+| Small query, 64 nodes | 1.1413 µs | 1.1385 µs | −0.0028 µs | −0.2% |
+| Scan/filter/project, 1k | 65.924 µs | 67.949 µs | +2.025 µs | +3.1% |
+| Expand/hash join, 1k | 2.0463 ms | 2.1031 ms | +0.0568 ms | +2.8% |
+| High-cardinality grouping, 1k | 175.97 µs | 188.73 µs | +12.76 µs | +7.3% |
+| LIMIT 10, 1k | 22.607 µs | 24.662 µs | +2.055 µs | +9.1% |
+| Inline table CALL, 1k | 155.28 µs | 380.69 µs | +225.41 µs | +145.2% |
+| Single LET extension, 1k | 102.98 µs | 159.76 µs | +56.78 µs | +55.1% |
+| Triple FOR expansion, 1k | 203.24 µs | 286.55 µs | +83.31 µs | +41.0% |
+| Whole path query, 64 | 825.25 µs | 1,030.4 µs | +205.15 µs | +24.9% |
+| Whole path query, 256 | 6.8808 ms | 8.0446 ms | +1.1638 ms | +16.9% |
+| Whole path query, 1,024 | 82.363 ms | 92.451 ms | +10.088 ms | +12.2% |
+| Native input-batch calls, 8 | 80.378 µs | 60.060 µs | −20.318 µs | −25.3% |
+| Native input-batch calls, 64 | 112.63 µs | 87.575 µs | −25.055 µs | −22.2% |
+
+Final candidate intervals: scan 67.222–68.455 µs; join 2.0774–2.1492 ms;
+group 185.96–193.57 µs; inline CALL 375.89–391.17 µs; LET 158.03–163.67 µs;
+FOR 281.83–292.90 µs; LIMIT 24.386–25.239 µs; paths 1.0034–1.0577 ms,
+7.6794–8.3186 ms and 89.700–94.978 ms. Criterion detected regression in each
+of these rows except the join. Earlier candidate path samples were substantially
+faster (822.71 µs / 6.3623 ms / 78.395 ms); host/run variability limits causal
+attribution. The table deliberately retains the final run, not the best sample.
+
+The newly physical LET/FOR/table-call families pay eager materialization,
+per-binding expression/schema work and nested batch assembly. These regressions
+are disclosed, not hidden behind a second executor. A late correctness guard also
+requires pipeline LIMIT to drain preceding fallible work, including LIMIT 0;
+only the separately proved pattern bound short-circuits. No optimizer/performance
+redesign from F05-PR07 is included.
+
+### Retrieval and memory cross-check
+
+A disposable, unmodified local clone verified at the exact baseline SHA supplied
+the additional baseline runs. Both checkouts precompiled the existing targets
+before `/usr/bin/time -l` measurement, so the measured invocation did not run rustc:
+
+```sh
+scripts/run-benches.sh --bench read_pipeline --compile-only
+scripts/run-benches.sh --bench procedure_call_repeat --compile-only
+/usr/bin/time -l scripts/run-benches.sh --profile quick --bench read_pipeline --filter 'read_pipeline/(call_subquery_yield|let_single_extend|for_expand_triple)/1000$'
+/usr/bin/time -l scripts/run-benches.sh --profile quick --bench procedure_call_repeat --filter 'procedure_vector_search/shared_cache_flat_index_batch_8x_dim128_k10_1000$'
+```
+
+The vector guard is the existing exact flat-index, eight-query, synthetic 128d,
+squared-Euclidean, k=10, n=1,000 workload (not a semantic-embedding quality claim).
+Baseline **210.21 µs** (209.64–210.93) → final **223.09 µs** (221.39–224.63):
+**+12.88 µs / +6.1%**. Repeated inline CALL/LET/FOR candidate timings were
+355.63/152.43/279.97 µs against clone baseline 157.94/101.54/207.67 µs:
+the same regression direction, with visible run variability.
+
+| Native memory observation | Baseline bytes | Candidate bytes | Change |
+|---|---:|---:|---:|
+| Whole extension-guard invocation maximum RSS | 93,650,944 | 100,417,536 | +6,766,592 / +7.2% |
+| Whole vector-guard invocation maximum RSS | 93,470,720 | 93,470,720 | 0 / 0% |
+| Path 64 retained-result RSS delta | 3,981,312 | 3,997,696 | +16,384 / +0.4% |
+| Path 256 retained-result RSS delta | 5,652,480 | 5,685,248 | +32,768 / +0.6% |
+| Path 1,024 retained-result RSS delta | 7,225,344 | 8,159,232 | +933,888 / +12.9% |
+
+The first two rows are coarse **whole runner/process-tree** maxima, including
+Cargo, Criterion, fixture construction and allocator retention; they are not
+per-query allocator measurements or per-operator peaks. Path memory uses the
+existing isolated child-process `ps` sampling before the first query and while
+retaining its result; its limits remain those documented below. No allocation
+count, Linux result, power-loss experiment or live-service benchmark is claimed.
+
 ## Whole-query path batch integration — bounded_paths
 
 F05-PR04 working tree over `f2020f845c383b79d8ad808ff263667892ce04d0`,

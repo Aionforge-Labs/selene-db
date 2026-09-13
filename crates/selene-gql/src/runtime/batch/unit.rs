@@ -198,9 +198,17 @@ impl PhysicalOperator for BatchRowSource {
         // Empty column storage alone cannot encode their multiplicity; emit
         // one unit batch per binding rather than silently turning it into zero.
         if self.schema.columns.is_empty() {
+            let batch = BindingBatch::unit()
+                .with_binding_sites(&self.rows[self.cursor..self.cursor + 1])
+                .map_err(|_| ExecutorError::ImplementationDefined {
+                    detail: "invalid batch binding provenance",
+                })?;
             self.cursor += 1;
             ctx.finish_batch(1);
-            return Ok(Some(BindingBatch::unit()));
+            ctx.budget_mut()
+                .reserve(batch.estimated_bytes())
+                .map_err(|err| err.into_executor_error(span))?;
+            return Ok(Some(batch));
         }
         let width = self.schema.columns.len();
         let take = self
@@ -238,11 +246,10 @@ impl PhysicalOperator for BatchRowSource {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let batch =
-            BindingBatch::from_batch_columns(self.schema.clone(), batch_columns).map_err(|_| {
-                ExecutorError::ImplementationDefined {
-                    detail: "batch row source built a malformed batch",
-                }
+        let batch = BindingBatch::from_batch_columns(self.schema.clone(), batch_columns)
+            .and_then(|batch| batch.with_binding_sites(&self.rows[self.cursor - take..self.cursor]))
+            .map_err(|_| ExecutorError::ImplementationDefined {
+                detail: "batch row source built a malformed batch",
             })?;
         ctx.budget_mut()
             .reserve(batch.estimated_bytes())

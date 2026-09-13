@@ -137,6 +137,6 @@ active-constraint dependency readiness.
 See `BENCHMARKS.md` for absolute CPU-only measurements and estimated text-index
 memory. The facade still reconstructs detached runtimes, including candidate
 state, rather than incrementally sharing mutable providers across publications.
-That correctness-first cost is not hidden as an indexed-query speedup. The common
-unsupported-query row suffix remains F04-PR09's deletion responsibility; no new
-text/JSON/provider-specific row bridge was added.
+That correctness-first cost is not hidden as an indexed-query speedup. F04-PR09
+removed the common row suffix; there is no text/JSON/provider-specific row bridge.
+See [batch-only execution](batch-execution.md).

@@ -1,28 +1,9 @@
 use crate::{
     LimitAmount, SourceSpan,
-    runtime::{BindingTable, DataExceptionSubclass, ExecutorError, TxContext, parameter_type},
+    runtime::{DataExceptionSubclass, ExecutorError, TxContext, parameter_type},
 };
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use selene_core::Value;
-
-pub(super) fn execute(
-    offset: &LimitAmount,
-    count: &LimitAmount,
-    table: BindingTable,
-    ctx: &TxContext<'_, '_>,
-) -> Result<BindingTable, ExecutorError> {
-    let offset = resolve_amount(offset, ctx)?;
-    let count = resolve_amount(count, ctx)?;
-    let (schema, mut rows) = table.into_parts();
-    ctx.check_cancellation()?;
-    let start = u64_to_bounded_usize(offset, rows.len());
-    let end = start.saturating_add(u64_to_bounded_usize(count, rows.len() - start));
-    rows.truncate(end);
-    if start == 0 {
-        return Ok(BindingTable::new(schema, rows));
-    }
-    Ok(BindingTable::new(schema, rows.split_off(start)))
-}
 
 /// Resolve a pipeline limit/offset amount against bound parameters.
 ///

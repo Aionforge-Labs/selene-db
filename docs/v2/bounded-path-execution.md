@@ -69,13 +69,14 @@ projections, not measured weighted costs or evidence that a cheapest selector ra
 Permanent Rust tests independently enumerate small mixed multigraph walks before
 applying mode restrictions and joining quantifier decompositions. Shrinking
 property tests preserve edge identities, loops, multiplicity and zero length.
-Differentials compare the row reference and batch filter/project operators using
+Differentials compare native and statement-level batch filter/project operators using
 deterministic presentation carriers; traversal order is never a conformance claim.
 Separate regressions trigger resource limits, syntax/IR boundaries and lifecycle
 cleanup. The `bounded_paths` benchmark reports absolute costs in `BENCHMARKS.md`.
 
-The new source uses the existing physical operator, batch row source and tracer;
-all batches remain internal. Legacy statement routing is deliberately unchanged.
-F05-PR03 owns selectors, predicates and path values; F05-PR04 owns production
-logical/batch integration and deletion of legacy paths. F04-PR09 owns the remaining
-row-suffix deletion. No profile, persisted representation or grammar changed.
+The source uses the physical operator, batch row source and tracer; all batches
+remain internal. F05-PR03 delivered selectors, predicates and path values;
+F05-PR04 integrated paths and deleted the legacy path implementation. F04-PR09
+removed the remaining row dispatcher and its path adapters. See
+[batch-only execution](batch-execution.md). No profile, persisted representation
+or grammar changed.

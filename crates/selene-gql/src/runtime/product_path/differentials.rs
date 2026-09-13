@@ -21,19 +21,12 @@ pub(super) fn statement_table(f: &Fixture, source: &str, size: usize) -> Binding
         &EmptyProcedureRegistry,
         f.graph.index_providers(),
     );
-    let result = crate::runtime::batch::query::execute_with_test_policy(
+    crate::runtime::batch::query::execute_with_test_policy(
         &plan,
         &tx,
         BatchPolicy::new(size, 1 << 20).unwrap(),
     )
-    .unwrap()
-    .expect("path statement must not decline batch execution");
-    assert_eq!(
-        result.suffix_from,
-        plan.pipeline.len(),
-        "{source}: unexpected row suffix"
-    );
-    result.table
+    .expect("complete physical path execution")
 }
 
 #[test]
